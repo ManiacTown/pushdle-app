@@ -1,0 +1,7 @@
+// Cursor-tracked radial-gradient glow for panel-style cards.
+// Pair with the `.spotlight` CSS class: this just feeds it --mx/--my.
+export function spotlightMove(e) {
+  const rect = e.currentTarget.getBoundingClientRect();
+  e.currentTarget.style.setProperty('--mx', `${e.clientX - rect.left}px`);
+  e.currentTarget.style.setProperty('--my', `${e.clientY - rect.top}px`);
+}

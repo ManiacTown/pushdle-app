@@ -1,0 +1,179 @@
+// Short synthesized sound effects (Web Audio API oscillators, no audio
+// asset files) — fits the game's synthesized-neon look better than sampled
+// audio, and skips any asset licensing/loading-size concerns entirely.
+// Every cue here is deliberately tiny (well under half a second) and quiet
+// (peak gain never above ~0.16) — the brief was "satisfying, not
+// overpowering," so these are meant to sit under the visuals, not compete
+// with them.
+
+const MUTE_KEY = 'pushdle:soundMuted';
+
+// One AudioContext for the whole app, created lazily — browsers block
+// audio until a real user gesture, and every call site here already only
+// runs from inside a click handler, so creating it on first use (rather
+// than at module load) is both simpler and always safe.
+let ctx = null;
+function getCtx() {
+  if (!ctx) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return null;
+    ctx = new AudioContextClass();
+  }
+  if (ctx.state === 'suspended') ctx.resume();
+  return ctx;
+}
+
+function readMuted() {
+  try {
+    return localStorage.getItem(MUTE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+let muted = readMuted();
+
+export function isMuted() {
+  return muted;
+}
+
+export function setMuted(value) {
+  muted = value;
+  try {
+    localStorage.setItem(MUTE_KEY, value ? '1' : '0');
+  } catch {
+    // localStorage unavailable (private browsing, etc.) — mute state just
+    // won't persist across reloads, not worth failing over.
+  }
+}
+
+export function toggleMuted() {
+  setMuted(!muted);
+  return muted;
+}
+
+// A single short tone: ramps up fast (10ms, avoids a click/pop from
+// starting at full volume instantly) then decays exponentially to silence
+// over `duration` — the standard "plucked" envelope shape for a short UI
+// blip. `freqEnd`, if given, glides the pitch from `freq` to it over the
+// same duration (a rising or falling sweep, used for the success/bust
+// cues below rather than a flat tone).
+function tone({ freq, duration, type = 'sine', gain = 0.14, freqEnd, delay = 0 }) {
+  if (muted) return;
+  const audioCtx = getCtx();
+  if (!audioCtx) return;
+  const start = audioCtx.currentTime + delay;
+  const osc = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, start);
+  if (freqEnd) osc.frequency.exponentialRampToValueAtTime(freqEnd, start + duration);
+  gainNode.gain.setValueAtTime(0, start);
+  gainNode.gain.linearRampToValueAtTime(gain, start + 0.01);
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+  osc.connect(gainNode).connect(audioCtx.destination);
+  osc.start(start);
+  osc.stop(start + duration + 0.02);
+}
+
+// A soft, low tap — plays immediately on every push, before the outcome
+// (success/bust) is even known, so the button always feels like it
+// physically responded to the press rather than waiting on the network/
+// suspense delay to react at all.
+export function playPush() {
+  tone({ freq: 190, freqEnd: 150, duration: 0.07, type: 'sine', gain: 0.1 });
+}
+
+// A brighter, rising chime on a successful push. Pitch climbs a little
+// with the streak (capped so it never gets shrill on a long run) — a
+// small, subtle echo of the same "climbing tension" idea the background
+// glow/heartbeat already carry, not a competing effect.
+export function playSuccess(streak = 0) {
+  const base = 520 + Math.min(streak, 30) * 6;
+  tone({ freq: base, freqEnd: base * 1.4, duration: 0.13, type: 'sine', gain: 0.13 });
+}
+
+// A dull, falling thud on bust — sawtooth (not sine) and low-pitched so it
+// reads as an impact rather than another chime, sliding down rather than
+// up to sell "the run just ended," and quieter than the push/success cues
+// since a real bust already has the screen-flash/shake for the big
+// reaction — this is just a quiet undertone, not the main event.
+export function playBust() {
+  tone({ freq: 150, freqEnd: 55, duration: 0.3, type: 'sawtooth', gain: 0.14 });
+}
+
+// A light, airy tick for moving between pages — nav bar/footer links, a
+// leaderboard row opening a profile, a badge toast jumping to /profile,
+// "back to leaderboard". Sine (not square — square's rich odd harmonics
+// read as buzzy/sharp even at a quiet gain, which is exactly what this was
+// getting complaints about), high and brief, so it barely registers as
+// more than a soft tap.
+export function playNav() {
+  tone({ freq: 720, freqEnd: 900, duration: 0.045, type: 'sine', gain: 0.05 });
+}
+
+// Setting/clearing a badge as your leaderboard flair (see setFlair in
+// Profile.jsx) — a clean two-tone "pop" (a fundamental plus a quieter
+// octave layered on top, played together rather than in sequence), swapped
+// in after the original triangle-wave sweep read as too reedy/buzzy. Flat
+// pitch (no sweep) this time, which is most of why it reads as a rounder
+// "pop" rather than a "blip." Deliberately distinct from playBadge (a NEW
+// badge being earned, the bigger two-note reward sting played in
+// sequence) — this is just toggling which already-earned badge is
+// showing, a much smaller moment.
+export function playBadgeSelect() {
+  tone({ freq: 500, duration: 0.08, type: 'sine', gain: 0.08 });
+  tone({ freq: 1000, duration: 0.06, type: 'sine', gain: 0.035 });
+}
+
+// The busted, idle button getting poked (see pokeBustedButton in
+// Home.jsx) — a soft, dull "boop," quieter and duller than playPush (this
+// isn't a real push, nothing is actually happening to the run), triangle
+// instead of sine for a slightly flatter, more inert texture befitting
+// tapping on something already broken.
+export function playPoke() {
+  tone({ freq: 240, freqEnd: 180, duration: 0.05, type: 'triangle', gain: 0.07 });
+}
+
+// A small two-note sting for a new badge — the only cue with more than one
+// note, since this is the one moment that's actually meant to feel like a
+// little reward rather than just tactile feedback.
+export function playBadge() {
+  tone({ freq: 660, duration: 0.11, type: 'triangle', gain: 0.12 });
+  tone({ freq: 880, duration: 0.16, type: 'triangle', gain: 0.12, delay: 0.09 });
+}
+
+// A soft filtered-noise whoosh — genuinely airy rather than another tone
+// blip, which is why it's built differently from everything above (a short
+// burst of white noise through a sweeping bandpass filter, not an
+// oscillator). Used for the "Busted!" and "TOP X%" text sliding in during
+// the bust reveal (see runBustSequence in Home.jsx) — both are the same
+// kind of moment (a panel arriving on screen), so they share this one cue
+// rather than needing their own bespoke sound each.
+export function playReveal() {
+  if (muted) return;
+  const audioCtx = getCtx();
+  if (!audioCtx) return;
+  const duration = 0.22;
+  const start = audioCtx.currentTime;
+  const bufferSize = Math.max(1, Math.floor(audioCtx.sampleRate * duration));
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = buffer;
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.Q.value = 0.6;
+  filter.frequency.setValueAtTime(1800, start);
+  filter.frequency.exponentialRampToValueAtTime(450, start + duration);
+  const gainNode = audioCtx.createGain();
+  gainNode.gain.setValueAtTime(0, start);
+  gainNode.gain.linearRampToValueAtTime(0.05, start + 0.02);
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+
+  noise.connect(filter).connect(gainNode).connect(audioCtx.destination);
+  noise.start(start);
+  noise.stop(start + duration + 0.02);
+}

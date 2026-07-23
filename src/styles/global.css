@@ -1,0 +1,1026 @@
+:root{
+  --bg: #08080c;
+  --panel: #101018;
+  --line: rgba(255,255,255,0.08);
+  --neon-violet: #8b5cf6;
+  --neon-cyan: #22e5ff;
+  --neon-green: #39ff8f;
+  --neon-red: #ff2d6d;
+  --text: #f4f4f8;
+  --text-dim: #7a7a8c;
+  /* "Intensity" system — a couple of otherwise-independent visual effects
+     (push button heartbeat speed, ambient background glow; see spawnEffect
+     in Home.jsx for the particle-burst piece) ramp off state.streak, via a
+     useEffect in Home.jsx that overwrites --pulse-duration/--bg-glow-* on
+     :root as the streak changes. Values here are the streak-0 resting
+     defaults (also what a first paint sees before that effect has run).
+     The button only ever gets faster (--pulse-duration) — its glow color
+     (--pulse-color-*) stays fixed at these defaults always; recoloring it
+     too, tried once, read as the button "going crazy" at a high streak
+     rather than just your heart racing faster. The background glow
+     (--bg-glow-1/2) is the one place intensity actually shows as color,
+     shifting hot as the streak climbs, on its own faster/more pronounced
+     ramp (maxed by streak 12, not 30 — see the Home.jsx effect). */
+  --pulse-duration: 1.7s;
+  --pulse-color-dim: rgba(139,92,246,0.45);
+  --pulse-color-bright: rgba(139,92,246,1);
+  --pulse-accent-color: rgba(34,229,255,0.35);
+  --bg-glow-1: rgba(139,92,246,0.16);
+  --bg-glow-2: rgba(34,229,255,0.08);
+  /* Single source of truth for the fluid content width — .app-shell and
+     .nav-bar both use it so they line up. Full-width up to a 460px
+     viewport, then grows with it, capped at 1200px on very large screens. */
+  --content-max-width: clamp(460px, calc(340px + 30vw), 1200px);
+  /* .nav-bar's compact (single-line) rendered height — the Admin button
+     (see Home.jsx) matches this so it's visually consistent in weight,
+     even though it sits in its own spot (the true screen corner), not
+     attached to the bar itself. */
+  --nav-bar-height: 60px;
+  /* .nav-bar's REAL current rendered height — kept live by a
+     ResizeObserver in NavBar.jsx, so this is however tall the bar
+     actually is right now (1 line or 2, wrapped for a long username or
+     not), not a static guess that's only ever right for one of those
+     cases. 119px here is just the pre-JS/first-paint fallback (sized for
+     the worst-case 2-line wrap, so there's never a flash of too-little
+     clearance before the real measurement lands). Used as .app-shell's
+     top-padding base, and as the fallback top offset for anything that
+     has to duck below the bar instead of sitting beside it (see
+     --admin-top right below) on viewports narrow enough that .nav-bar has
+     no side margin to sit in instead. */
+  --nav-bar-clearance: 119px;
+  /* Raw side-margin width — how much empty space sits on either side of
+     the centered content column. Zero on narrow viewports (the column
+     fills the width), growing as --content-max-width leaves room. The
+     badge toast (see Home.jsx) sizes itself off this instead of a flat
+     breakpoint list, so it actually uses whatever margin exists rather
+     than guessing at a few fixed screen widths. */
+  --side-margin: calc((100vw - min(100vw, var(--content-max-width))) / 2);
+  /* Admin button's own top offset (see Home.jsx, which also builds the
+     dev panel's and badge toast's top offsets off this same variable, so
+     all three stay in sync automatically). Defaults to sitting below
+     .nav-bar (narrow viewports, where the bar spans full width with
+     nothing beside it to use); redefined below to flush with the true
+     top of the screen once there's actual side-margin for it to occupy
+     without overlapping the bar's own content. */
+  --admin-top: var(--nav-bar-clearance);
+}
+/* ~500px is roughly where --content-max-width's clamp() stops being
+   pinned to its 460px floor and starts actually leaving side-margin (see
+   --side-margin) — before that point .nav-bar still spans the full
+   viewport width. */
+@media (min-width: 500px){
+  :root{
+    --admin-top: 0px;
+  }
+}
+
+*{ box-sizing: border-box; }
+
+html, body, #root{
+  min-height: 100%;
+}
+
+/* Keeps the scrollbar's presence constant instead of appearing/disappearing
+   based on content height (e.g. header+nav re-expanding after a bust reveal
+   settles can push the page just past viewport height). Without this,
+   position:fixed; right:Npx elements — the admin button, the badge toast —
+   visibly jump left by the scrollbar's width the instant it appears, since
+   they're anchored to the viewport and a scrollbar changes its effective
+   width. This was a real, confirmed bug, not a hypothetical one. */
+/* overflow-x:hidden defensively — some entrance animations (badge toast's
+   slide-in, see .badgeSlideIn) transiently extend past the viewport edge
+   mid-transition by design, well within normal bounds once settled. Without
+   this, that could flash a horizontal scrollbar in and out for the
+   animation's duration, the exact class of bug overflow-y:scroll above
+   exists to prevent on the vertical axis. */
+html{
+  overflow-y: scroll;
+  overflow-x: hidden;
+}
+
+/* Typed custom properties (not just the untyped default) so the browser
+   actually knows --bg-glow-1/2 are <color> values and can interpolate
+   them — a transition on background-image itself wouldn't animate (that
+   property isn't interpolable; gradients just snap), but a transition on
+   these two typed properties works, and background-image recomputes each
+   frame as they're interpolated, producing the fade indirectly. */
+@property --bg-glow-1{
+  syntax: '<color>';
+  inherits: true;
+  initial-value: rgba(139,92,246,0.16);
+}
+@property --bg-glow-2{
+  syntax: '<color>';
+  inherits: true;
+  initial-value: rgba(34,229,255,0.08);
+}
+
+body{
+  margin: 0;
+  background-color: var(--bg);
+  /* The two glow colors (not the dot-grid layer) are the "intensity"
+     system's background piece — see the --bg-glow-* comment up in :root
+     and the @property rules just above. */
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 18 18'%3E%3Cpath d='M9 7.5v3M7.5 9h3' stroke='%233a3a45' stroke-width='1' stroke-linecap='round'/%3E%3C/svg%3E"),
+    radial-gradient(circle at 50% 0%, var(--bg-glow-1), transparent 45%),
+    radial-gradient(circle at 80% 90%, var(--bg-glow-2), transparent 50%);
+  background-repeat: repeat, no-repeat, no-repeat;
+  background-size: 18px 18px, auto, auto;
+  background-position: 0 0, center, center;
+  transition: --bg-glow-1 0.5s ease, --bg-glow-2 0.5s ease;
+  color: var(--text);
+  font-family: 'Space Grotesk', sans-serif;
+}
+
+.mono{ font-family: 'JetBrains Mono', monospace; }
+
+.app-shell{
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  /* .nav-bar is position:fixed (stays put while the page scrolls — see
+     its own rule) and now sits flush at the real top of the screen
+     (top:0), so it no longer pushes this content down via normal flow the
+     way an in-flow element would. This top padding reserves that space
+     itself instead — --nav-bar-clearance is kept in sync with .nav-bar's
+     REAL current rendered height by a ResizeObserver in NavBar.jsx (1
+     line or 2, whatever it actually is right now), not a static guess
+     that's only right for one of those cases. */
+  padding: calc(var(--nav-bar-clearance) + 16px) 20px 24px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* margin-top: auto (not position:fixed) pins this to the viewport bottom on
+   short pages while staying in normal flow on tall ones — deliberately
+   avoiding position:fixed here, see Home.jsx's admin-button/badge-toast
+   portal fix for why a fixed element inside an animated ancestor is risky. */
+.site-footer{
+  margin-top: auto;
+  padding-top: 32px;
+  text-align: center;
+  max-height: 100px;
+  overflow: hidden;
+  transition: opacity 0.8s ease, max-height 0.8s ease, padding-top 0.8s ease, transform 0.8s ease;
+}
+/* Collapses in lockstep with .nav-bar (see ChromeContext) while a push is
+   in progress or the bust reveal is choreographing itself. */
+.site-footer--collapsed{
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  transform: translateY(10px);
+  pointer-events: none;
+}
+.site-footer-links{
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.footer-link{
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-decoration: none;
+  padding: 6px 10px;
+  border-radius: 6px;
+  transition: color 0.2s ease, background 0.2s ease;
+}
+.footer-link:hover{
+  color: var(--neon-cyan);
+  background: rgba(34,229,255,0.08);
+}
+.site-footer-copy{
+  font-size: 9px;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+
+.panel{
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 22px;
+}
+
+/* Fixed to the viewport (not affected by scrolling) rather than living in
+   .app-shell's normal flow — flush at the real top of the screen, using
+   the same shared --content-max-width as .app-shell so it lines up with
+   the content below it (centered independently, since a fixed element
+   ignores its non-fixed ancestor's own centering). The Admin button (see
+   Home.jsx) matches --nav-bar-height and sits at the same top:0, aligned
+   to this bar's own right edge via --edge-inset, so it reads as part of
+   the same top bar rather than a separate floating element.
+   .app-shell's padding-top reserves space for this bar's own (variable,
+   1-2 line) height once it's no longer in flow to push that content down
+   itself. */
+.nav-bar{
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  max-width: var(--content-max-width);
+  padding: 8px 20px;
+  background: rgba(8,8,12,0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+  /* Exactly two items: .nav-bar-links and the mute button (see NavBar.jsx)
+     — never wraps itself, unlike .nav-bar-links below, which still can.
+     No justify-content:center here anymore — that lives on .nav-bar-links
+     now, so it centers the actual page links within whatever room is left
+     after the mute button, rather than centering across the WHOLE bar
+     (which used to let the links extend into the mute button's own space). */
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-height: 140px;
+  overflow: hidden;
+  z-index: 55;
+  transition: opacity 0.8s ease, max-height 0.8s ease, padding 0.8s ease, transform 0.8s ease;
+}
+.nav-bar-links{
+  display: flex;
+  /* flex:1 + min-width:0 is what lets this shrink to make room for the
+     mute button sibling instead of overflowing — flex items default to
+     min-width:auto (their own content size as a floor), which would
+     otherwise refuse to shrink below that no matter how little room
+     .nav-bar actually has left. */
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  /* Fluid breathing room between links — stays tight on narrow phones
+     (where every px of width matters) and spreads out on wide screens,
+     where a flat 4px gap looked cramped relative to how much horizontal
+     space the bar itself now has (see --content-max-width). */
+  gap: clamp(4px, 1.5vw, 28px);
+}
+/* Sits inline with the nav links (see NavBar.jsx) rather than its own row,
+   so it wraps along with them on narrow viewports instead of overflowing. */
+.user-bar-name{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  padding: 8px 6px 8px 4px;
+  white-space: nowrap;
+}
+.user-bar-streak{
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #ffd45e;
+  white-space: nowrap;
+}
+/* Hidden while a run is in progress (see ChromeContext) so the board
+   feels more focused mid-push; reappears once the run resolves. */
+.nav-bar--collapsed{
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  transform: translateY(-10px);
+  pointer-events: none;
+}
+.nav-link{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* min-height (not just padding) so the tap target hits ~44px regardless
+     of font-metric quirks — was measuring ~32px tall before, under both
+     Apple's (44px) and Google's (48px) minimum touch-target guidance. */
+  min-height: 44px;
+  box-sizing: border-box;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-decoration: none;
+  background: none;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+.nav-link:hover{
+  color: var(--text);
+  border-color: rgba(139,92,246,0.4);
+  background: rgba(139,92,246,0.08);
+}
+.nav-link.active{
+  color: var(--neon-cyan);
+  border-color: rgba(34,229,255,0.4);
+  background: rgba(34,229,255,0.08);
+}
+/* Narrow-phone floor — tighter padding/letter-spacing/gap than the normal
+   values above, not just relying on .nav-bar-links' own gap:clamp(...) to
+   do all the work. Adding the mute button (see NavBar.jsx) ate into the
+   width guest nav (Play/Leaderboard/Profile/Log in, no username-hiding
+   fallback the way logged-in users get) needs to stay on one line — this
+   claws a good chunk of it back without touching min-height (44px stays,
+   regardless of width — that's a touch-target floor, not something to
+   trade away for layout). */
+@media (max-width: 420px){
+  .nav-link{
+    padding: 0 6px;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+  .nav-bar-links{
+    gap: 3px;
+  }
+}
+
+h1, h2, h3{ margin: 0; }
+
+/* Shared hover "pop" for headings and other stand-alone text (streak
+   number, etc.) — scale + brighten on hover. */
+h1, h2, h3, .hover-pop{
+  display: inline-block;
+  transition: transform 0.2s ease, filter 0.2s ease;
+}
+h1:hover, h2:hover, h3:hover, .hover-pop:hover{
+  transform: scale(1.045);
+  filter: brightness(1.35);
+}
+
+.gradient-title{
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--neon-violet), var(--neon-cyan));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+button{
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input{
+  font-family: 'JetBrains Mono', monospace;
+  background: #06060a;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: var(--text);
+  font-size: 14px;
+  width: 100%;
+}
+input:focus{
+  outline: none;
+  border-color: var(--neon-violet);
+}
+
+.btn-primary{
+  background: linear-gradient(135deg, var(--neon-violet), var(--neon-cyan));
+  color: #08080c;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: none;
+  border-radius: 10px;
+  padding: 14px 16px;
+  width: 100%;
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+.btn-primary:hover{
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(139,92,246,0.4);
+}
+
+.btn-ghost{
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+.btn-ghost:hover{
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+}
+
+/* ---- Spotlight hover glow (header/result/leaderboard-style cards) ---- */
+/* Uses z-index:-1 within its own stacking context so the glow paints
+   behind the card's own content instead of on top of it. */
+.spotlight{
+  position: relative;
+  z-index: 0;
+  overflow: hidden;
+}
+.spotlight::before{
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(220px circle at var(--mx, 50%) var(--my, 50%), rgba(139,92,246,0.16), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+.spotlight:hover::before{
+  opacity: 1;
+}
+
+/* ---- Header panel collapse during an active run ---- */
+.header-panel{
+  overflow: hidden;
+  max-height: 220px;
+  margin-bottom: 20px;
+  transition: opacity 0.8s ease, max-height 0.8s ease, margin-bottom 0.8s ease,
+    padding-top 0.8s ease, padding-bottom 0.8s ease, transform 0.8s ease;
+}
+.header-panel--collapsed{
+  opacity: 0;
+  max-height: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  transform: translateY(-12px);
+  pointer-events: none;
+}
+
+/* ---- Bust reveal: Busted! appears, slides left, TOP X% slides in from
+   the right to sit beside it ---- */
+/* Both texts are absolutely positioned against the row's own center line
+   (Busted!'s *right* edge and TOP X%'s *left* edge both anchor at 50%)
+   instead of being flex-centered as a pair. That way each one is driven
+   entirely by its own transform and never snaps when the other mounts —
+   flex/normal-flow reflow doesn't animate on its own, so letting layout
+   "recenter the pair" would just pop instead of slide. */
+.bust-reveal-row{
+  display: inline-block;
+  position: relative;
+  height: 46px;
+  min-width: 260px;
+}
+@keyframes bustedBounceIn{
+  0%{ transform: translateX(-50%) scale(0.3); opacity: 0; }
+  55%{ transform: translateX(-50%) scale(1.08); opacity: 1; }
+  75%{ transform: translateX(-50%) scale(0.95); }
+  100%{ transform: translateX(-50%) scale(1); opacity: 1; }
+}
+/* Busted! and TOP X% share the same font-size/line-height and both anchor
+   at top:0, so their baselines land level with each other once paired. */
+.bust-busted{
+  position: absolute;
+  left: 50%;
+  top: 0;
+  font-weight: 700;
+  font-size: 32px;
+  line-height: 1;
+  color: var(--neon-red);
+  white-space: nowrap;
+  animation: bustedBounceIn 0.7s ease-out forwards;
+}
+/* Swap the animation for a transition once it's finished settling —
+   an element with an active/forwards-held animation silently blocks a
+   later transition on the same property (see DECISIONS.md), so the
+   "slide left" step needs the animation actually gone first. */
+.bust-busted.settled{
+  animation: none;
+  transform: translateX(-50%);
+  transition: transform 0.9s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.bust-busted.settled.slid{
+  transform: translateX(calc(-100% - 5px));
+}
+@keyframes rarityInFromRight{
+  0%{ opacity: 0; transform: translateX(70px); }
+  100%{ opacity: 1; transform: translateX(5px); }
+}
+.bust-rarity{
+  position: absolute;
+  left: 50%;
+  top: 0;
+  font-weight: 700;
+  font-size: 32px;
+  line-height: 1;
+  white-space: nowrap;
+  animation: rarityInFromRight 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+/* Restoring an already-resolved bust on mount — land straight at the
+   animation's own end state instead of replaying the slide-in. */
+.bust-rarity.instant{
+  animation: none;
+  opacity: 1;
+  transform: translateX(5px);
+}
+
+/* ---- Push-button idle/heartbeat pulse ---- */
+/* Doubles as both the pre-first-press "come push me" invite AND the
+   mid-run heartbeat (see idlePulseBase in Home.jsx, which applies this
+   whenever playing-and-not-rolling, not just at streak 0 anymore) — same
+   animation, same fixed violet/cyan colors always, just --pulse-duration
+   (see the intensity system in :root/Home.jsx) shortening as the streak
+   climbs, so it reads as the same calm invite just beating faster under
+   pressure — not recolored, that read as the button "going crazy" instead
+   of a heartbeat. Hover-scale lives on a separate selector that explicitly
+   excludes this class (via JS removing it on hover, see buttonHover in
+   Home.jsx), so the infinite animation never fights a :hover transition on
+   the same transform property (the bug documented in DECISIONS.md). */
+@keyframes idlePulseGlow{
+  0%, 100%{ box-shadow: 0 0 32px var(--pulse-color-dim); transform: scale(1); }
+  50%{ box-shadow: 0 0 64px var(--pulse-color-bright), 0 0 110px var(--pulse-accent-color); transform: scale(1.045); }
+}
+.push-btn{
+  transition: transform 0.12s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+/* Resting per-status look lives in these classes (not inline styles) so
+   that a plain :hover selector below can actually win the cascade for
+   box-shadow/border-color — inline styles beat plain stylesheet rules
+   regardless of specificity, so this couldn't be inline and hoverable. */
+.push-btn--playing{
+  border: 2px solid rgba(139,92,246,0.6);
+  box-shadow: 0 0 30px rgba(139,92,246,0.4);
+}
+.push-btn--dead{
+  border: 2px solid rgba(255,45,109,0.5);
+  box-shadow: 0 0 35px rgba(255,45,109,0.3);
+}
+.push-btn--idle-pulse{
+  animation: idlePulseGlow var(--pulse-duration) ease-in-out infinite;
+}
+.push-btn--playing:hover:not(:disabled){
+  transform: scale(1.05);
+  box-shadow: 0 0 55px rgba(139,92,246,0.75);
+  border-color: rgba(139,92,246,0.95);
+}
+/* No transform here (unlike the playing hover above) — this button has
+   crack lines glued to it via the shared .push-wrap--poke wrapper, and a
+   plain CSS :hover scale would move just the <button>, not that wrapper,
+   reintroducing the same crack-detachment gap. Glow/border brightening
+   only, so hovering (and holding, since the cursor stays over the button
+   the whole time) still feels responsive without needing a transform.
+   Requires bustedIdle to pause on hover (see Home.jsx) or bustedSmolder's
+   own box-shadow animation would just override this every frame. */
+.push-btn--dead:hover:not(:disabled){
+  box-shadow: 0 0 55px rgba(255,45,109,0.7);
+  border-color: rgba(255,45,109,0.9);
+}
+/* Scoped to --playing only (not just :not(:disabled)) — the busted button
+   isn't disabled anymore either (see pokeBustedButton in Home.jsx), but it
+   has its own dedicated poke bounce on the shared wrapper (.push-wrap--poke)
+   that's already synced with the crack overlay. Letting this native
+   press-down shrink ALSO fire on just the <button> underneath would
+   reintroduce the same crack-detaches-from-the-edge gap the wrapper fix
+   just solved, through a second, uncoordinated animation. */
+.push-btn--playing:active:not(:disabled){
+  transform: scale(0.96);
+}
+
+/* Calm ember smolder once a run is over — slow and low-key on purpose,
+   just enough to read as "alive" without demanding attention. */
+@keyframes bustedSmolder{
+  0%, 100%{ box-shadow: 0 0 28px rgba(255,45,109,0.35); border-color: rgba(255,45,109,0.45); }
+  50%{ box-shadow: 0 0 48px rgba(255,45,109,0.65); border-color: rgba(255,45,109,0.7); }
+}
+.push-btn--busted-idle{
+  animation: bustedSmolder 6s ease-in-out infinite;
+}
+
+/* One-off flinch when the already-busted button gets poked (see
+   pokeBustedButton in Home.jsx) — quick and local to just the button area,
+   unlike .screen-shake which is reserved for the actual bust impact and
+   shakes the whole play area. Applied to the button's own wrapper div
+   (.push-wrap--poke), not the <button> element itself — the crack overlay
+   is a separate sibling of the button, so transforming just the button
+   left the (static) crack lines visibly detaching from the button's own
+   edge as it shrank/rotated underneath them. Transforming the shared
+   wrapper instead moves the button, the cracks, and the label all
+   together as one rigid piece, so they never separate at all. */
+@keyframes buttonPoke{
+  0%{ transform: scale(1) rotate(0); }
+  30%{ transform: scale(0.97) rotate(-1deg); }
+  60%{ transform: scale(1.01) rotate(0.6deg); }
+  100%{ transform: scale(1) rotate(0); }
+}
+.push-wrap--poke{
+  animation: buttonPoke 0.22s ease-out;
+}
+
+/* ---- Success/bust particle burst ---- */
+/* Particles start at --sx/--sy (a point on the button's own edge, set in
+   JS from its radius) and fly out to --dx/--dy, so they read as bursting
+   off the ring rather than leaking out from the center. */
+@keyframes particleBurst{
+  0%{ transform: translate(-50%, -50%) translate(var(--sx), var(--sy)) scale(1); opacity: 1; }
+  100%{ transform: translate(-50%, -50%) translate(var(--dx), var(--dy)) scale(0.15); opacity: 0; }
+}
+.particle-field{
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.particle{
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: particleBurst var(--dur, 0.6s) ease-out forwards;
+}
+/* Bust-only variant, spawned alongside (not instead of) the normal red
+   burst — see spawnDebris in Home.jsx. Reuses the exact same keyframe/
+   positioning math as .particle (--sx/--sy/--dx/--dy still do the same
+   job), just with ease-in instead of ease-out: ease-out reads as an
+   explosive burst (fast start, decelerating), ease-in reads as something
+   heavy accelerating downward under gravity — the same trajectory data,
+   just interpreted as falling debris instead of an outward blast. Square
+   + slightly rounded instead of a perfect circle so it reads as a chipped
+   fragment, not another spark. */
+.particle--debris{
+  animation-timing-function: ease-in;
+  border-radius: 3px;
+}
+
+/* Expanding ring that flashes off the button on every push outcome. */
+@keyframes ringPulse{
+  0%{ transform: translate(-50%, -50%) scale(0.82); opacity: 0.95; }
+  100%{ transform: translate(-50%, -50%) scale(1.6); opacity: 0; }
+}
+.pulse-ring{
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 190px;
+  height: 190px;
+  border-radius: 50%;
+  border: 3px solid var(--ring-color, var(--neon-green));
+  box-shadow: 0 0 22px var(--ring-color, var(--neon-green));
+  pointer-events: none;
+  animation: ringPulse 0.6s ease-out forwards;
+}
+
+/* ---- Bust screen flash ---- */
+@keyframes screenFlash{
+  0%{ opacity: 0.65; }
+  55%{ opacity: 0.3; }
+  100%{ opacity: 0; }
+}
+.screen-flash{
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(circle at 50% 42%, rgba(255,255,255,0.55), var(--neon-red) 38%, var(--neon-red) 100%);
+  mix-blend-mode: screen;
+  pointer-events: none;
+  z-index: 9999;
+  animation: screenFlash 0.55s ease-out forwards;
+}
+
+/* ---- Bust screen shake ---- */
+/* --shake-amount is set inline per-bust (see triggerBust in Home.jsx),
+   scaled by how far the run got — a streak-2 bust barely nudges the
+   screen, a streak-50 one genuinely rattles it. Only ever applied to the
+   play-area wrapper (streak panel + button), not the header or nav — the
+   chrome staying rock-steady while the "scene" shakes is what sells it as
+   an impact rather than the whole page just being janky. */
+@keyframes screenShake{
+  0%{ transform: translate(0, 0) rotate(0); }
+  20%{ transform: translate(calc(-1 * var(--shake-amount, 6px)), calc(var(--shake-amount, 6px) * 0.5)) rotate(-0.6deg); }
+  40%{ transform: translate(var(--shake-amount, 6px), calc(-1 * var(--shake-amount, 6px) * 0.6)) rotate(0.6deg); }
+  60%{ transform: translate(calc(-0.6 * var(--shake-amount, 6px)), calc(0.5 * var(--shake-amount, 6px))) rotate(-0.35deg); }
+  80%{ transform: translate(calc(0.35 * var(--shake-amount, 6px)), calc(-0.35 * var(--shake-amount, 6px))) rotate(0.15deg); }
+  100%{ transform: translate(0, 0) rotate(0); }
+}
+.screen-shake{
+  animation: screenShake 0.5s ease-out;
+}
+
+/* ---- Bust crack overlay ---- */
+/* Sits on top of the button, same footprint, showing one of four hand-drawn
+   fracture patterns matching the bust's severity (see CRACK_STAGES/
+   crackLevel in Home.jsx) — a streak-2 bust shows a single edge nick, a big
+   one shows the button fully shattered. Persists for the rest of the busted
+   state (cleared in resetBustVisuals, same as the other bust visuals)
+   rather than fading — the button staying visibly cracked while "Busted" is
+   showing reads as the aftermath, not just a passing effect.
+   A dark line (real-glass black) reads as invisible against the button's
+   own near-black resting color (--panel, #101018) — there's no light
+   surface behind it to silhouette against the way there would be on an
+   actual photographed object. Lit from within instead: a bright white-hot
+   core with a red glow halo around it, like the fracture is glowing rather
+   than just cut into the surface. That also reads as more "on brand" for
+   this game's neon look than a literal photoreal crack would. */
+.crack-overlay{
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Clipped to the same circle the button itself is (its own border-radius
+     is 50% on this same 190x190 box) — a hard guarantee no crack can ever
+     render past the button's visible rim onto the page background,
+     independent of whatever the path-generation math in Home.jsx computes.
+     clip-path, not border-radius+overflow:hidden (tried first) — the
+     overflow property on a root <svg> element is unreliable across
+     browsers for this, clip-path isn't. */
+  clip-path: circle(50%);
+}
+.crack-overlay path{
+  fill: none;
+  stroke: #fff3ea;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 2px rgba(255, 60, 60, 0.95)) drop-shadow(0 0 6px rgba(255, 45, 60, 0.65));
+}
+
+/* The visible "Busted" label once the crack overlay is up (see the
+   push-btn-label div in Home.jsx) — kept as its own topmost element rather
+   than the button's own (now-hidden) text, since positioned elements
+   always paint above non-positioned in-flow content, so the crack SVG
+   would otherwise render on top of the button's own text regardless of
+   which comes first in the markup. The radial-gradient halo dims whatever
+   crack lines cross behind it, on top of the text-shadow, so "Busted"
+   reads clearly no matter how dense the fracture pattern gets. */
+.push-btn-label{
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text);
+  text-shadow: 0 0 10px rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,0.9);
+  background: radial-gradient(circle, rgba(16,16,24,0.75) 0%, rgba(16,16,24,0.4) 45%, transparent 68%);
+}
+
+/* ---- Badge-earned toast (right edge, appears after the rarity reveal
+   during a bust, before chrome returns) ----
+   position:absolute (not fixed), so it scrolls away with the page instead
+   of staying pinned — but portaled to <body> (see Home.jsx) with no
+   positioned ancestor in between, so its containing block is the
+   document itself rather than any particular page's own layout: `right`
+   ends up viewport-width-relative (still lines up with the side margin
+   on every page) while `top` is document-relative (scrolls normally).
+   That's also *why* it still needs the portal — same
+   .page-transition-transform reason as the Admin button (see that
+   comment), even though it isn't position:fixed. */
+.badge-toast-stack{
+  position: absolute;
+  /* top is set inline (see Home.jsx) — it depends on whether the Admin
+     dev panel is currently open, to stay clear of it either way without
+     wasting space reserving for that in the common (panel closed) case.
+     right matches the Admin button's flat 12px — nothing here hangs past
+     its own edge (the rarity pill lives in normal flow now, see
+     .badge-toast-top), so there's no overhang to buffer for. */
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* Below .nav-bar's 55 — the toast should never sit visually above the
+     nav bar (e.g. while both are on-screen near the top on a shorter
+     viewport), just occupy the space beside/below it. */
+  z-index: 54;
+  /* Sized off the actual side-margin space (see --side-margin) instead of
+     a fixed breakpoint list, so it uses however much room really exists —
+     floors at 100px on phones, grows up to 140px as the margin opens up
+     on wider screens. Capped there rather than left to keep climbing with
+     the side-margin: on very wide screens that margin gets huge, and an
+     uncapped toast reads as an oversized banner rather than a compact
+     notification. `width`, not `max-width` — this is a shrink-to-fit
+     absolutely-positioned box with no explicit size, so max-width alone
+     only ever caps it; it wouldn't actually grow to fill the extra room
+     just because more became available. */
+  width: clamp(100px, calc(var(--side-margin) - 12px), 120px);
+}
+@keyframes badgeSlideIn{
+  0%{ opacity: 0; transform: translateX(60px); }
+  100%{ opacity: 1; transform: translateX(0); }
+}
+.badge-toast-banner{
+  font-family: 'JetBrains Mono', monospace;
+  /* Scales down with the viewport (not just the container) so it shrinks
+     right alongside .badge-toast-stack's own narrower floor on phones,
+     rather than staying full-size text sitting above a now-tighter card. */
+  font-size: clamp(7px, 1.6vw, 10px);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--neon-cyan);
+  text-align: center;
+  margin-bottom: 2px;
+  animation: badgeSlideIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.badge-toast-banner.instant{
+  animation: none;
+  opacity: 1;
+  transform: translateX(0);
+}
+/* Icon on the left (sized in JS to match the column's real height — see
+   BadgeToastCard in Home.jsx — rather than a static font-size, since a
+   fixed size would either undershoot cards where the pill wraps to its
+   own line or overshoot plain one-line ones), text column on the right:
+   pill row on top (pinned to the column's own right edge, still reading
+   as "the card's corner"), "Badge earned" below it. Everything in normal
+   flow — nothing here is position:absolute needing a hand-tuned
+   clearance margin, so the pill and text can't occupy the same space
+   regardless of screen size or content length. */
+.badge-toast{
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid rgba(255,212,94,0.5);
+  border-radius: 10px;
+  /* Shared with .badge-toast-pill-row's nudge below, so the pill's
+     corner-hugging offset always exactly cancels out however big this
+     padding currently is, at any viewport width. */
+  --badge-toast-pad: clamp(4px, 1.5vw, 8px);
+  /* Shrinks with the viewport along with .badge-toast-stack's own tighter
+     phone floor, so the card's bulk (not just its max-width) actually
+     tightens up on small screens instead of keeping full-size padding
+     around a narrower box. Left/right tighter than top/bottom — pulls the
+     content closer to the card's own left/right edges. */
+  padding: var(--badge-toast-pad);
+  box-shadow: 0 0 20px rgba(255,212,94,0.25);
+  animation: badgeSlideIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+/* Same restore-on-mount case as .bust-rarity above. */
+.badge-toast.instant{
+  animation: none;
+  opacity: 1;
+  transform: translateX(0);
+}
+/* Clicking through to /profile (see Home.jsx's BadgeToastCard) — same
+   hover language as .badge-card's own clickable state, so this reads as
+   "goes somewhere" rather than just decorative. */
+.badge-toast:hover{
+  transform: scale(1.05);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35), 0 0 20px rgba(255,212,94,0.25);
+}
+.badge-toast:hover .badge-toast-sub{
+  color: var(--text);
+}
+.badge-toast-col{
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* gap can't go negative (invalid value, spec-disallowed) — the extra
+     upward pull for .badge-toast-sub is a negative margin-top on that
+     element instead, see below. */
+  gap: 0px;
+}
+.badge-toast-pill-row{
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+}
+.badge-toast-icon{
+  flex-shrink: 0;
+}
+.badge-toast-sub{
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  transition: color 0.2s ease;
+  /* Tighter than the default (~1.4) so the text sits at the top of its
+     row instead of the default line-height's slack pushing it down. */
+  line-height: 1;
+  /* Pulls it up a bit closer to the pill row above (see .badge-toast-col's
+     gap:0 — this is the only spacing between the two rows now). */
+  margin-top: -3.5px;
+  /* white-space:nowrap means this can grow wider than .badge-toast-col
+     ever intends and spill out past the card's own right edge with
+     nothing here stopping it (nowrap text isn't constrained by its box
+     the way wrapping text is). max-width + overflow:hidden is a hard
+     backstop: whatever doesn't fit gets truncated with an ellipsis
+     instead of visually escaping the card, regardless of how long a
+     future badge's rarity/label combination ends up being. */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Badge card hover-to-expand (Profile page) ---- */
+/* The hint is collapsed (max-height:0) by default and only revealed on
+   hover. Growing it taller grows the grid row itself (grid rows auto-size
+   to their tallest cell), which is what pushes the rest of the row —
+   nothing here needs to explicitly reposition its neighbors. */
+.badge-card{
+  position: relative;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.badge-card:hover{
+  transform: scale(1.05);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+  z-index: 1;
+}
+/* Touch-device stand-in for :hover (see expandedBadgeId in Profile.jsx) —
+   a non-clickable badge tapped on a phone has no other way to reveal its
+   hint text, since there's no hover state to trigger it. Same visual
+   treatment as :hover, just driven by a class instead. */
+.badge-card--expanded{
+  transform: scale(1.05);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+  z-index: 1;
+}
+/* Rarity chip — color comes from --rarity-color, set inline per badge.
+   Positioning is a separate wrapper (.badge-rarity-corner) rather than
+   baked into .badge-rarity itself, so the pill's own styling stays
+   reusable regardless of which corner/context it's placed in. */
+.badge-rarity{
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 5px;
+  border-radius: 6px;
+  line-height: 1.4;
+  color: var(--rarity-color, #9ca3af);
+  border: 1px solid var(--rarity-color, #9ca3af);
+  background: rgba(0,0,0,0.35);
+  white-space: nowrap;
+}
+.badge-rarity-corner{
+  position: absolute;
+  top: -8px;
+  right: -8px;
+}
+/* The toast's own cards can get quite narrow (see .badge-toast-stack's
+   width) — the rarity pill's normal size (tuned for the roomier Profile
+   page grid) reads a bit large sharing a line with the label there.
+   Smaller here specifically, not globally. */
+.badge-toast-stack .badge-rarity{
+  font-size: 6px;
+  padding: 1px 4px;
+  /* Same reasoning as .badge-toast-sub's line-height: 1 — the default
+     1.4 leaves the pill's own text sitting lower in its row than needed. */
+  line-height: 1;
+  /* Nudges past .badge-toast's own padding so the pill sits ~2px from the
+     card's actual top-right corner instead of just the top-right of its
+     content box. position:relative is purely a paint-time offset — the
+     pill still occupies its original space for layout purposes, so this
+     can't affect .badge-toast-col's measured height (which sizes the
+     icon, see BadgeToastCard in Home.jsx) or push the subtext row below
+     it. Offset amount is tied to --badge-toast-pad so it stays correct
+     at every viewport width, not just the one it was tuned against. */
+  position: relative;
+  top: calc(-1 * (var(--badge-toast-pad) - 2px));
+  /* +0.9px on top of the corner-hugging offset — nudges it left, from
+     3.3px off the corner to 3.7px. */
+  right: calc(-1 * (var(--badge-toast-pad) - 2px) + 0.9px);
+}
+.badge-card-hint{
+  max-height: 0;
+  opacity: 0;
+  margin-top: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  transition: max-height 0.3s ease, opacity 0.25s ease, margin-top 0.3s ease, color 0.2s ease;
+}
+.badge-card:hover .badge-card-hint,
+.badge-card--expanded .badge-card-hint{
+  max-height: 60px;
+  opacity: 1;
+  margin-top: 4px;
+  color: var(--text);
+}
+
+/* ---- Leaderboard row interactivity ---- */
+.leaderboard-row{
+  transition: transform 0.15s ease, filter 0.15s ease, background 0.15s ease;
+  cursor: default;
+}
+.leaderboard-row:hover{
+  transform: translateX(4px);
+  filter: brightness(1.2);
+}
+
+/* ---- Page transition on route change ---- */
+@keyframes pageEnter{
+  0%{ opacity: 0; transform: translateY(14px); }
+  100%{ opacity: 1; transform: translateY(0); }
+}
+.page-transition{
+  animation: pageEnter 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
