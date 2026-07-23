@@ -1289,9 +1289,15 @@ export default function Home() {
           of the "glitch for a split second" bug, not a scrollbar issue. */}
       {createPortal(
         <>
-          {/* Gated by role, not just login — a logged-in non-admin player never
-              sees this. Guests get it too (no account = no role to check), since
-              it's the only way to dev-test the local/guest game loop at all.
+          {/* Gated strictly by role now the site is actually public — this
+              used to also show for guests (no account = no role to check),
+              since that was the only way to dev-test the local/guest game
+              loop at all. That let any real visitor reach Force Bust/Reset
+              Day/Claim All Badges, which is fine for a local dev build but
+              not for a deployed one anyone can hit. To dev-test the guest
+              flow now, log in as an admin account first (isAdmin gates this
+              regardless of which flow — guest or logged-in — is actually
+              being exercised on screen).
               Pinned to the literal screen corner (flat right:12px), not
               aligned to .nav-bar's content edge — top uses --admin-top,
               which is flush (0) on wider viewports where there's side
@@ -1300,7 +1306,7 @@ export default function Home() {
               width instead (see global.css). Height matches
               --nav-bar-height for visual weight even when it's not
               literally attached to the bar. */}
-          {(isAdmin || !user) && (
+          {isAdmin && (
             <button
               className="btn-ghost"
               onClick={() => setShowAdmin((s) => !s)}
@@ -1321,7 +1327,7 @@ export default function Home() {
             </button>
           )}
 
-          {(isAdmin || !user) && showAdmin && (
+          {isAdmin && showAdmin && (
             <div
               className="panel spotlight"
               onMouseMove={spotlightMove}
