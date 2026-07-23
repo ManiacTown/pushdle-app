@@ -606,6 +606,20 @@ export default function Home() {
     timers.current.push(setTimeout(() => setShareStatus(''), 2500));
   }
 
+  // Always copies, regardless of navigator.share support — sits next to
+  // "Share" for people who specifically want the clipboard path (e.g. to
+  // paste into a chat) rather than whatever the OS share sheet offers.
+  async function handleCopy() {
+    const text = buildShareText({ streak: state.streak, url: window.location.origin });
+    try {
+      await navigator.clipboard.writeText(text);
+      setShareStatus('Copied to clipboard!');
+    } catch {
+      setShareStatus('Could not copy — try again.');
+    }
+    timers.current.push(setTimeout(() => setShareStatus(''), 2500));
+  }
+
   // speedScale > 1 (see the intensity system, applySuccess below) makes
   // particles travel further and complete sooner — a bigger, snappier
   // burst rather than just a proportionally-slower-looking bigger one.
@@ -1264,9 +1278,14 @@ export default function Home() {
             <div className="mono" style={{ marginTop: 20, fontSize: 11, color: 'var(--text-dim)' }}>
               Next run in {formatCountdown(msUntilNextDay())}
             </div>
-            <button className="btn-ghost" style={{ marginTop: 16 }} onClick={handleShare}>
-              📤 Share this run
-            </button>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 16 }}>
+              <button className="btn-ghost" onClick={handleShare}>
+                📤 Share this run
+              </button>
+              <button className="btn-ghost" onClick={handleCopy}>
+                📋 Copy result
+              </button>
+            </div>
             {shareStatus && (
               <div className="mono" style={{ marginTop: 8, fontSize: 10, color: 'var(--neon-cyan)' }}>
                 {shareStatus}
