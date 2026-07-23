@@ -142,17 +142,24 @@ export default function NavBar() {
           <button className="nav-link" onClick={logout}>Log out</button>
         )} */}
       </div>
-      {/* A real sibling flex item (not absolutely positioned — that was tried
+      {/* Real sibling flex items (not absolutely positioned — that was tried
           first, but it doesn't reserve any layout space, so on narrower
           screens it could visually overlap "Log in" instead of the links
           container ever knowing to make room for it). .nav-bar-links being
-          flex:1 means it always shrinks to leave this button its own space,
-          never the other way around. */}
+          flex:1 means it always shrinks to leave these buttons their own
+          space, never the other way around. */}
+      <NavLink
+        to="/about"
+        onClick={playNav}
+        className={({ isActive }) => 'nav-link nav-mute-btn' + (isActive ? ' active' : '')}
+        title="How to play"
+      >
+        ❓
+      </NavLink>
       <button
         className="nav-link nav-mute-btn"
         onClick={() => setSoundMuted(toggleMuted())}
         title={soundMuted ? 'Unmute sound' : 'Mute sound'}
-        style={{ flexShrink: 0, padding: '0 5px' }}
       >
         {soundMuted ? '🔇' : '🔊'}
       </button>

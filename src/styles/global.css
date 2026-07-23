@@ -325,6 +325,14 @@ body{
   border-color: rgba(34,229,255,0.4);
   background: rgba(34,229,255,0.08);
 }
+/* The about (❓) and mute buttons live in CSS (not inline styles) so the
+   narrow-phone media query below can actually override their padding —
+   an inline style always beats a stylesheet rule regardless of
+   specificity, which would otherwise block any @media override. */
+.nav-mute-btn{
+  flex-shrink: 0;
+  padding: 0 5px;
+}
 /* Narrow-phone floor — tighter padding/letter-spacing/gap than the normal
    values above, not just relying on .nav-bar-links' own gap:clamp(...) to
    do all the work. Adding the mute button (see NavBar.jsx) ate into the
@@ -332,7 +340,10 @@ body{
    fallback the way logged-in users get) needs to stay on one line — this
    claws a good chunk of it back without touching min-height (44px stays,
    regardless of width — that's a touch-target floor, not something to
-   trade away for layout). */
+   trade away for layout). Adding a second button (the ❓ about link)
+   re-broke the 320px-wide case (confirmed via Playwright: "Log in" wrapped
+   to its own line) even with this in place, hence the extra .nav-bar/
+   .nav-mute-btn tightening below on top of the original .nav-link rules. */
 @media (max-width: 420px){
   .nav-link{
     padding: 0 6px;
@@ -341,6 +352,13 @@ body{
   }
   .nav-bar-links{
     gap: 3px;
+  }
+  .nav-bar{
+    gap: 1px;
+    padding: 8px 8px;
+  }
+  .nav-mute-btn{
+    padding: 0 3px;
   }
 }
 
