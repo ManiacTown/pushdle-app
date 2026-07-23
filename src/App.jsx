@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { Analytics } from '@vercel/analytics/react';
 import { AuthProvider } from './lib/AuthContext.jsx';
 import { ChromeProvider } from './lib/ChromeContext.jsx';
 import NavBar from './components/NavBar.jsx';
@@ -59,6 +60,7 @@ export default function App() {
             <AppRoutes />
             <Footer />
           </div>
+          <Analytics />
         </BrowserRouter>
       </ChromeProvider>
     </AuthProvider>
