@@ -44,21 +44,36 @@ export default async function handler(req) {
         justifyContent: 'center',
         backgroundColor: '#08080c',
         backgroundImage:
-          'radial-gradient(circle at 50% 0%, rgba(255,45,109,0.30), transparent 45%), radial-gradient(circle at 80% 100%, rgba(139,92,246,0.22), transparent 50%)',
+          'radial-gradient(circle at 50% 0%, rgba(139,92,246,0.35), transparent 45%), radial-gradient(circle at 80% 100%, rgba(34,229,255,0.25), transparent 50%)',
         fontFamily: 'Space Grotesk',
       },
     },
     h(
       'div',
-      { style: { display: 'flex', fontFamily: 'JetBrains Mono', fontSize: 20, letterSpacing: 4, textTransform: 'uppercase', color: '#7a7a8c', marginBottom: 8 } },
+      { style: { display: 'flex', fontFamily: 'JetBrains Mono', fontSize: 20, letterSpacing: 4, textTransform: 'uppercase', color: '#22e5ff', marginBottom: 18 } },
       "PUSHDLE · TODAY'S RUN"
     ),
-    h('div', { style: { display: 'flex', fontFamily: 'JetBrains Mono', fontWeight: 700, fontSize: 34, color: '#ff2d6d', marginBottom: 30 } }, 'Busted!'),
+    // Same neon-red the real bust screen's ".bust-busted" text uses.
+    h('div', { style: { display: 'flex', fontWeight: 700, fontSize: 40, color: '#ff2d6d', marginBottom: 24 } }, 'Busted!'),
     h(
       'div',
-      { style: { display: 'flex', alignItems: 'baseline', gap: 18 } },
-      h('div', { style: { display: 'flex', fontSize: 220, fontWeight: 700, color: '#39ff8f', lineHeight: 1 } }, String(streak)),
-      h('div', { style: { display: 'flex', fontFamily: 'JetBrains Mono', fontSize: 24, letterSpacing: 2, textTransform: 'uppercase', color: '#7a7a8c' } }, 'streak')
+      {
+        style: {
+          display: 'flex',
+          fontSize: 220,
+          fontWeight: 700,
+          backgroundImage: 'linear-gradient(135deg, #8b5cf6, #22e5ff)',
+          backgroundClip: 'text',
+          color: 'transparent',
+          lineHeight: 1,
+        },
+      },
+      String(streak)
+    ),
+    h(
+      'div',
+      { style: { display: 'flex', fontFamily: 'JetBrains Mono', fontSize: 24, letterSpacing: 2, textTransform: 'uppercase', color: '#7a7a8c', marginTop: 10 } },
+      'streak'
     ),
     newBest &&
       h(
@@ -71,25 +86,19 @@ export default async function handler(req) {
       {
         style: {
           display: 'flex',
-          marginTop: 34,
-          padding: '10px 26px',
-          borderRadius: 999,
-          border: '2px solid rgba(139,92,246,0.6)',
-          background: 'rgba(139,92,246,0.1)',
-          fontFamily: 'JetBrains Mono',
           fontWeight: 700,
-          fontSize: 26,
-          letterSpacing: 2,
+          fontSize: 32,
           backgroundImage: 'linear-gradient(135deg, #8b5cf6, #22e5ff)',
           backgroundClip: 'text',
           color: 'transparent',
+          marginTop: 30,
         },
       },
       `TOP ${rarity}%`
     ),
     h(
       'div',
-      { style: { display: 'flex', fontFamily: 'JetBrains Mono', fontSize: 20, letterSpacing: 3, textTransform: 'uppercase', color: '#3a3a45', marginTop: 50 } },
+      { style: { display: 'flex', fontFamily: 'JetBrains Mono', fontSize: 20, letterSpacing: 3, textTransform: 'uppercase', color: '#3a3a45', marginTop: 56 } },
       'pushdle.com'
     )
   );
