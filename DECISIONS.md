@@ -31,6 +31,33 @@ suspense. That earlier bank/push variant still exists as reference
   localStorage key). Not yet ported to this multi-page app's Home page —
   worth adding.
 
+## Daily reset boundary — Pacific midnight, not UTC
+
+- The day/leaderboard resets at midnight in the `America/Los_Angeles`
+  timezone (DST-aware — real PST in winter, real PDT in summer), not at
+  UTC midnight. This was a deliberate fix, not the original design: UTC
+  midnight used to land mid-afternoon/evening for Pacific-based players,
+  which reset the leaderboard hours before anyone expected a new day, and
+  left it looking empty/broken during actual prime playing time.
+- `pacificDateString()` — `src/lib/pacificDate.js` on the client/Node side,
+  mirrored in `supabase/functions/_shared/utils.ts` for the Deno Edge
+  Functions (Deno can't import the client file directly) — is the single
+  source of truth for "what day is it." Every place that computes "today"
+  (guest `storage.js`, Home/Leaderboard/PublicProfile, the `push`/`admin`
+  Edge Functions, `scripts/lib/bot-day-sim.mjs`) must go through one of
+  these two, never a raw `new Date().toISOString().slice(0,10)` — that's
+  UTC and will silently reintroduce the same bug.
+- The bot-seeding cron (`vercel.json`) intentionally has **two** schedule
+  entries — `0 7 * * *` and `0 8 * * *` UTC — both hitting the same
+  endpoint. Vercel Cron only supports fixed UTC schedules, and Pacific
+  midnight itself moves between those two UTC hours across the DST
+  transition, so one static entry can't track it. Whichever entry lands
+  first after the real Pacific midnight does the actual seeding; the other
+  fires into an already-seeded day and no-ops, since `simulateAllBots`
+  already skips any bot with an existing run for today's Pacific date.
+  Don't collapse this back to a single entry without re-solving the DST
+  problem some other way.
+
 ## Visual design system (established — reuse, don't reinvent)
 
 - Dark, near-black background (`--bg: #08080c`) with a faint tiled
