@@ -150,6 +150,38 @@ export function playBadge() {
 // the bust reveal (see runBustSequence in Home.jsx) — both are the same
 // kind of moment (a panel arriving on screen), so they share this one cue
 // rather than needing their own bespoke sound each.
+// Money-variant only — real sampled audio (public/coin-collect.mp3,
+// public/coin-bank.mp3), not synthesized like everything above. These are
+// layered ON TOP of the existing synthesized cues (playSuccess on a
+// successful push, the click itself on cash-out) rather than replacing
+// them, so nothing above needs to change. One cached Audio() per file,
+// rewound to 0 on every play so rapid repeat pushes retrigger cleanly
+// instead of queuing/cutting each other off.
+const fileCache = {};
+function playFile(path, volume = 0.4) {
+  if (muted) return;
+  let audio = fileCache[path];
+  if (!audio) {
+    audio = new Audio(path);
+    fileCache[path] = audio;
+  } else {
+    audio.currentTime = 0;
+  }
+  audio.volume = volume;
+  audio.play().catch(() => {});
+}
+
+// A successful push's coin popping out of the bag (see popCoin/MoneyMode.jsx).
+export function playCoinCollect() {
+  playFile('/coin_collect.mp3');
+}
+
+// The coin actually landing in the wallet on cash-out (see
+// launchCoinToWallet/MoneyMode.jsx).
+export function playCoinBank() {
+  playFile('/coin_bank.mp3');
+}
+
 export function playReveal() {
   if (muted) return;
   const audioCtx = getCtx();

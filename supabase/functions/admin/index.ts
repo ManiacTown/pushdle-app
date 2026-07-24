@@ -86,6 +86,26 @@ Deno.serve(async (req) => {
     return json({ success: true });
   }
 
+  // Money-variant Force Bust — simpler than classic's force_bust since
+  // busting a money run never touches profiles at all (see
+  // resolve_money_push's own comment on why); just flips status, no stats/
+  // badges to recompute. A no-op 409 (not a silent success) if there's no
+  // active run, same as classic's own "already busted" guard, so the
+  // client can tell the difference between "busted it" and "nothing to bust".
+  if (action === 'force_bust_money') {
+    const { data: run } = await db
+      .from('money_runs')
+      .select('id, status')
+      .eq('user_id', user.id)
+      .eq('date', today)
+      .maybeSingle();
+    if (!run || run.status !== 'playing') {
+      return json({ error: 'no active money run' }, 409);
+    }
+    await db.from('money_runs').update({ status: 'dead' }).eq('id', run.id);
+    return json({ success: true });
+  }
+
   // Dev tools below mirror what the client already does to its own
   // localStorage for guests (see Home.jsx) — these exist so the same
   // buttons work for a logged-in admin now that those stats live server-side.

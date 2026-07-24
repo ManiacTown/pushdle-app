@@ -5,6 +5,8 @@ import * as storage from '../lib/storage.js';
 import { pacificDateString, msUntilNextPacificMidnight } from '../lib/pacificDate.js';
 import { rollPush, rarityForStreak, formatRarity, earnedBadges, buildShareText, BADGES, RARITY_META } from '../lib/game.js';
 import { getQuoteForStreak, getBustQuoteForStreak, getPokeQuip } from '../lib/quotes.js';
+import { MONEY_SUCCESS_CHANCE } from '../lib/money.js';
+import { modeSlotStyle, MODE_TRANSITION_PHASE_MS } from '../lib/modeTransition.js';
 import { playPush, playSuccess, playBust, playBadge, playNav, playReveal, playPoke } from '../lib/sound.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { useChrome } from '../lib/ChromeContext.jsx';
@@ -248,12 +250,43 @@ export default function Home() {
   // comment for the full removal plan once it's ready for everyone). Not
   // persisted across reloads — always starts back on classic.
   const [uiMode, setUiMode] = useState('classic');
+  // Retriggers the odds-text flash below every time the mode actually
+  // changes — keyed remount (same trick as flashKey/screen-flash) is what
+  // lets the same CSS animation restart from its 0% keyframe on every
+  // switch, not just the first time.
+  const [oddsFlashKey, setOddsFlashKey] = useState(0);
+  useEffect(() => {
+    setOddsFlashKey((k) => k + 1);
+  }, [uiMode]);
+  // Drives the staggered slide transition between classic/money content —
+  // null outside a switch. See src/lib/modeTransition.js for what each
+  // phase/direction actually renders as; startModeSwitch below is what
+  // sequences exit -> flip uiMode -> enter -> clear, since only one mode's
+  // JSX is ever mounted at a time (this is a sequential swap, not two
+  // trees sliding past each other simultaneously).
+  const [modeTransition, setModeTransition] = useState(null);
+  function startModeSwitch(target) {
+    if (modeTransition || target === uiMode) return;
+    playNav(); // reused as-is — already described as "a light, airy tick"
+    const direction = target === 'money' ? 'forward' : 'backward';
+    setModeTransition({ direction, phase: 'exit' });
+    setTimeout(() => {
+      setUiMode(target);
+      setModeTransition({ direction, phase: 'enter' });
+      setTimeout(() => setModeTransition(null), MODE_TRANSITION_PHASE_MS);
+    }, MODE_TRANSITION_PHASE_MS);
+  }
   const [showMoneyShop, setShowMoneyShop] = useState(false);
   // Bumped by adminResetMoneyDay to force MoneyMode to remount — simplest
   // way to make it re-fetch a clean run state, matching how
   // adminResetDay/adminResetDayServer just wipe the row server-side and
   // let the normal load-on-mount path pick up the fresh state.
   const [moneyResetKey, setMoneyResetKey] = useState(0);
+  // Bumped by the Force Bust button (when uiMode==='money') to tell
+  // MoneyMode to bust itself in place — see the comment above
+  // adminForceBustMoney's old body for why this can't just be another
+  // moneyResetKey-style remount.
+  const [moneyForceBustSignal, setMoneyForceBustSignal] = useState(0);
   const [buttonHover, setButtonHover] = useState(false);
   const [stats, setStats] = useState(DEFAULT_STATS);
   const [earnedAtRunStart, setEarnedAtRunStart] = useState(new Set());
@@ -304,7 +337,7 @@ export default function Home() {
   const timers = useRef([]);
   const statsInitialized = useRef(false);
   const streakPanelRef = useRef(null);
-  const { setCollapsed } = useChrome();
+  const { collapsed: chromeCollapsed, setCollapsed } = useChrome();
   const { user, isAdmin, stats: authStats, setStats: setAuthStats } = useAuth();
 
   // Logged-in users' today's run lives server-side (daily_runs), and so do
@@ -422,11 +455,19 @@ export default function Home() {
   // choreographing itself — both cases want the board to feel focused,
   // uninterrupted by chrome. Falls back to collapsed=false on unmount so
   // navigating away never leaves the nav bar stuck hidden.
+  //
+  // Only pushes into the SHARED ChromeContext value while classic mode is
+  // actually the active one — MoneyMode.jsx drives the exact same shared
+  // value with its own equivalent rule while IT'S active, so whichever
+  // mode is currently mounted is the one steering this. The header below
+  // reads the shared value (chromeCollapsed), not this local one, which is
+  // what makes it react correctly to either mode instead of only ever
+  // reflecting classic's own state.status/streak.
   const midRun = state.status === 'playing' && state.streak > 0;
-  const collapsed = midRun || bustRevealing;
+  const classicCollapsed = midRun || bustRevealing;
   useEffect(() => {
-    setCollapsed(collapsed);
-  }, [collapsed, setCollapsed]);
+    if (uiMode === 'classic') setCollapsed(classicCollapsed);
+  }, [uiMode, classicCollapsed, setCollapsed]);
   useEffect(() => {
     return () => setCollapsed(false);
   }, [setCollapsed]);
@@ -529,7 +570,7 @@ export default function Home() {
       ro.disconnect();
       window.removeEventListener('resize', measureStreakPanelTop);
     };
-  }, [collapsed, state.status, state.streak, state.newBestToday, bestStreak, user]);
+  }, [classicCollapsed, state.status, state.streak, state.newBestToday, bestStreak, user]);
 
   // Once busted, tick every second so the "next run" countdown is live,
   // and re-check the date so the run auto-resets the moment it rolls over.
@@ -945,6 +986,16 @@ export default function Home() {
     setMoneyResetKey((k) => k + 1);
   }
 
+  // Shares the classic "Force bust" button (see the onClick branch below)
+  // rather than a separate button. Deliberately NOT a remount (unlike
+  // adminResetMoneyDay above) — a remount would load MoneyMode fresh from
+  // an already-'dead' row and take its "already resolved" instant-restore
+  // path (see MoneyMode.jsx), skipping the whole animated reveal sequence
+  // entirely. A bumped signal prop instead lets MoneyMode handle its own
+  // bust the same way a real one from a failed push does — shake/flash/
+  // debris, then the full timed reveal — since it already owns all of
+  // that logic and this session's real state (pushes/earnings) in memory.
+
   async function adminResetBadges() {
     clearTimers();
     resetBustVisuals();
@@ -1030,12 +1081,18 @@ export default function Home() {
   return (
     <div>
       <header
-        className={'panel spotlight header-panel' + (collapsed ? ' header-panel--collapsed' : '')}
+        className={'panel spotlight header-panel' + (chromeCollapsed ? ' header-panel--collapsed' : '')}
         onMouseMove={spotlightMove}
         style={{ textAlign: 'center' }}
       >
-        <div className="mono" style={{ fontSize: 11, letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--neon-cyan)', marginBottom: 8 }}>
-          90% you live · 10% you don't
+        <div
+          key={oddsFlashKey}
+          className={'mono odds-text' + (uiMode === 'money' ? ' odds-text--money' : ' odds-text--classic')}
+          style={{ fontSize: 11, letterSpacing: '0.18em', textTransform: 'uppercase', marginBottom: 8 }}
+        >
+          {uiMode === 'money'
+            ? `${Math.round(MONEY_SUCCESS_CHANCE * 100)}% you live · ${100 - Math.round(MONEY_SUCCESS_CHANCE * 100)}% you don't`
+            : "90% you live · 10% you don't"}
         </div>
         <h1 className="gradient-title" style={{ fontSize: 36 }}>Pushdle</h1>
         <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 8 }}>
@@ -1045,12 +1102,20 @@ export default function Home() {
 
       {/* Money-variant mode switch — TEMP admin gate, see MoneyMode.jsx's
           header comment for the full removal plan once it's ready for
-          everyone. Not persisted across reloads (see uiMode above). */}
+          everyone. Not persisted across reloads (see uiMode above).
+          Collapses right alongside the header (same class, same shared
+          chromeCollapsed signal) — this row sits above the actual game
+          content in both modes, so it should tuck away during a run same
+          as everything else above it. */}
       {isAdmin && (
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginBottom: 12 }}>
+        <div
+          className={'header-panel' + (chromeCollapsed ? ' header-panel--collapsed' : '')}
+          style={{ display: 'flex', justifyContent: 'center', gap: 8, marginBottom: 12 }}
+        >
           <button
             className="btn-ghost"
-            onClick={() => setUiMode((m) => (m === 'classic' ? 'money' : 'classic'))}
+            onClick={() => startModeSwitch(uiMode === 'classic' ? 'money' : 'classic')}
+            disabled={!!modeTransition}
             title={uiMode === 'classic' ? 'Try the money variant' : 'Back to classic'}
           >
             {uiMode === 'classic' ? '💰 Money variant →' : '← Back to classic'}
@@ -1064,7 +1129,7 @@ export default function Home() {
       )}
 
       {uiMode === 'money' ? (
-        <MoneyMode key={moneyResetKey} />
+        <MoneyMode key={moneyResetKey} forceBustSignal={moneyForceBustSignal} modeTransition={modeTransition} />
       ) : (
       <div
         className={shaking ? 'screen-shake' : ''}
@@ -1081,6 +1146,7 @@ export default function Home() {
             padding: '12px 30px',
             textAlign: 'center',
             marginBottom: 24,
+            ...modeSlotStyle(modeTransition, 0),
           }}
         >
           <div className="mono hover-pop" style={{ fontWeight: 700, fontSize: 42, color: 'var(--neon-green)' }}>
@@ -1102,7 +1168,7 @@ export default function Home() {
             edge shrank/rotated under them, so for that ~220ms the cracks
             visibly detached from the button's edge instead of looking like
             part of the same cracked surface flinching. */}
-        <div className={poking ? 'push-wrap--poke' : ''} style={{ position: 'relative' }}>
+        <div className={poking ? 'push-wrap--poke' : ''} style={{ position: 'relative', ...modeSlotStyle(modeTransition, 1) }}>
           <button
             onClick={push}
             onMouseEnter={() => setButtonHover(true)}
@@ -1166,7 +1232,7 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="mono" style={{ marginTop: 16, fontSize: 11, color: 'var(--text-dim)' }}>
+        <div className="mono" style={{ marginTop: 16, fontSize: 11, color: 'var(--text-dim)', ...modeSlotStyle(modeTransition, 2) }}>
           {state.status === 'dead'
             ? pokeQuip ?? bustQuote ?? 'Run over. Come back tomorrow.'
             : state.streak === 0
@@ -1175,7 +1241,7 @@ export default function Home() {
         </div>
 
         {state.status === 'dead' && (
-          <div style={{ marginTop: 24, textAlign: 'center' }}>
+          <div style={{ marginTop: 24, textAlign: 'center', ...modeSlotStyle(modeTransition, 3) }}>
             <div className="bust-reveal-row">
               {showBusted && (
                 <div
@@ -1291,8 +1357,13 @@ export default function Home() {
               </div>
               <button
                 className="btn-ghost"
-                disabled={state.status !== 'playing'}
-                onClick={() => (user ? adminForceBustServer() : bust(state.streak))}
+                // Classic's own "already playing?" disabled-check doesn't
+                // apply in money mode — MoneyMode owns its run state
+                // internally, not exposed here, so the server-side
+                // "no active run" 409 in adminForceBustMoney is what
+                // actually guards that case instead.
+                disabled={uiMode === 'classic' && state.status !== 'playing'}
+                onClick={() => (uiMode === 'money' ? setMoneyForceBustSignal((k) => k + 1) : user ? adminForceBustServer() : bust(state.streak))}
               >
                 💥 Force bust
               </button>

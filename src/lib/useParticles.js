@@ -54,40 +54,34 @@ export function useParticles() {
     );
   }
 
-  // Money-variant coin-pop (see MoneyMode.jsx) — identical trajectory math
-  // to spawnEffect above, just rendered as the real coin image
-  // (public/coin-transparent.png, .particle--coin in global.css) instead
-  // of a plain colored dot. Kept as its own function rather than adding an
-  // "asset" param to spawnEffect since spawnEffect's color also drives its
-  // box-shadow glow, which doesn't make sense for an image particle.
-  function spawnCoins(count = 10, speedScale = 1) {
-    const angleJitter = Math.random() * Math.PI * 2;
-    const newOnes = Array.from({ length: count }).map((_, i) => {
-      const angle = angleJitter + (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.35;
-      const dist = (70 + Math.random() * 90) * speedScale;
-      const sx = Math.cos(angle) * BUTTON_RADIUS;
-      const sy = Math.sin(angle) * BUTTON_RADIUS;
-      return {
-        id: particleId.current++,
-        coin: true,
-        style: {
-          '--sx': `${sx}px`,
-          '--sy': `${sy}px`,
-          '--dx': `${Math.cos(angle) * (BUTTON_RADIUS + dist)}px`,
-          '--dy': `${Math.sin(angle) * (BUTTON_RADIUS + dist)}px`,
-          '--dur': `${(0.45 + Math.random() * 0.3) / speedScale}s`,
-        },
-      };
-    });
-    const ringId = particleId.current++;
-    setParticles((p) => [...p, ...newOnes]);
-    setRings((r) => [...r, { id: ringId, color: '#ffd45e' }]);
-    const ids = newOnes.map((p) => p.id);
+  // Money-variant coin-pop (see MoneyMode.jsx) — a single coin (not a
+  // particle burst) that shoots up out of the bag and drops back down off
+  // to one side, rendered as the real coin image
+  // (public/coin-transparent.png, .particle--coin + coinPopDrop keyframe
+  // in global.css). The peak's own height/horizontal offset are
+  // randomized INDEPENDENTLY from the final landing offset (not one
+  // derived as a fraction of the other) — that's what gives real launch-
+  // angle variety (some coins arc mostly straight up, others clearly kick
+  // off to one side) instead of every pop just being a scaled copy of the
+  // same trajectory shape.
+  function popCoin() {
+    const id = particleId.current++;
+    const dx = (Math.random() - 0.5) * 130; // final landing offset
+    const peakDx = (Math.random() - 0.5) * 100; // peak's own offset — independent, not a fraction of dx
+    const peakHeight = 110 + Math.random() * 60; // 110-170px — a real launch, not a hop
+    const newOne = {
+      id,
+      coin: true,
+      style: {
+        '--coin-dx': `${dx}px`,
+        '--coin-peak-dx': `${peakDx}px`,
+        '--coin-peak-y': `${-peakHeight}px`,
+        '--dur': `${0.9 + Math.random() * 0.2}s`,
+      },
+    };
+    setParticles((p) => [...p, newOne]);
     particleTimers.current.push(
-      setTimeout(() => setParticles((p) => p.filter((x) => !ids.includes(x.id))), 900)
-    );
-    particleTimers.current.push(
-      setTimeout(() => setRings((r) => r.filter((x) => x.id !== ringId)), 700)
+      setTimeout(() => setParticles((p) => p.filter((x) => x.id !== id)), 1200)
     );
   }
 
@@ -176,5 +170,5 @@ export function useParticles() {
     setRings([]);
   }
 
-  return { particles, rings, spawnEffect, spawnCoins, spawnDebris, spawnSpark, clearParticles };
+  return { particles, rings, spawnEffect, popCoin, spawnDebris, spawnSpark, clearParticles };
 }

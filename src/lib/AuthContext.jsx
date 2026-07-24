@@ -124,10 +124,14 @@ export function AuthProvider({ children }) {
           body: { bestStreak: localBest, ...localStats },
         });
         if (error) throw error;
-        setStats(data);
+        // Merged, not replaced — this resolves independently of (and in no
+        // guaranteed order relative to) the money-stats fetch above, so a
+        // plain setStats(data) here could wipe out moneyWalletCents/
+        // moneyLifetimeCents if this happens to land second.
+        setStats((prev) => ({ ...prev, ...data }));
       } catch (err) {
         console.error('stats sync failed, falling back to local values:', err);
-        setStats({ bestStreak: localBest, ...localStats });
+        setStats((prev) => ({ ...prev, bestStreak: localBest, ...localStats }));
       }
     })();
   }, [user]);

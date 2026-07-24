@@ -545,6 +545,50 @@ input:focus{
   opacity: 1;
 }
 
+/* Odds line up top ("90% you live..." / "95% you live..." in money mode)
+   — a quick white flash settling into the target color on every mode
+   switch, keyed-remount-retriggered from Home.jsx (see oddsFlashKey) so it
+   replays every time rather than just once. Two separate keyframes (one
+   per direction) rather than one shared one, since each needs to settle on
+   a DIFFERENT final color — animation-fill-mode:forwards holds that final
+   frame instead of snapping back to the class's own (nonexistent) color
+   the instant the animation ends. */
+@keyframes oddsFlashToMoney{
+  0%{ color: #fff; text-shadow: 0 0 10px #fff, 0 0 22px var(--neon-green); }
+  100%{ color: var(--neon-green); text-shadow: none; }
+}
+@keyframes oddsFlashToClassic{
+  0%{ color: #fff; text-shadow: 0 0 10px #fff, 0 0 22px var(--neon-cyan); }
+  100%{ color: var(--neon-cyan); text-shadow: none; }
+}
+.odds-text--money{
+  animation: oddsFlashToMoney 0.7s ease-out forwards;
+}
+.odds-text--classic{
+  animation: oddsFlashToClassic 0.7s ease-out forwards;
+}
+
+/* Classic <-> money mode-switch transition — see src/lib/modeTransition.js
+   for the timing/direction logic that picks which of these four plays on
+   a given element and when. Small horizontal travel (36px) + fade, same
+   "swipe" feel in both directions, just mirrored. */
+@keyframes modeSlideOutLeft{
+  0%{ transform: translateX(0); opacity: 1; }
+  100%{ transform: translateX(-36px); opacity: 0; }
+}
+@keyframes modeSlideOutRight{
+  0%{ transform: translateX(0); opacity: 1; }
+  100%{ transform: translateX(36px); opacity: 0; }
+}
+@keyframes modeSlideInFromLeft{
+  0%{ transform: translateX(-36px); opacity: 0; }
+  100%{ transform: translateX(0); opacity: 1; }
+}
+@keyframes modeSlideInFromRight{
+  0%{ transform: translateX(36px); opacity: 0; }
+  100%{ transform: translateX(0); opacity: 1; }
+}
+
 /* ---- Header panel collapse during an active run ---- */
 .header-panel{
   overflow: hidden;
@@ -722,31 +766,233 @@ input:focus{
   animation: buttonPoke 0.22s ease-out;
 }
 
-/* ---- Money-variant button reskin (see MoneyMode.jsx, admin-gated) ---- */
-/* New modifier classes, not new CSS-var values — .push-btn--playing/--dead
-   above are hardcoded rgba(), not var-driven, so that's the correct
-   parallel here too. Gold for "in progress" (reusing #ffd45e, the same
-   gold already used for "new best"/selected-flair/rank-1 elsewhere in this
-   codebase, not a new invented color) and green for "cashed out"
-   (var(--neon-green)) — busting stays the same red as classic mode
-   (.push-btn--dead, reused as-is below) since "you lost" is a universal
-   signal worth keeping consistent across both modes rather than folding
-   it into the green/gold theme too. */
-.push-btn--money-playing{
-  border: 2px solid rgba(255,212,94,0.6);
-  box-shadow: 0 0 30px rgba(255,212,94,0.4);
+/* ---- Money-variant bag icon (see MoneyMode.jsx, admin-gated) ---- */
+/* No button chrome at all (no border/background/box-shadow ring like
+   .push-btn) — the money-bag image itself IS the button, so state (gold
+   "in progress"/green "cashed out"/red "busted") is carried by a
+   drop-shadow glow that hugs the bag's own silhouette instead of a
+   circular box-shadow around empty space. Same gold (#ffd45e, already
+   used for "new best"/selected-flair/rank-1 elsewhere) and same red as
+   classic's own bust color, for consistency with the rest of the site. */
+.money-bag-btn{
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.15s ease;
 }
-.push-btn--money-playing:hover:not(:disabled){
-  transform: scale(1.05);
-  box-shadow: 0 0 55px rgba(255,212,94,0.75);
-  border-color: rgba(255,212,94,0.95);
+.money-bag-btn:disabled{
+  cursor: default;
 }
-.push-btn--money-playing:active:not(:disabled){
+.money-bag-btn img{
+  display: block;
+  transition: filter 0.25s ease;
+}
+.money-bag-btn--playing img{
+  filter: drop-shadow(0 0 16px rgba(255,212,94,0.65));
+}
+/* Shrinks slightly on hover (an anticipatory "about to be squeezed" read,
+   not the classic push-btn's grow-on-hover) — the glow still brightens so
+   it's still clearly "interactive", just a different physical read fitting
+   a squeezable bag rather than a button. */
+.money-bag-btn--playing:hover:not(:disabled){
   transform: scale(0.96);
 }
-.push-btn--money-cashed{
-  border: 2px solid rgba(57,255,143,0.6);
-  box-shadow: 0 0 35px rgba(57,255,143,0.4);
+.money-bag-btn--playing:hover:not(:disabled) img{
+  filter: drop-shadow(0 0 26px rgba(255,212,94,0.9));
+}
+.money-bag-btn--cashed img{
+  filter: drop-shadow(0 0 18px rgba(57,255,143,0.7));
+}
+.money-bag-btn--dead img{
+  filter: drop-shadow(0 0 18px rgba(255,45,109,0.6)) grayscale(0.4);
+}
+/* Reuses the same gentle scale pulse as .push-btn--idle-pulse's
+   idlePulseGlow keyframe would give a bordered button, just on transform
+   alone here (no box-shadow to animate without a box to shadow). */
+@keyframes moneyBagIdlePulse{
+  0%, 100%{ transform: scale(1); }
+  50%{ transform: scale(1.05); }
+}
+.money-bag-btn--idle-pulse{
+  animation: moneyBagIdlePulse 2.4s ease-in-out infinite;
+}
+/* Small glowing "tap" invite floating above the bag whenever it's actually
+   idle (see the condition in MoneyMode.jsx, matching --idle-pulse's own) —
+   the classic push button signals the same "still here, tap again" idea
+   via a pulsing border glow (bustedSmolder/idlePulseGlow), but this button
+   is borderless (see the comment above .money-bag-btn), so there's nothing
+   to glow except a label instead. Synced to the same 2.4s cadence as the
+   bag's own scale pulse so both read as one heartbeat, not two competing
+   animations. */
+@keyframes moneyTapAuraGlow{
+  0%, 100%{ opacity: 0.55; text-shadow: 0 0 8px rgba(255,212,94,0.5); }
+  50%{ opacity: 1; text-shadow: 0 0 18px rgba(255,212,94,0.95), 0 0 26px rgba(57,255,143,0.5); }
+}
+.money-tap-aura{
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #ffd45e;
+  pointer-events: none;
+  animation: moneyTapAuraGlow 2.4s ease-in-out infinite;
+}
+/* Press-then-bounce sequence (see MoneyMode.jsx's push()) — driven by JS
+   toggling these two classes rather than a plain :active pseudo-class,
+   since it's a two-stage sequence (squash immediately on click, THEN
+   spring back up with an overshoot once the server confirms the push
+   succeeded) rather than a single held state. .money-bag-btn--pressing
+   plays first and holds its squashed end state (animation-fill-mode:
+   forwards) for however long the network round trip takes; when the
+   response lands, JS swaps to --bouncing, which picks up from that same
+   squashed shape and springs past scale(1) before settling — timed to
+   read as the bag flexing to launch the coin (see popCoin, called at the
+   same moment the bounce class goes on). */
+@keyframes bagPress{
+  0%{ transform: scale(1); }
+  100%{ transform: scale(0.86, 0.9); }
+}
+.money-bag-btn--pressing{
+  animation: bagPress 0.15s ease-out forwards;
+}
+@keyframes bagBounce{
+  0%{ transform: scale(0.86, 0.9); }
+  45%{ transform: scale(1.16, 0.86); }
+  70%{ transform: scale(0.93, 1.07); }
+  100%{ transform: scale(1); }
+}
+.money-bag-btn--bouncing{
+  animation: bagBounce 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+/* Cash-out coin-flies-to-wallet effect (see launchCoinToWallet in
+   MoneyMode.jsx). position:fixed with viewport coordinates set inline in
+   JS (--fly-dx/--fly-dy are the measured delta between the "$X earned"
+   text and the wallet panel) — deliberately fixed, not absolute, since
+   those two elements don't share a positioned ancestor close enough to
+   make relative math simple. */
+@keyframes moneyFlyCoin{
+  0%{ transform: translate(-50%, -50%) scale(1); opacity: 1; }
+  100%{ transform: translate(calc(-50% + var(--fly-dx, 0px)), calc(-50% + var(--fly-dy, 0px))) scale(0.4); opacity: 0.5; }
+}
+.money-fly-coin{
+  position: fixed;
+  width: 22px;
+  height: 22px;
+  background: url('/coin-transparent.png') center / contain no-repeat;
+  pointer-events: none;
+  z-index: 600;
+  animation: moneyFlyCoin 0.65s cubic-bezier(0.32, 0, 0.4, 1) forwards;
+}
+/* Rising "+$X" confirmation once the coin above actually lands — a plain
+   child of the wallet panel itself (which is already position:relative),
+   so this can just be position:absolute/centered rather than needing its
+   own measured coordinates like the flying coin does. */
+@keyframes moneyWalletFloatUp{
+  0%{ transform: translate(-50%, -50%) translateY(0); opacity: 0; }
+  15%{ opacity: 1; }
+  100%{ transform: translate(-50%, -50%) translateY(-40px); opacity: 0; }
+}
+.money-wallet-floater{
+  position: absolute;
+  left: 50%;
+  top: 30%;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--neon-green);
+  white-space: nowrap;
+  pointer-events: none;
+  animation: moneyWalletFloatUp 1.15s ease-out forwards;
+}
+
+/* Wallet panel "exit right" while a push is out, same idea as
+   .header-panel/--collapsed's shrink-and-fade but horizontal (translateX)
+   instead of vertical, since this panel sits to the right of the run
+   panel rather than above the whole page. Always rendered (see
+   MoneyMode.jsx) — toggling this class, not mounting/unmounting, both
+   lets the transition actually play and keeps walletPanelRef pointing at
+   a stable element the coin-flight math can measure. */
+.money-wallet-panel{
+  overflow: hidden;
+  max-width: 160px;
+  transition: opacity 0.4s ease, transform 0.4s ease, max-width 0.4s ease;
+}
+.money-wallet-panel--collapsed{
+  opacity: 0;
+  transform: translateX(28px);
+  max-width: 0;
+  pointer-events: none;
+}
+
+/* Cash Out button's own wrapper (see MoneyMode.jsx) — same "always
+   mounted, class-toggled" collapse technique as .money-wallet-panel just
+   above, but a vertical shrink (max-height) since this sits in the normal
+   document flow below the bag rather than beside another panel. Holds the
+   button visible (still finishing its click bounce) for a beat after
+   cash-out instead of it disappearing the instant run.status flips off
+   'playing', which used to read as an abrupt vanish. */
+.money-cashout-wrap{
+  overflow: hidden;
+  max-height: 64px;
+  margin-top: 16px;
+  transition: opacity 0.3s ease, transform 0.3s ease, max-height 0.3s ease, margin-top 0.3s ease;
+}
+.money-cashout-wrap--collapsed{
+  opacity: 0;
+  transform: translateY(-8px);
+  max-height: 0;
+  margin-top: 0;
+  pointer-events: none;
+}
+
+/* Small green/gold burst right where the coin lands on the wallet (see
+   spawnWalletImpact in MoneyMode.jsx) — position:fixed with coordinates
+   set inline in JS, same technique as .money-fly-coin just for a radial
+   burst instead of a point-to-point flight. */
+@keyframes moneyImpactBurst{
+  0%{ transform: translate(-50%, -50%) translate(0, 0) scale(1); opacity: 1; }
+  100%{ transform: translate(-50%, -50%) translate(var(--dx, 0px), var(--dy, 0px)) scale(0.3); opacity: 0; }
+}
+.money-impact-spark{
+  position: fixed;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 600;
+  animation: moneyImpactBurst 0.5s ease-out forwards;
+}
+
+/* A colored fill instead of .btn-ghost's plain transparent border, so the
+   one action that actually banks real money reads as more prominent than
+   a purely cosmetic ghost button. */
+.btn-cash-out{
+  background: rgba(57,255,143,0.14);
+  border-color: rgba(57,255,143,0.55);
+  color: var(--neon-green);
+}
+.btn-cash-out:hover{
+  background: rgba(57,255,143,0.22);
+  border-color: rgba(57,255,143,0.85);
+  color: var(--neon-green);
+}
+/* One-shot expand-then-settle bounce on click (see bankBtnAnim in
+   MoneyMode.jsx) — pairs with spawnBankBorderSparkles' outline sparkles as
+   the click confirmation. Not infinite (unlike the idle-pulse animations
+   elsewhere) — it plays once and MoneyMode clears the class ~450ms later. */
+@keyframes bankButtonPop{
+  0%{ transform: scale(1); }
+  40%{ transform: scale(1.14); }
+  70%{ transform: scale(0.96); }
+  100%{ transform: scale(1); }
+}
+.btn-cash-out--pop{
+  animation: bankButtonPop 0.45s ease-out;
 }
 
 /* ---- Success/bust particle burst ---- */
@@ -785,16 +1031,47 @@ input:focus{
   animation-timing-function: ease-in;
   border-radius: 3px;
 }
-/* Money-variant coin-pop (see MoneyMode.jsx/spawnCoins) — the real coin
-   asset instead of a plain colored dot; overrides .particle's solid
-   background/box-shadow glow with the image itself, no glow needed since
-   the coin art already reads clearly on its own. */
+/* Money-variant coin-pop (see MoneyMode.jsx/popCoin) — a single coin
+   shooting up out of the bag and dropping back down off to one side,
+   rather than a radial particle burst. Overrides .particle's default
+   particleBurst animation-name/duration (see the base .particle rule) with
+   coinPopDrop below; timing-function/fill-mode (ease-out/forwards) are
+   still inherited from that base shorthand since they're already right. */
+/* Real launch-then-fall physics, not a single uniform ease over the whole
+   trip — a keyframe's own animation-timing-function sets the curve used
+   getting FROM that keyframe TO the next one, so 0%->42% gets a
+   decelerating "shot upward, gravity fighting it the whole way, slowing
+   toward the peak" curve, and 42%->100% gets an accelerating "gravity
+   wins, falling faster and faster" curve. Two different physical phases,
+   not one blended average. */
+@keyframes coinPopDrop{
+  0%{
+    transform: translate(-50%, -50%) translateY(0) translateX(0) rotate(0deg) scale(1);
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.13, 0.62, 0.32, 1);
+  }
+  42%{
+    /* --coin-peak-y/--coin-peak-dx are their own independent randoms (see
+       popCoin in useParticles.js) — not derived from --coin-dx — which is
+       what actually gives different pops different launch angles/heights
+       instead of every coin tracing the same scaled-down arc. */
+    transform: translate(-50%, -50%) translateY(var(--coin-peak-y, -110px)) translateX(var(--coin-peak-dx, 0px)) rotate(190deg) scale(1);
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.56, 0, 0.86, 0.36);
+  }
+  100%{
+    transform: translate(-50%, -50%) translateY(95px) translateX(var(--coin-dx, 20px)) rotate(560deg) scale(0.75);
+    opacity: 0;
+  }
+}
 .particle--coin{
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   border-radius: 0;
   background: url('/coin-transparent.png') center / contain no-repeat;
   box-shadow: none;
+  animation-name: coinPopDrop;
+  animation-duration: var(--dur, 0.9s);
 }
 
 /* Expanding ring that flashes off the button on every push outcome. */
