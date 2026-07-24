@@ -77,6 +77,15 @@ Deno.serve(async (req) => {
     return json({ success: true });
   }
 
+  // Money-variant dev tool — same pattern as reset_day, just against
+  // money_runs. Deleting (not just resetting status) matters here since
+  // resolve_money_push's own "not found" branch is what recreates a fresh
+  // playing row on the next push — same as daily_runs' equivalent.
+  if (action === 'reset_money_day') {
+    await db.from('money_runs').delete().eq('user_id', user.id).eq('date', today);
+    return json({ success: true });
+  }
+
   // Dev tools below mirror what the client already does to its own
   // localStorage for guests (see Home.jsx) — these exist so the same
   // buttons work for a logged-in admin now that those stats live server-side.

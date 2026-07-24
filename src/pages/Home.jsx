@@ -249,6 +249,11 @@ export default function Home() {
   // persisted across reloads — always starts back on classic.
   const [uiMode, setUiMode] = useState('classic');
   const [showMoneyShop, setShowMoneyShop] = useState(false);
+  // Bumped by adminResetMoneyDay to force MoneyMode to remount — simplest
+  // way to make it re-fetch a clean run state, matching how
+  // adminResetDay/adminResetDayServer just wipe the row server-side and
+  // let the normal load-on-mount path pick up the fresh state.
+  const [moneyResetKey, setMoneyResetKey] = useState(0);
   const [buttonHover, setButtonHover] = useState(false);
   const [stats, setStats] = useState(DEFAULT_STATS);
   const [earnedAtRunStart, setEarnedAtRunStart] = useState(new Set());
@@ -926,6 +931,20 @@ export default function Home() {
     await loadRunState();
   }
 
+  // Deletes today's money_runs row server-side, then remounts MoneyMode
+  // (via moneyResetKey) so it re-fetches — same "wipe, then let the normal
+  // load-on-mount path pick up the fresh state" approach as
+  // adminResetDayServer above, just without needing this component to know
+  // anything about MoneyMode's internal state shape.
+  async function adminResetMoneyDay() {
+    const { error } = await supabase.functions.invoke('admin', { body: { action: 'reset_money_day' } });
+    if (error) {
+      console.error('reset money day failed:', error);
+      return;
+    }
+    setMoneyResetKey((k) => k + 1);
+  }
+
   async function adminResetBadges() {
     clearTimers();
     resetBustVisuals();
@@ -1045,7 +1064,7 @@ export default function Home() {
       )}
 
       {uiMode === 'money' ? (
-        <MoneyMode />
+        <MoneyMode key={moneyResetKey} />
       ) : (
       <div
         className={shaking ? 'screen-shake' : ''}
@@ -1280,6 +1299,7 @@ export default function Home() {
               <button className="btn-ghost" onClick={user ? adminResetDayServer : adminResetDay}>
                 ⏱ Reset day timer
               </button>
+              <button className="btn-ghost" onClick={adminResetMoneyDay}>⏱ Reset money timer</button>
               <button className="btn-ghost" onClick={resetBestStreak}>↺ Reset best streak</button>
               <button className="btn-ghost" onClick={adminResetBadges}>🏅 Reset all badges</button>
               <button className="btn-ghost" onClick={adminClaimAllBadges}>🏆 Claim all badges</button>

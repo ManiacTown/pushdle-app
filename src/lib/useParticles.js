@@ -54,6 +54,43 @@ export function useParticles() {
     );
   }
 
+  // Money-variant coin-pop (see MoneyMode.jsx) — identical trajectory math
+  // to spawnEffect above, just rendered as the real coin image
+  // (public/coin-transparent.png, .particle--coin in global.css) instead
+  // of a plain colored dot. Kept as its own function rather than adding an
+  // "asset" param to spawnEffect since spawnEffect's color also drives its
+  // box-shadow glow, which doesn't make sense for an image particle.
+  function spawnCoins(count = 10, speedScale = 1) {
+    const angleJitter = Math.random() * Math.PI * 2;
+    const newOnes = Array.from({ length: count }).map((_, i) => {
+      const angle = angleJitter + (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.35;
+      const dist = (70 + Math.random() * 90) * speedScale;
+      const sx = Math.cos(angle) * BUTTON_RADIUS;
+      const sy = Math.sin(angle) * BUTTON_RADIUS;
+      return {
+        id: particleId.current++,
+        coin: true,
+        style: {
+          '--sx': `${sx}px`,
+          '--sy': `${sy}px`,
+          '--dx': `${Math.cos(angle) * (BUTTON_RADIUS + dist)}px`,
+          '--dy': `${Math.sin(angle) * (BUTTON_RADIUS + dist)}px`,
+          '--dur': `${(0.45 + Math.random() * 0.3) / speedScale}s`,
+        },
+      };
+    });
+    const ringId = particleId.current++;
+    setParticles((p) => [...p, ...newOnes]);
+    setRings((r) => [...r, { id: ringId, color: '#ffd45e' }]);
+    const ids = newOnes.map((p) => p.id);
+    particleTimers.current.push(
+      setTimeout(() => setParticles((p) => p.filter((x) => !ids.includes(x.id))), 900)
+    );
+    particleTimers.current.push(
+      setTimeout(() => setRings((r) => r.filter((x) => x.id !== ringId)), 700)
+    );
+  }
+
   // Bust-only companion to spawnEffect, fired alongside it rather than
   // instead of it — the red burst reads as the impact spark, this reads as
   // the wreckage falling afterward. Angles are constrained to a downward
@@ -139,5 +176,5 @@ export function useParticles() {
     setRings([]);
   }
 
-  return { particles, rings, spawnEffect, spawnDebris, spawnSpark, clearParticles };
+  return { particles, rings, spawnEffect, spawnCoins, spawnDebris, spawnSpark, clearParticles };
 }

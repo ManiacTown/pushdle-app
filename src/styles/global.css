@@ -785,6 +785,17 @@ input:focus{
   animation-timing-function: ease-in;
   border-radius: 3px;
 }
+/* Money-variant coin-pop (see MoneyMode.jsx/spawnCoins) — the real coin
+   asset instead of a plain colored dot; overrides .particle's solid
+   background/box-shadow glow with the image itself, no glow needed since
+   the coin art already reads clearly on its own. */
+.particle--coin{
+  width: 16px;
+  height: 16px;
+  border-radius: 0;
+  background: url('/coin-transparent.png') center / contain no-repeat;
+  box-shadow: none;
+}
 
 /* Expanding ring that flashes off the button on every push outcome. */
 @keyframes ringPulse{

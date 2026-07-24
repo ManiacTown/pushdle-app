@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../lib/AuthContext.jsx';
+import { useChrome } from '../lib/ChromeContext.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { useParticles } from '../lib/useParticles.js';
 import { pacificDateString, msUntilNextPacificMidnight } from '../lib/pacificDate.js';
@@ -17,8 +18,9 @@ import { playPush, playSuccess, playBust } from '../lib/sound.js';
 // etc.) rather than threading a third value through it — classic mode's
 // bust-reveal choreography is delicate and this avoids any risk of
 // regressing it. v1's reveal is intentionally simple (an immediate result,
-// not a timed multi-stage sequence like classic's runBustSequence) — can
-// be upgraded later once the mechanic itself is validated.
+// not a timed multi-stage sequence like classic's runBustSequence) — the
+// chrome-collapse and bust-impact effects (shake/flash/debris) ARE ported
+// over 1:1 from Home.jsx though, for visual parity with classic.
 function formatCountdown(ms) {
   const total = Math.max(0, Math.floor(ms / 1000));
   const h = String(Math.floor(total / 3600)).padStart(2, '0');
@@ -31,10 +33,29 @@ const DEFAULT_RUN = { status: 'loading', pushes: 0, earningsCents: 0 };
 
 export default function MoneyMode() {
   const { user, stats, setStats } = useAuth();
-  const { particles, rings, spawnEffect } = useParticles();
+  const { setCollapsed } = useChrome();
+  const { particles, rings, spawnEffect, spawnCoins, spawnDebris } = useParticles();
   const [run, setRun] = useState(DEFAULT_RUN);
   const [rolling, setRolling] = useState(false);
   const [tick, setTick] = useState(0);
+  // Bust impact effects — same pair Home.jsx uses (see triggerBust there).
+  const [shaking, setShaking] = useState(false);
+  const [shakeAmount, setShakeAmount] = useState(6);
+  const [flashKey, setFlashKey] = useState(0);
+  const timers = useRef([]);
+
+  // Header + nav bar collapse (see ChromeContext) whenever a run is in
+  // progress — identical rule to Home.jsx's midRun (state.status==='playing'
+  // && state.streak>0), just against this mode's own run state. No
+  // bustRevealing-equivalent here since v1 has no timed reveal to protect
+  // (see the file header) — resolved just un-collapses immediately.
+  const midRun = run.status === 'playing' && run.pushes > 0;
+  useEffect(() => {
+    setCollapsed(midRun);
+  }, [midRun, setCollapsed]);
+  useEffect(() => {
+    return () => setCollapsed(false);
+  }, [setCollapsed]);
 
   // Gold idle-pulse while this mode is mounted — reuses .push-btn--idle-pulse
   // and the shared idlePulseGlow keyframe unchanged (both already read
@@ -58,6 +79,10 @@ export default function MoneyMode() {
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    return () => timers.current.forEach(clearTimeout);
   }, []);
 
   // Loads today's existing run, if any — a fresh day (or a first-ever
@@ -97,10 +122,22 @@ export default function MoneyMode() {
       if (error || !data) throw error ?? new Error('no response');
       setRun({ status: data.status, pushes: data.pushes, earningsCents: data.earningsCents });
       if (data.success) {
-        spawnEffect('#ffd45e', 16, 1);
+        spawnCoins(10, 1);
         playSuccess(data.pushes);
       } else {
+        // Same bust-impact trio as Home.jsx's triggerBust: screen flash,
+        // screen shake (amplitude scaled by how far the run got, same 0-1
+        // curve capped at pushes=30), and falling debris alongside the red
+        // burst — spawnEffect's red burst is the "impact", spawnDebris is
+        // the wreckage falling after.
         playBust();
+        setFlashKey((k) => k + 1);
+        const bustIntensity = Math.min(1, data.pushes / 30);
+        setShakeAmount(4 + bustIntensity * 14);
+        setShaking(true);
+        timers.current.push(setTimeout(() => setShaking(false), 500));
+        spawnEffect('var(--neon-red)', 24);
+        spawnDebris(bustIntensity);
       }
     } catch (err) {
       console.error('money push failed:', err);
@@ -137,89 +174,99 @@ export default function MoneyMode() {
   const resolved = run.status === 'dead' || run.status === 'cashed_out';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+    <>
       <div
-        className="spotlight"
-        style={{
-          background: '#06060a',
-          border: '1px solid rgba(255,212,94,0.4)',
-          borderRadius: 12,
-          padding: '12px 30px',
-          textAlign: 'center',
-          marginBottom: 24,
-        }}
+        className={shaking ? 'screen-shake' : ''}
+        style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', '--shake-amount': `${shakeAmount}px` }}
       >
-        <div className="mono hover-pop" style={{ fontWeight: 700, fontSize: 42, color: '#ffd45e' }}>
-          {formatCents(run.earningsCents)}
-        </div>
-        <div className="mono" style={{ fontSize: 9, letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
-          {run.status === 'cashed_out' ? 'banked' : "today's run"}
-        </div>
-        <div className="mono" style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6 }}>
-          Wallet: {formatCents(stats?.moneyWalletCents)} · Lifetime: {formatCents(stats?.moneyLifetimeCents)}
-        </div>
-      </div>
-
-      <div style={{ position: 'relative' }}>
-        <button
-          onClick={push}
-          disabled={rolling || run.status !== 'playing'}
-          className={
-            'push-btn' +
-            (run.status === 'dead'
-              ? ' push-btn--dead'
-              : run.status === 'cashed_out'
-              ? ' push-btn--money-cashed'
-              : ' push-btn--money-playing push-btn--idle-pulse')
-          }
+        <div
+          className="spotlight"
           style={{
-            width: 190,
-            height: 190,
-            borderRadius: '50%',
-            background: 'var(--panel)',
-            color: 'var(--text)',
-            fontWeight: 700,
-            fontSize: 16,
-            letterSpacing: '0.06em',
-            textTransform: 'uppercase',
+            background: '#06060a',
+            border: '1px solid rgba(255,212,94,0.4)',
+            borderRadius: 12,
+            padding: '12px 30px',
+            textAlign: 'center',
+            marginBottom: 24,
           }}
         >
-          {/* Placeholder emoji — swap for the real money-bag art
-              (public/money-bag.png, same convention as NavBar.jsx's
-              question-mark.png) once it's supplied. */}
-          {run.status === 'playing' ? '💰' : run.status === 'cashed_out' ? '✅' : '💥'}
-        </button>
-        <div className="particle-field">
-          {rings.map((r) => (
-            <div key={r.id} className="pulse-ring" style={{ '--ring-color': r.color }} />
-          ))}
-          {particles.map((p) => (
-            <div key={p.id} className={'particle' + (p.debris ? ' particle--debris' : '')} style={p.style} />
-          ))}
+          <div className="mono hover-pop" style={{ fontWeight: 700, fontSize: 42, color: '#ffd45e' }}>
+            {formatCents(run.earningsCents)}
+          </div>
+          <div className="mono" style={{ fontSize: 9, letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
+            {run.status === 'cashed_out' ? 'banked' : "today's run"}
+          </div>
+          <div className="mono" style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6 }}>
+            Wallet: {formatCents(stats?.moneyWalletCents)} · Lifetime: {formatCents(stats?.moneyLifetimeCents)}
+          </div>
         </div>
+
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={push}
+            disabled={rolling || run.status !== 'playing'}
+            className={
+              'push-btn' +
+              (run.status === 'dead'
+                ? ' push-btn--dead'
+                : run.status === 'cashed_out'
+                ? ' push-btn--money-cashed'
+                : ' push-btn--money-playing push-btn--idle-pulse')
+            }
+            style={{
+              width: 190,
+              height: 190,
+              borderRadius: '50%',
+              background: 'var(--panel)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            {/* Border/glow color (see the className above) carries the
+                playing/cashed-out/busted state — the icon itself stays the
+                same money bag throughout, same reasoning as classic's
+                button always showing its text label regardless of status. */}
+            <img src="/money-bag-flat.png" alt="" width={110} height={110} style={{ display: 'block', pointerEvents: 'none' }} />
+          </button>
+          <div className="particle-field">
+            {rings.map((r) => (
+              <div key={r.id} className="pulse-ring" style={{ '--ring-color': r.color }} />
+            ))}
+            {particles.map((p) => (
+              <div
+                key={p.id}
+                className={'particle' + (p.debris ? ' particle--debris' : '') + (p.coin ? ' particle--coin' : '')}
+                style={p.style}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="mono" style={{ marginTop: 16, fontSize: 11, color: 'var(--text-dim)', textAlign: 'center' }}>
+          {run.status === 'dead'
+            ? 'Busted — this run’s earnings are gone. Cashed-out money is always safe.'
+            : run.status === 'cashed_out'
+            ? `Cashed out ${formatCents(run.earningsCents)}!`
+            : run.pushes === 0
+            ? `Tap to take your first push. ${Math.round(MONEY_SUCCESS_CHANCE * 100)}% survive after that.`
+            : `$1 a push, +$3 every ${MONEY_BONUS_EVERY}th. Cash out any time.`}
+        </div>
+
+        {run.status === 'playing' && run.pushes > 0 && (
+          <button className="btn-ghost" style={{ marginTop: 16 }} onClick={cashOut} disabled={rolling}>
+            💵 Cash out {formatCents(run.earningsCents)}
+          </button>
+        )}
+
+        {resolved && (
+          <div className="mono" style={{ marginTop: 20, fontSize: 11, color: 'var(--text-dim)' }}>
+            Next run in {formatCountdown(msUntilNextPacificMidnight())}
+          </div>
+        )}
       </div>
 
-      <div className="mono" style={{ marginTop: 16, fontSize: 11, color: 'var(--text-dim)', textAlign: 'center' }}>
-        {run.status === 'dead'
-          ? 'Busted — this run’s earnings are gone. Cashed-out money is always safe.'
-          : run.status === 'cashed_out'
-          ? `Cashed out ${formatCents(run.earningsCents)}!`
-          : run.pushes === 0
-          ? `Tap to take your first push. ${Math.round(MONEY_SUCCESS_CHANCE * 100)}% survive after that.`
-          : `$1 a push, +$3 every ${MONEY_BONUS_EVERY}th. Cash out any time.`}
-      </div>
-
-      {run.status === 'playing' && run.pushes > 0 && (
-        <button className="btn-ghost" style={{ marginTop: 16 }} onClick={cashOut} disabled={rolling}>
-          💵 Cash out {formatCents(run.earningsCents)}
-        </button>
-      )}
-
-      {resolved && (
-        <div className="mono" style={{ marginTop: 20, fontSize: 11, color: 'var(--text-dim)' }}>
-          Next run in {formatCountdown(msUntilNextPacificMidnight())}
-        </div>
-      )}
-    </div>
+      {flashKey > 0 && <div key={flashKey} className="screen-flash" />}
+    </>
   );
 }
