@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured } from './supabaseClient.js';
 import * as storage from './storage.js';
+import { hasSeenOnboardingLocally } from './onboarding.js';
 
 const AuthContext = createContext(null);
 
@@ -13,6 +14,11 @@ export function AuthProvider({ children }) {
   // flight. See Home.jsx/Profile.jsx, which read this instead of
   // storage.js whenever a user is logged in.
   const [stats, setStats] = useState(null);
+  // Whether THIS account has dismissed the first-visit onboarding modal on
+  // any device — null while logged out or still loading (see
+  // OnboardingModal.jsx, which treats null as "don't know yet, don't
+  // render"). Guests never touch this; they check localStorage directly.
+  const [onboardingSeen, setOnboardingSeenState] = useState(null);
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
@@ -35,6 +41,7 @@ export function AuthProvider({ children }) {
       setRole(null);
       setSelectedEmojiState(null);
       setStats(null);
+      setOnboardingSeenState(null);
       return;
     }
     supabase
@@ -45,6 +52,43 @@ export function AuthProvider({ children }) {
       .then(({ data }) => {
         setRole(data?.role ?? 'player');
         setSelectedEmojiState(data?.selected_emoji ?? null);
+      });
+
+    // Deliberately a separate query from role/selected_emoji above, not
+    // folded into the same .select() — Postgrest rejects a select() as a
+    // whole if ANY requested column doesn't exist yet, so bundling this in
+    // would mean a not-yet-migrated database (missing onboarding_seen)
+    // breaks role/flair loading too (silently defaulting every logged-in
+    // user to 'player' with no flair) instead of just this one feature
+    // quietly no-op'ing until the column exists.
+    supabase
+      .from('profiles')
+      .select('onboarding_seen')
+      .eq('id', user.id)
+      .single()
+      .then(({ data, error }) => {
+        if (error) {
+          setOnboardingSeenState(hasSeenOnboardingLocally());
+          return;
+        }
+        const serverSeen = data?.onboarding_seen ?? false;
+        // A guest who dismissed the modal locally, then signed up — or an
+        // existing account logging in on a device that already dismissed
+        // it pre-login — should never see it again either. Only ever
+        // pushes true, and only when the server doesn't already have it,
+        // same "OR, never lowers" philosophy as merge_local_stats below.
+        if (hasSeenOnboardingLocally() && !serverSeen) {
+          setOnboardingSeenState(true); // optimistic — no need to wait on the round trip
+          supabase
+            .from('profiles')
+            .update({ onboarding_seen: true })
+            .eq('id', user.id)
+            .then(({ error }) => {
+              if (error) console.error('onboarding_seen carry-over failed:', error);
+            });
+        } else {
+          setOnboardingSeenState(serverSeen);
+        }
       });
 
     // Merges any locally-tracked progress (from before stats were
@@ -114,6 +158,15 @@ export function AuthProvider({ children }) {
     setSelectedEmojiState(emoji);
   }
 
+  // Called by OnboardingModal.jsx when a logged-in player dismisses it —
+  // only ever sets true, mirroring the column's own one-way semantics.
+  async function markOnboardingSeen() {
+    if (!user) return;
+    setOnboardingSeenState(true); // optimistic, same reasoning as the carry-over above
+    const { error } = await supabase.from('profiles').update({ onboarding_seen: true }).eq('id', user.id);
+    if (error) console.error('failed to sync onboarding_seen:', error);
+  }
+
   return (
     <AuthContext.Provider
       value={{
@@ -127,6 +180,10 @@ export function AuthProvider({ children }) {
         // Home on a later remount — sees it immediately rather than the
         // stale login-time merge snapshot.
         setStats,
+        // null = logged out, or logged in but not loaded yet — see
+        // OnboardingModal.jsx, which treats null as "don't render yet".
+        onboardingSeen,
+        markOnboardingSeen,
         signUp,
         signIn,
         logout,

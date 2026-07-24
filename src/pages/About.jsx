@@ -1,4 +1,5 @@
 import { spotlightMove } from '../lib/spotlight.js';
+import OddsBar from '../components/OddsBar.jsx';
 import {
   SUCCESS_CHANCE,
   FIRST_PRESS_SUCCESS_CHANCE,
@@ -32,54 +33,11 @@ export default function About() {
           A daily push-your-luck game. Tap the button, keep your streak alive, don't get greedy.
         </p>
 
-        {/* Visual odds bar — same 90/10 split shown on the Play screen,
-            rendered here as a literal proportional bar instead of just
-            text, so the risk is felt at a glance before reading a word. */}
-        <div
-          style={{
-            display: 'flex',
-            height: 34,
-            borderRadius: 8,
-            overflow: 'hidden',
-            border: '1px solid var(--line)',
-            marginBottom: 8,
-          }}
-        >
-          <div
-            className="mono"
-            style={{
-              flex: SUCCESS_CHANCE,
-              background: 'rgba(34,229,255,0.18)',
-              color: 'var(--neon-cyan)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 12,
-              fontWeight: 700,
-            }}
-          >
-            {Math.round(SUCCESS_CHANCE * 100)}% you live
-          </div>
-          <div
-            className="mono"
-            style={{
-              flex: 1 - SUCCESS_CHANCE,
-              background: 'rgba(255,59,92,0.18)',
-              color: '#ff3b5c',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 11,
-              fontWeight: 700,
-            }}
-          >
-            {Math.round((1 - SUCCESS_CHANCE) * 100)}%
-          </div>
-        </div>
-        <p className="mono" style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-          Every push after your first rolls these odds — survive one more, or bust and start over
-          tomorrow.
-        </p>
+        {/* Same OddsBar component the first-visit onboarding modal uses
+            (src/components/OnboardingModal.jsx) — a literal proportional
+            bar instead of just text, so the risk is felt at a glance
+            before reading a word. */}
+        <OddsBar caption="Every push after your first rolls these odds — survive one more, or bust and start over tomorrow." />
       </div>
 
       <div className="panel spotlight" onMouseMove={spotlightMove}>

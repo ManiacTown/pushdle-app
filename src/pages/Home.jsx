@@ -10,6 +10,7 @@ import { spotlightMove } from '../lib/spotlight.js';
 import { useChrome } from '../lib/ChromeContext.jsx';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase } from '../lib/supabaseClient.js';
+import OnboardingModal from '../components/OnboardingModal.jsx';
 
 const DEFAULT_STATS = { totalPushes: 0, dayStreak: 0, lastPlayedDate: null, bustedAtZero: false, bustedAtOne: false };
 // The "intensity" system (button heartbeat + background glow, see the
@@ -239,6 +240,9 @@ export default function Home() {
   const [shakeAmount, setShakeAmount] = useState(6);
   const [tick, setTick] = useState(0);
   const [showAdmin, setShowAdmin] = useState(false);
+  // Admin dev-tools "summon onboarding" preview — see OnboardingModal.jsx's
+  // forceOpen prop.
+  const [forceShowOnboarding, setForceShowOnboarding] = useState(false);
   const [buttonHover, setButtonHover] = useState(false);
   const [stats, setStats] = useState(DEFAULT_STATS);
   const [earnedAtRunStart, setEarnedAtRunStart] = useState(new Set());
@@ -1302,6 +1306,11 @@ export default function Home() {
           of the "glitch for a split second" bug, not a scrollbar issue. */}
       {createPortal(
         <>
+          <OnboardingModal
+            forceOpen={forceShowOnboarding}
+            onForceOpenConsumed={() => setForceShowOnboarding(false)}
+          />
+
           {/* Gated strictly by role now the site is actually public — this
               used to also show for guests (no account = no role to check),
               since that was the only way to dev-test the local/guest game
@@ -1373,6 +1382,7 @@ export default function Home() {
               <button className="btn-ghost" onClick={resetBestStreak}>↺ Reset best streak</button>
               <button className="btn-ghost" onClick={adminResetBadges}>🏅 Reset all badges</button>
               <button className="btn-ghost" onClick={adminClaimAllBadges}>🏆 Claim all badges</button>
+              <button className="btn-ghost" onClick={() => setForceShowOnboarding(true)}>👋 Show onboarding</button>
             </div>
           )}
 

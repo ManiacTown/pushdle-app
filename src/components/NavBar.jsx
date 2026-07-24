@@ -154,7 +154,7 @@ export default function NavBar() {
         className={({ isActive }) => 'nav-link nav-mute-btn' + (isActive ? ' active' : '')}
         title="How to play"
       >
-        ❓
+        <img src="/question-mark.png" alt="How to play" width={18} height={18} style={{ display: 'block' }} />
       </NavLink>
       <button
         className="nav-link nav-mute-btn"

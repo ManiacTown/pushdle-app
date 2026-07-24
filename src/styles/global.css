@@ -435,6 +435,94 @@ input:focus{
   color: var(--neon-cyan);
 }
 
+/* ---- First-visit "how to play" modal (see OnboardingModal.jsx) ---- */
+/* Above the nav bar (z-index:55) and the admin button/badge toast (56) —
+   a first-time player shouldn't be able to interact with anything else
+   until they've dismissed this once. Below .screen-flash's 9999 on
+   purpose: that's a brief, non-interactive full-screen tint on bust
+   (pointer-events:none), harmless to let flash over this too if timing
+   ever overlapped. overflow-y:auto + padding so a short viewport (small
+   phone, browser chrome eating vertical space) scrolls the backdrop
+   instead of clipping the modal. */
+/* Invisible full-viewport click-catcher for the pre-appear delay window
+   (see OnboardingModal.jsx) — same z-index as the real backdrop below so
+   it blocks the push button etc. underneath without showing anything yet. */
+.onboarding-preblock{
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+}
+@keyframes onboardingBackdropFadeIn{
+  0%{ opacity: 0; }
+  100%{ opacity: 1; }
+}
+@keyframes onboardingModalGlideIn{
+  0%{ opacity: 0; transform: translateY(28px); }
+  100%{ opacity: 1; transform: translateY(0); }
+}
+.onboarding-backdrop{
+  position: fixed;
+  inset: 0;
+  background: rgba(8,8,12,0.82);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 500;
+  overflow-y: auto;
+  animation: onboardingBackdropFadeIn 0.35s ease-out forwards;
+}
+.onboarding-modal{
+  max-width: 420px;
+  width: 100%;
+  margin: auto;
+  /* Same easing as .bust-busted.settled/rarityInFromRight (see the bust
+     reveal above) — reused here for the same "settles in, doesn't just
+     stop" feel, not independently invented. */
+  animation: onboardingModalGlideIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+/* Exit — literally the entrance animations played backwards
+   (animation-direction:reverse on the SAME keyframes/timing-functions,
+   not separately hand-authored ones), so closing is the exact mirror of
+   opening rather than an independently-tuned motion. OnboardingModal.jsx
+   holds the actual unmount off for EXIT_DURATION_MS (matching this
+   0.5s) so this gets to finish playing instead of being cut off by the
+   DOM node disappearing mid-animation. */
+.onboarding-backdrop.onboarding-exiting{
+  animation: onboardingBackdropFadeIn 0.35s ease-out reverse forwards;
+}
+.onboarding-modal.onboarding-exiting{
+  animation: onboardingModalGlideIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) reverse forwards;
+}
+.onboarding-note{
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  text-align: center;
+}
+.onboarding-cta{
+  color: var(--neon-cyan);
+  border-color: rgba(34,229,255,0.5);
+  padding: 12px 28px;
+  font-size: 13px;
+}
+.onboarding-cta:hover{
+  background: rgba(34,229,255,0.08);
+}
+.onboarding-link{
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px;
+}
+.onboarding-link:hover{
+  color: var(--text);
+}
+
 /* ---- Spotlight hover glow (header/result/leaderboard-style cards) ---- */
 /* Uses z-index:-1 within its own stacking context so the glow paints
    behind the card's own content instead of on top of it. */

@@ -49,7 +49,16 @@ create table if not exists profiles (
   -- actually earned that badge. Keep this list in sync with
   -- src/lib/game.js's BADGE_EMOJI.
   selected_emoji    text check (selected_emoji is null or selected_emoji in
-                       ('⭐','🌀','🍀','🎲','🎲💯🎲','💀','🔥','⚡','🚀','🟢','🔴','💥'))
+                       ('⭐','🌀','🍀','🎲','🎲💯🎲','💀','🔥','⚡','🚀','🟢','🔴','💥')),
+
+  -- Whether this player has dismissed the first-visit "how to play" modal
+  -- (see OnboardingModal.jsx) on ANY device — only ever set true, never
+  -- back to false, so it stays dismissed everywhere once seen anywhere.
+  -- Guests track this in localStorage only (no row here yet); on login,
+  -- AuthContext carries a true local flag into this column so a guest who
+  -- signs up — or an existing player logging in on a device that already
+  -- dismissed it pre-login — never sees it again either.
+  onboarding_seen   boolean not null default false
 );
 
 alter table profiles enable row level security;
@@ -60,9 +69,10 @@ create policy "profiles are publicly readable"
   using (true);
 
 -- A user may only touch their own row, and (per the column-restricted
--- grant below) only username/selected_emoji directly — the actual stat
--- columns are written exclusively by resolve_push/merge_local_stats
--- (security definer, service_role-only), never by a direct client update.
+-- grant below) only username/selected_emoji/onboarding_seen directly — the
+-- actual stat columns are written exclusively by resolve_push/
+-- merge_local_stats (security definer, service_role-only), never by a
+-- direct client update.
 create policy "users can update their own profile"
   on profiles for update
   using (auth.uid() = id);
@@ -72,11 +82,13 @@ create policy "users can update their own profile"
 -- does this for you automatically; raw SQL doesn't, so it has to be explicit.
 grant select on profiles to anon, authenticated;
 -- Column-restricted on purpose: the RLS policy above allows updating the
--- row, but this grant only allows touching `username`/`selected_emoji` —
--- role/stat columns are unreachable from the client even though the row
--- itself is "theirs", because column-level and row-level privileges are
--- checked independently.
-grant update (username, selected_emoji) on profiles to authenticated;
+-- row, but this grant only allows touching these three columns — role/
+-- stat columns are unreachable from the client even though the row itself
+-- is "theirs", because column-level and row-level privileges are checked
+-- independently. onboarding_seen is safe to leave directly client-writable
+-- (unlike the stat columns) since it's a one-way true flag with no scoring
+-- implications either way.
+grant update (username, selected_emoji, onboarding_seen) on profiles to authenticated;
 -- service_role bypasses RLS policies but NOT base object grants — those are
 -- two separate permission layers, and creating a table via raw SQL doesn't
 -- grant either automatically the way the Table Editor UI does.
