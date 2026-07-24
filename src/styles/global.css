@@ -722,6 +722,33 @@ input:focus{
   animation: buttonPoke 0.22s ease-out;
 }
 
+/* ---- Money-variant button reskin (see MoneyMode.jsx, admin-gated) ---- */
+/* New modifier classes, not new CSS-var values — .push-btn--playing/--dead
+   above are hardcoded rgba(), not var-driven, so that's the correct
+   parallel here too. Gold for "in progress" (reusing #ffd45e, the same
+   gold already used for "new best"/selected-flair/rank-1 elsewhere in this
+   codebase, not a new invented color) and green for "cashed out"
+   (var(--neon-green)) — busting stays the same red as classic mode
+   (.push-btn--dead, reused as-is below) since "you lost" is a universal
+   signal worth keeping consistent across both modes rather than folding
+   it into the green/gold theme too. */
+.push-btn--money-playing{
+  border: 2px solid rgba(255,212,94,0.6);
+  box-shadow: 0 0 30px rgba(255,212,94,0.4);
+}
+.push-btn--money-playing:hover:not(:disabled){
+  transform: scale(1.05);
+  box-shadow: 0 0 55px rgba(255,212,94,0.75);
+  border-color: rgba(255,212,94,0.95);
+}
+.push-btn--money-playing:active:not(:disabled){
+  transform: scale(0.96);
+}
+.push-btn--money-cashed{
+  border: 2px solid rgba(57,255,143,0.6);
+  box-shadow: 0 0 35px rgba(57,255,143,0.4);
+}
+
 /* ---- Success/bust particle burst ---- */
 /* Particles start at --sx/--sy (a point on the button's own edge, set in
    JS from its radius) and fly out to --dx/--dy, so they read as bursting

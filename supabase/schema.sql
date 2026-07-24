@@ -58,7 +58,18 @@ create table if not exists profiles (
   -- AuthContext carries a true local flag into this column so a guest who
   -- signs up — or an existing player logging in on a device that already
   -- dismissed it pre-login — never sees it again either.
-  onboarding_seen   boolean not null default false
+  onboarding_seen   boolean not null default false,
+
+  -- Money-variant currency (see money_runs below, admin-gated for now —
+  -- MoneyMode.jsx). Two separate numbers on purpose: money_lifetime_cents
+  -- only ever increases, on every cash-out (it's what the money-variant
+  -- leaderboard ranks on) — money_wallet_cents also increases on cash-out
+  -- but decreases when a future shop purchase is made. That split is the
+  -- entire reason spending in the shop can never move someone's
+  -- leaderboard rank. Both are NOT client-updatable (see the grant below)
+  -- — only resolve_money_push/resolve_money_cashout write them.
+  money_wallet_cents    int not null default 0,
+  money_lifetime_cents  int not null default 0
 );
 
 alter table profiles enable row level security;
@@ -297,3 +308,144 @@ $$ language plpgsql security definer set search_path = public;
 
 revoke execute on function public.merge_local_stats from public, anon, authenticated;
 grant execute on function public.merge_local_stats to service_role;
+
+-- ---- money_runs (the money-variant game mode — admin-gated for now,
+--      see money-push/money-cashout Edge Functions and MoneyMode.jsx) ----
+--
+-- A parallel table to daily_runs, not a mode column bolted onto it —
+-- daily_runs' shape (two states, one score column, public-read leaderboard
+-- policy) is specific to the streak game; money runs have a third terminal
+-- state ('cashed_out') and different columns entirely (accumulated cents,
+-- a push count for the every-5th-push bonus).
+
+create table if not exists money_runs (
+  id              bigint generated always as identity primary key,
+  user_id         uuid not null references profiles(id) on delete cascade,
+  date            date not null,
+  pushes          int not null default 0,
+  -- This run's UNBANKED total — busting zeroes this out (via the status
+  -- flip below) without ever touching profiles; only a successful cash-out
+  -- moves money out of here into the permanent profile columns. That one
+  -- fact is what makes "bust only loses this run's earnings, past
+  -- cash-outs are always safe" automatic rather than something to enforce.
+  earnings_cents  int not null default 0,
+  status          text not null default 'playing' check (status in ('playing', 'dead', 'cashed_out')),
+  created_at      timestamptz not null default now(),
+
+  unique (user_id, date)
+);
+
+alter table money_runs enable row level security;
+
+-- Unlike daily_runs, NOT publicly readable — there's no live "today's
+-- money leaderboard" requirement (the money leaderboard is a lifetime
+-- total sourced from profiles, see Leaderboard.jsx), so there's no reason
+-- to expose anyone's in-progress run to anyone but its own owner.
+create policy "users can read their own money run"
+  on money_runs for select
+  using (auth.uid() = user_id);
+
+grant select on money_runs to authenticated;
+grant all on money_runs to service_role;
+
+-- Same atomic get-or-create-row + roll + write pattern as resolve_push,
+-- for the exact same reason (closing the same read-then-write race). Never
+-- touches profiles — see the earnings_cents comment above for why that
+-- matters. The money variant's first push is a GUARANTEED success (v_chance
+-- 1.0, not classic's 0.999) — a deliberately softer ante for this mode.
+create or replace function public.resolve_money_push(p_user_id uuid, p_date date)
+returns table(
+  out_pushes int, out_earnings_cents int, out_status text, out_success boolean
+) as $$
+declare
+  v_id bigint;
+  v_pushes int;
+  v_earnings int;
+  v_status text;
+  v_chance numeric;
+  v_success boolean;
+  v_bonus int;
+begin
+  select id, pushes, earnings_cents, status into v_id, v_pushes, v_earnings, v_status
+    from money_runs
+    where user_id = p_user_id and date = p_date
+    for update;
+
+  if not found then
+    insert into money_runs (user_id, date) values (p_user_id, p_date)
+      returning id, pushes, earnings_cents, status into v_id, v_pushes, v_earnings, v_status;
+  end if;
+
+  -- Idempotent safety net, same as resolve_push's dead-guard — just two
+  -- terminal states here instead of one.
+  if v_status <> 'playing' then
+    return query select v_pushes, v_earnings, v_status, false;
+    return;
+  end if;
+
+  v_chance := case when v_pushes = 0 then 1.0 else 0.95 end;
+  v_success := random() < v_chance;
+
+  if v_success then
+    v_pushes := v_pushes + 1;
+    -- $1 base, +$3 bonus on every 5th successful push (in cents).
+    v_bonus := case when v_pushes % 5 = 0 then 300 else 0 end;
+    v_earnings := v_earnings + 100 + v_bonus;
+    update money_runs set pushes = v_pushes, earnings_cents = v_earnings where id = v_id;
+  else
+    update money_runs set status = 'dead' where id = v_id returning status into v_status;
+  end if;
+
+  return query select v_pushes, v_earnings, v_status, v_success;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+revoke execute on function public.resolve_money_push from public, anon, authenticated;
+grant execute on function public.resolve_money_push to service_role;
+
+-- Banks whatever's accumulated in today's run into the player's permanent
+-- profile columns. Row-locks money_runs the same way resolve_push locks
+-- daily_runs — so a concurrent push and cash-out can't race past each
+-- other: whichever commits first is authoritative, and the loser (a push
+-- arriving after cash-out already flipped status, or a cash-out arriving
+-- after a push already flipped status to 'dead') just hits the
+-- not-'playing' guard and is a no-op instead of a lost or duplicated
+-- write. Only success=false means nothing changed; a caller can always
+-- tell from out_status whether this actually banked anything.
+create or replace function public.resolve_money_cashout(p_user_id uuid, p_date date)
+returns table(
+  out_earnings_cents int, out_status text, out_wallet_cents int, out_lifetime_cents int, out_success boolean
+) as $$
+declare
+  v_id bigint;
+  v_earnings int;
+  v_status text;
+  v_wallet int;
+  v_lifetime int;
+begin
+  select id, earnings_cents, status into v_id, v_earnings, v_status
+    from money_runs
+    where user_id = p_user_id and date = p_date
+    for update;
+
+  if not found or v_status <> 'playing' then
+    select money_wallet_cents, money_lifetime_cents into v_wallet, v_lifetime
+      from profiles where id = p_user_id;
+    return query select coalesce(v_earnings, 0), coalesce(v_status, 'dead'), v_wallet, v_lifetime, false;
+    return;
+  end if;
+
+  update profiles set
+    money_wallet_cents = money_wallet_cents + v_earnings,
+    money_lifetime_cents = money_lifetime_cents + v_earnings
+  where id = p_user_id
+  returning money_wallet_cents, money_lifetime_cents into v_wallet, v_lifetime;
+
+  update money_runs set status = 'cashed_out' where id = v_id;
+
+  return query select v_earnings, 'cashed_out', v_wallet, v_lifetime, true;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+revoke execute on function public.resolve_money_cashout from public, anon, authenticated;
+grant execute on function public.resolve_money_cashout to service_role;

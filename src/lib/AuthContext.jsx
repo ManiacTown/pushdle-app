@@ -91,6 +91,28 @@ export function AuthProvider({ children }) {
         }
       });
 
+    // Money-variant wallet/lifetime totals (admin-gated feature — see
+    // MoneyMode.jsx). Same reasoning as the onboarding_seen query above:
+    // kept separate from role/selected_emoji so a not-yet-migrated
+    // database (missing these columns) can't take that query down too —
+    // this one just silently no-ops, leaving the fields undefined, until
+    // the migration's run. Merged into `stats` via a functional update
+    // (not a plain overwrite) since this resolves independently of the
+    // sync-stats call below and either could land first.
+    supabase
+      .from('profiles')
+      .select('money_wallet_cents, money_lifetime_cents')
+      .eq('id', user.id)
+      .single()
+      .then(({ data, error }) => {
+        if (error) return;
+        setStats((prev) => ({
+          ...prev,
+          moneyWalletCents: data?.money_wallet_cents ?? 0,
+          moneyLifetimeCents: data?.money_lifetime_cents ?? 0,
+        }));
+      });
+
     // Merges any locally-tracked progress (from before stats were
     // server-authoritative, or from guest play on this device pre-login)
     // into the server row — see schema.sql's merge_local_stats. Safe to run

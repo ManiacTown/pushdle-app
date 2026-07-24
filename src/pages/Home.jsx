@@ -10,7 +10,10 @@ import { spotlightMove } from '../lib/spotlight.js';
 import { useChrome } from '../lib/ChromeContext.jsx';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase } from '../lib/supabaseClient.js';
+import { useParticles } from '../lib/useParticles.js';
 import OnboardingModal from '../components/OnboardingModal.jsx';
+import MoneyMode from '../components/MoneyMode.jsx';
+import MoneyShop from '../components/MoneyShop.jsx';
 
 const DEFAULT_STATS = { totalPushes: 0, dayStreak: 0, lastPlayedDate: null, bustedAtZero: false, bustedAtOne: false };
 // The "intensity" system (button heartbeat + background glow, see the
@@ -30,8 +33,6 @@ function formatCountdown(ms) {
   const s = String(total % 60).padStart(2, '0');
   return `${h}:${m}:${s}`;
 }
-
-const BUTTON_RADIUS = 95; // matches the 190px push button
 
 // The button's crack pattern is now a LIVE, ongoing thing tied directly to
 // the current streak (see buildCrackGrowth) — not something only revealed
@@ -228,8 +229,7 @@ export default function Home() {
   const [bustedSlid, setBustedSlid] = useState(false);
   const [showRarity, setShowRarity] = useState(false);
   const [bustRevealing, setBustRevealing] = useState(false);
-  const [particles, setParticles] = useState([]);
-  const [rings, setRings] = useState([]);
+  const { particles, rings, spawnEffect, spawnDebris, spawnSpark, clearParticles } = useParticles();
   const [flashKey, setFlashKey] = useState(0);
   // Bust impact effects — see triggerBust. shaking gates whether the
   // .screen-shake class/animation is applied at all; shakeAmount is its
@@ -243,6 +243,12 @@ export default function Home() {
   // Admin dev-tools "summon onboarding" preview — see OnboardingModal.jsx's
   // forceOpen prop.
   const [forceShowOnboarding, setForceShowOnboarding] = useState(false);
+  // Money-variant mode switch — admin-gated for now (see the isAdmin &&
+  // check around the switch button below and MoneyMode.jsx's own header
+  // comment for the full removal plan once it's ready for everyone). Not
+  // persisted across reloads — always starts back on classic.
+  const [uiMode, setUiMode] = useState('classic');
+  const [showMoneyShop, setShowMoneyShop] = useState(false);
   const [buttonHover, setButtonHover] = useState(false);
   const [stats, setStats] = useState(DEFAULT_STATS);
   const [earnedAtRunStart, setEarnedAtRunStart] = useState(new Set());
@@ -291,15 +297,6 @@ export default function Home() {
   // display short.
   const pokeQuipTimerRef = useRef(null);
   const timers = useRef([]);
-  // Separate from `timers` on purpose: clearTimers() (called at the start
-  // of every new bust sequence) used to also wipe these — if a bust
-  // happened while a push's particle burst was still mid-flight (its own
-  // 900ms/700ms cleanup timers hadn't fired yet), that cleanup got
-  // cancelled and the particles/rings were orphaned in state forever,
-  // permanently stuck on screen. Kept isolated so a bust's own timer reset
-  // can never cancel an unrelated particle burst's cleanup.
-  const particleTimers = useRef([]);
-  const particleId = useRef(0);
   const statsInitialized = useRef(false);
   const streakPanelRef = useRef(null);
   const { setCollapsed } = useChrome();
@@ -411,7 +408,6 @@ export default function Home() {
   useEffect(() => {
     return () => {
       timers.current.forEach(clearTimeout);
-      particleTimers.current.forEach(clearTimeout);
       clearTimeout(pokeQuipTimerRef.current);
     };
   }, []);
@@ -616,127 +612,6 @@ export default function Home() {
       setShareStatus('Could not copy — try again.');
     }
     timers.current.push(setTimeout(() => setShareStatus(''), 2500));
-  }
-
-  // speedScale > 1 (see the intensity system, applySuccess below) makes
-  // particles travel further and complete sooner — a bigger, snappier
-  // burst rather than just a proportionally-slower-looking bigger one.
-  // Part of the same "escalates with streak" system as the button
-  // heartbeat/background glow (see the intensity effect above), just
-  // computed per-call here instead of read from a :root var, since it
-  // only ever affects a fire-and-forget burst rather than something
-  // continuously on-screen.
-  function spawnEffect(color, count = 16, speedScale = 1) {
-    // Particles start on the button's own edge (BUTTON_RADIUS out from
-    // center), spread evenly around the ring with a little jitter, so the
-    // burst reads as coming off the button rather than its middle.
-    const angleJitter = Math.random() * Math.PI * 2;
-    const newOnes = Array.from({ length: count }).map((_, i) => {
-      const angle = angleJitter + (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.35;
-      const dist = (70 + Math.random() * 90) * speedScale;
-      const sx = Math.cos(angle) * BUTTON_RADIUS;
-      const sy = Math.sin(angle) * BUTTON_RADIUS;
-      return {
-        id: particleId.current++,
-        style: {
-          '--sx': `${sx}px`,
-          '--sy': `${sy}px`,
-          '--dx': `${Math.cos(angle) * (BUTTON_RADIUS + dist)}px`,
-          '--dy': `${Math.sin(angle) * (BUTTON_RADIUS + dist)}px`,
-          '--dur': `${(0.45 + Math.random() * 0.3) / speedScale}s`,
-          background: color,
-          boxShadow: `0 0 10px ${color}, 0 0 3px #fff`,
-        },
-      };
-    });
-    const ringId = particleId.current++;
-    setParticles((p) => [...p, ...newOnes]);
-    setRings((r) => [...r, { id: ringId, color }]);
-    const ids = newOnes.map((p) => p.id);
-    particleTimers.current.push(
-      setTimeout(() => setParticles((p) => p.filter((x) => !ids.includes(x.id))), 900)
-    );
-    particleTimers.current.push(
-      setTimeout(() => setRings((r) => r.filter((x) => x.id !== ringId)), 700)
-    );
-  }
-
-  // Bust-only companion to spawnEffect, fired alongside it (see
-  // triggerBust) rather than instead of it — the red burst reads as the
-  // impact spark, this reads as the wreckage falling afterward. Angles are
-  // constrained to a downward cone (roughly ±50° off straight down)
-  // instead of spawnEffect's full 360°, and rendered with the
-  // .particle--debris modifier (ease-in timing — see global.css — instead
-  // of ease-out), so the same --sx/--sy/--dx/--dy trajectory math reads as
-  // gravity pulling something down instead of an outward blast. intensity
-  // (0-1, see triggerBust) scales both how much debris there is and how
-  // far it falls.
-  function spawnDebris(intensity) {
-    const count = Math.round(6 + intensity * 14);
-    const newOnes = Array.from({ length: count }).map(() => {
-      const angle = Math.PI / 2 + (Math.random() - 0.5) * 1.75; // ~±50° around straight down
-      const dist = (50 + Math.random() * 70) * (1 + intensity * 0.6);
-      const sx = Math.cos(angle) * BUTTON_RADIUS * 0.6;
-      const sy = Math.sin(angle) * BUTTON_RADIUS * 0.6;
-      const size = 4 + Math.random() * 5;
-      return {
-        id: particleId.current++,
-        debris: true,
-        style: {
-          '--sx': `${sx}px`,
-          '--sy': `${sy}px`,
-          '--dx': `${Math.cos(angle) * dist}px`,
-          // extra downward pull on top of the angled distance, so it reads
-          // as falling rather than just a lower-angled burst.
-          '--dy': `${Math.sin(angle) * dist + 30 + intensity * 30}px`,
-          '--dur': `${0.7 + Math.random() * 0.4}s`,
-          width: `${size}px`,
-          height: `${size}px`,
-          background: '#4a3838',
-          boxShadow: '0 0 6px rgba(0,0,0,0.5)',
-        },
-      };
-    });
-    setParticles((p) => [...p, ...newOnes]);
-    const ids = newOnes.map((p) => p.id);
-    particleTimers.current.push(
-      setTimeout(() => setParticles((p) => p.filter((x) => !ids.includes(x.id))), 1300)
-    );
-  }
-
-  // A spark or two flaking off the crack when the busted button gets
-  // poked (see pokeBustedButton) — much smaller/quicker than spawnDebris's
-  // pile of falling wreckage, since this isn't a second impact, just
-  // catching the light as an already-broken surface gets jostled. Reuses
-  // the same .particle burst mechanics (--sx/--sy/--dx/--dy, ease-out) at
-  // a fraction of the scale, colored like the crack's own glow rather than
-  // debris's dark chips, so it reads as coming off the fracture itself.
-  function spawnSpark() {
-    const count = 1 + Math.floor(Math.random() * 3);
-    const newOnes = Array.from({ length: count }).map(() => {
-      const angle = Math.random() * Math.PI * 2;
-      const startR = BUTTON_RADIUS * 0.55;
-      const dist = 14 + Math.random() * 22;
-      return {
-        id: particleId.current++,
-        style: {
-          '--sx': `${Math.cos(angle) * startR}px`,
-          '--sy': `${Math.sin(angle) * startR}px`,
-          '--dx': `${Math.cos(angle) * (startR + dist)}px`,
-          '--dy': `${Math.sin(angle) * (startR + dist)}px`,
-          '--dur': `${0.3 + Math.random() * 0.2}s`,
-          width: '4px',
-          height: '4px',
-          background: '#fff3ea',
-          boxShadow: '0 0 6px rgba(255,60,60,0.9), 0 0 3px #fff',
-        },
-      };
-    });
-    setParticles((p) => [...p, ...newOnes]);
-    const ids = newOnes.map((p) => p.id);
-    particleTimers.current.push(
-      setTimeout(() => setParticles((p) => p.filter((x) => !ids.includes(x.id))), 550)
-    );
   }
 
   // The busted button used to just be disabled — clicking it did nothing
@@ -1011,7 +886,7 @@ export default function Home() {
   async function adminResetDay() {
     clearTimers();
     resetBustVisuals();
-    setParticles([]);
+    clearParticles();
     setRolling(false);
     await storage.resetTodayState();
     await storage.saveTodayNewBadges([]);
@@ -1040,7 +915,7 @@ export default function Home() {
   async function adminResetDayServer() {
     clearTimers();
     resetBustVisuals();
-    setParticles([]);
+    clearParticles();
     setRolling(false);
     const { error } = await supabase.functions.invoke('admin', { body: { action: 'reset_day' } });
     if (error) {
@@ -1149,6 +1024,29 @@ export default function Home() {
         </div>
       </header>
 
+      {/* Money-variant mode switch — TEMP admin gate, see MoneyMode.jsx's
+          header comment for the full removal plan once it's ready for
+          everyone. Not persisted across reloads (see uiMode above). */}
+      {isAdmin && (
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginBottom: 12 }}>
+          <button
+            className="btn-ghost"
+            onClick={() => setUiMode((m) => (m === 'classic' ? 'money' : 'classic'))}
+            title={uiMode === 'classic' ? 'Try the money variant' : 'Back to classic'}
+          >
+            {uiMode === 'classic' ? '💰 Money variant →' : '← Back to classic'}
+          </button>
+          {uiMode === 'money' && (
+            <button className="btn-ghost" onClick={() => setShowMoneyShop((s) => !s)}>
+              🛍 Shop
+            </button>
+          )}
+        </div>
+      )}
+
+      {uiMode === 'money' ? (
+        <MoneyMode />
+      ) : (
       <div
         className={shaking ? 'screen-shake' : ''}
         style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', '--shake-amount': `${shakeAmount}px` }}
@@ -1293,6 +1191,9 @@ export default function Home() {
         )}
 
       </div>
+      )}
+
+      {uiMode === 'money' && showMoneyShop && <MoneyShop onClose={() => setShowMoneyShop(false)} />}
 
       {flashKey > 0 && <div key={flashKey} className="screen-flash" />}
 

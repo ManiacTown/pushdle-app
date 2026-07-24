@@ -5,6 +5,7 @@ import { supabase, isSupabaseConfigured } from '../lib/supabaseClient.js';
 import { pacificDateString } from '../lib/pacificDate.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
+import { formatCents } from '../lib/money.js';
 
 // Gold / silver / bronze accents for the top 3 ranks.
 const RANK_COLORS = ['#ffd45e', '#c9d3e0', '#e8935a'];
@@ -13,22 +14,57 @@ const RANK_COLORS = ['#ffd45e', '#c9d3e0', '#e8935a'];
 const PAGE_SIZE = 50;
 
 export default function Leaderboard() {
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
   const navigate = useNavigate();
   const [allRows, setAllRows] = useState([]);
   const [page, setPage] = useState(0);
+  // Money-variant tab — TEMP admin-gated (see the button below), same
+  // rollout plan as the rest of the money variant. Falls back to 'streak'
+  // even if somehow set to 'money' while logged out/non-admin, since the
+  // fetch effect below only ever queries the money branch when isAdmin.
+  const [tab, setTab] = useState('streak');
 
   useEffect(() => {
-    const today = pacificDateString();
     setPage(0);
 
-    // Bots are real accounts with real daily_runs rows now (see
-    // scripts/simulate-bot-day.mjs) — indistinguishable from a real
-    // player's row in this same query, no separate merge needed.
     if (!isSupabaseConfigured) {
       setAllRows([]);
       return;
     }
+
+    if (tab === 'money') {
+      if (!isAdmin) {
+        setAllRows([]);
+        return;
+      }
+      // Lifetime total, not a per-day score — reads straight from profiles
+      // rather than joining through money_runs (which only holds TODAY's
+      // in-progress run, and isn't publicly readable anyway — see schema.sql).
+      supabase
+        .from('profiles')
+        .select('id, username, selected_emoji, money_lifetime_cents')
+        .order('money_lifetime_cents', { ascending: false })
+        .limit(1000)
+        .then(({ data, error }) => {
+          const rows =
+            !error && data
+              ? data.map((row) => ({
+                  userId: row.id,
+                  name: row.username ?? 'Unknown',
+                  emoji: row.selected_emoji ?? null,
+                  score: row.money_lifetime_cents,
+                  me: user ? row.id === user.id : false,
+                }))
+              : [];
+          setAllRows(rows);
+        });
+      return;
+    }
+
+    const today = pacificDateString();
+    // Bots are real accounts with real daily_runs rows now (see
+    // scripts/simulate-bot-day.mjs) — indistinguishable from a real
+    // player's row in this same query, no separate merge needed.
     supabase
       .from('daily_runs')
       .select('user_id, streak, profiles(username, selected_emoji)')
@@ -48,7 +84,7 @@ export default function Leaderboard() {
             : [];
         setAllRows(rows);
       });
-  }, [user]);
+  }, [user, tab, isAdmin]);
 
   const pageCount = Math.max(1, Math.ceil(allRows.length / PAGE_SIZE));
   const rows = allRows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
@@ -64,11 +100,37 @@ export default function Leaderboard() {
     // a long list of name/score rows doesn't get more readable by getting
     // wider, it just gets sparser.
     <div className="panel spotlight" onMouseMove={spotlightMove} style={{ maxWidth: 460, margin: '0 auto' }}>
-      <h3 style={{ fontSize: 15, marginBottom: 14 }}>Today's leaderboard</h3>
+      <h3 style={{ fontSize: 15, marginBottom: 14 }}>
+        {tab === 'money' ? 'Lifetime money leaderboard' : "Today's leaderboard"}
+      </h3>
+      {/* TEMP admin gate — the money variant isn't ready for real players
+          yet, so this tab is hidden rather than showing everyone a
+          permanently-empty board for a mode they can't play. Remove this
+          isAdmin check once it's ready for everyone. */}
+      {isAdmin && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+          <button
+            className="btn-ghost"
+            style={tab === 'streak' ? { borderColor: 'var(--neon-cyan)', color: 'var(--neon-cyan)' } : undefined}
+            onClick={() => setTab('streak')}
+          >
+            Streak
+          </button>
+          <button
+            className="btn-ghost"
+            style={tab === 'money' ? { borderColor: '#ffd45e', color: '#ffd45e' } : undefined}
+            onClick={() => setTab('money')}
+          >
+            💰 Money
+          </button>
+        </div>
+      )}
       <div className="mono" style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 14 }}>
-        {isSupabaseConfigured
-          ? 'Real runs from logged-in players — guest runs stay local and never appear here.'
-          : 'Accounts aren’t configured on this deployment yet.'}
+        {!isSupabaseConfigured
+          ? 'Accounts aren’t configured on this deployment yet.'
+          : tab === 'money'
+          ? 'Total money ever cashed out — spending in the shop never lowers this.'
+          : 'Real runs from logged-in players — guest runs stay local and never appear here.'}
       </div>
       {myRank >= 0 && (
         <div
@@ -159,7 +221,7 @@ export default function Leaderboard() {
                 </span>
               )}
             </div>
-            <div style={{ flexShrink: 0 }}>{row.score}</div>
+            <div style={{ flexShrink: 0 }}>{tab === 'money' ? formatCents(row.score) : row.score}</div>
           </div>
         );
       })}
