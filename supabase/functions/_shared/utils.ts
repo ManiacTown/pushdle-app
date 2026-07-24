@@ -72,3 +72,20 @@ export async function isAdmin(db: ReturnType<typeof createServiceClient>, userId
   const { data } = await db.from('profiles').select('role').eq('id', userId).single();
   return data?.role === 'admin';
 }
+
+// The daily reset boundary is midnight in the Los Angeles timezone, not
+// UTC — see src/lib/pacificDate.js (client-side twin of this function;
+// Deno can't import that file directly, so it's mirrored here — keep both
+// in sync). Every daily_runs.date write/read across the app must go
+// through one of these two so "today" always means the same calendar day
+// everywhere, regardless of which runtime is asking.
+const TIME_ZONE = 'America/Los_Angeles';
+
+export function pacificDateString(date: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}

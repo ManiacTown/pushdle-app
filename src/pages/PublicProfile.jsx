@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient.js';
+import { pacificDateString } from '../lib/pacificDate.js';
 import { BADGES, BADGE_CATEGORIES, BADGE_EMOJI, RARITY_META, earnedBadges } from '../lib/game.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
@@ -46,7 +47,7 @@ export default function PublicProfile() {
         return;
       }
       setProfile(data);
-      const today = new Date().toISOString().slice(0, 10);
+      const today = pacificDateString();
       const { data: run } = await supabase
         .from('daily_runs')
         .select('streak, status')

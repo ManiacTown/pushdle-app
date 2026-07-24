@@ -6,7 +6,7 @@
 //
 // Deploy with: supabase functions deploy push
 
-import { createServiceClient, handlePreflight, json, requireUser } from '../_shared/utils.ts';
+import { createServiceClient, handlePreflight, json, pacificDateString, requireUser } from '../_shared/utils.ts';
 
 Deno.serve(async (req) => {
   const preflight = handlePreflight(req);
@@ -16,7 +16,7 @@ Deno.serve(async (req) => {
   if (!user) return json({ error: 'unauthorized' }, 401);
 
   const db = createServiceClient();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = pacificDateString();
 
   // The get-or-create, dead-check, roll, and write all happen atomically
   // inside this one Postgres function (row-locked via `select ... for

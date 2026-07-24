@@ -3,6 +3,8 @@
 // (Supabase/Firebase/custom backend), nothing calling these functions
 // has to change — only the internals of this file do.
 
+import { pacificDateString } from './pacificDate.js';
+
 const NS = 'pushdle:';
 
 export async function getItem(key) {
@@ -44,14 +46,14 @@ export async function setBestStreak(n) {
 }
 
 export async function getTodayState() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = pacificDateString();
   const saved = await getItem('runState');
   if (saved && saved.date === today) return saved;
   return { date: today, streak: 0, status: 'playing', newBestToday: false };
 }
 
 export async function saveTodayState(state) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = pacificDateString();
   await setItem('runState', { ...state, date: today });
 }
 
@@ -65,14 +67,14 @@ export async function resetTodayState() {
 // (rather than ephemeral component state) so the toast is still there if
 // the player navigates away and back before the day resets.
 export async function getTodayNewBadges() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = pacificDateString();
   const saved = await getItem('todayBadges');
   if (saved && saved.date === today) return saved.ids;
   return [];
 }
 
 export async function saveTodayNewBadges(ids) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = pacificDateString();
   await setItem('todayBadges', { date: today, ids });
 }
 
@@ -105,9 +107,9 @@ export async function incrementTotalPushes() {
 // otherwise (first time ever, or a day was missed) it restarts at 1.
 export async function recordDailyPlay() {
   const stats = await getStats();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = pacificDateString();
   if (stats.lastPlayedDate === today) return stats;
-  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const yesterday = pacificDateString(new Date(Date.now() - 86400000));
   const dayStreak = stats.lastPlayedDate === yesterday ? stats.dayStreak + 1 : 1;
   const updated = { ...stats, dayStreak, lastPlayedDate: today };
   await saveStats(updated);

@@ -7,6 +7,8 @@
 // simulation). Kept in exactly one place so both callers can never drift
 // out of sync with each other.
 
+import { pacificDateString } from '../../src/lib/pacificDate.js';
+
 // Bots forever ineligible for the special streak-100 badge — same idea as
 // bot-stats.mjs's `min(bestStreak, 90, totalPushes)` cap, just enforced
 // here by simply never rolling past 90 pushes in a single day instead of
@@ -52,7 +54,7 @@ async function simulateBot(api, today, username, userId) {
     // same way a real player who took a day off would reset, rather than
     // ever writing day_streak directly (that stays exclusively
     // resolve_push's job everywhere else in this codebase).
-    const twoDaysAgo = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+    const twoDaysAgo = pacificDateString(new Date(Date.now() - 2 * 86400000));
     await api(`/rest/v1/profiles?id=eq.${userId}`, {
       method: 'PATCH',
       headers: { Prefer: 'return=minimal' },
@@ -99,7 +101,7 @@ async function simulateBot(api, today, username, userId) {
 
 export async function simulateAllBots({ url, serviceKey, botUserIds }) {
   const api = makeApi(url, serviceKey);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = pacificDateString();
   const results = [];
   for (const [username, userId] of Object.entries(botUserIds)) {
     try {

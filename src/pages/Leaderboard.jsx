@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient.js';
+import { pacificDateString } from '../lib/pacificDate.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
 
@@ -18,7 +19,7 @@ export default function Leaderboard() {
   const [page, setPage] = useState(0);
 
   useEffect(() => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = pacificDateString();
     setPage(0);
 
     // Bots are real accounts with real daily_runs rows now (see

@@ -5,7 +5,7 @@
 //
 // Deploy with: supabase functions deploy admin
 
-import { createServiceClient, handlePreflight, isAdmin, json, requireUser } from '../_shared/utils.ts';
+import { createServiceClient, handlePreflight, isAdmin, json, pacificDateString, requireUser } from '../_shared/utils.ts';
 
 Deno.serve(async (req) => {
   const preflight = handlePreflight(req);
@@ -20,7 +20,7 @@ Deno.serve(async (req) => {
   }
 
   const { action } = await req.json().catch(() => ({}));
-  const today = new Date().toISOString().slice(0, 10);
+  const today = pacificDateString();
 
   if (action === 'force_bust') {
     let { data: run } = await db

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import * as storage from '../lib/storage.js';
+import { pacificDateString, msUntilNextPacificMidnight } from '../lib/pacificDate.js';
 import { rollPush, rarityForStreak, formatRarity, earnedBadges, buildShareText, BADGES, RARITY_META } from '../lib/game.js';
 import { getQuoteForStreak, getBustQuoteForStreak, getPokeQuip } from '../lib/quotes.js';
 import { playPush, playSuccess, playBust, playBadge, playNav, playReveal, playPoke } from '../lib/sound.js';
@@ -20,13 +21,6 @@ const INTENSITY_START_STREAK = 15;
 // flipping this back to true is the only change needed to bring the
 // cracked-button effect back.
 const CRACKS_ENABLED = false;
-
-function msUntilNextDay() {
-  const now = new Date();
-  const next = new Date(now);
-  next.setHours(24, 0, 0, 0);
-  return next - now;
-}
 
 function formatCountdown(ms) {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -314,7 +308,7 @@ export default function Home() {
   // authoritative copy as `authStats`. Guests have no server row, so they
   // keep using storage.js exactly as before.
   async function loadRunState() {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = pacificDateString();
     let s;
     if (user) {
       const { data } = await supabase
@@ -541,7 +535,7 @@ export default function Home() {
   }, [state.status]);
 
   useEffect(() => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = pacificDateString();
     if (state.date && state.date !== today) {
       loadRunState();
       resetBustVisuals();
@@ -1083,7 +1077,7 @@ export default function Home() {
     const maxed = {
       totalPushes: 1000,
       dayStreak: 100,
-      lastPlayedDate: new Date().toISOString().slice(0, 10),
+      lastPlayedDate: pacificDateString(),
       bustedAtZero: true,
       bustedAtOne: true,
     };
@@ -1276,7 +1270,7 @@ export default function Home() {
               )}
             </div>
             <div className="mono" style={{ marginTop: 20, fontSize: 11, color: 'var(--text-dim)' }}>
-              Next run in {formatCountdown(msUntilNextDay())}
+              Next run in {formatCountdown(msUntilNextPacificMidnight())}
             </div>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 16 }}>
               <button className="btn-ghost" onClick={handleShare}>
