@@ -142,3 +142,114 @@ suspense. That earlier bank/push variant still exists as reference
   most visual/motion polish lives here. Good source to port FROM.
 - `pushdle.html` — earlier bank/push variant, kept for reference only,
   not the current direction.
+
+## Money-variant game mode (admin-gated, in progress)
+
+A second game mode layered onto the same Home page: instead of building a
+streak, each push earns accumulating in-game currency ($1/push, +$3 bonus
+every 5th push), busting loses only the *current run's* unbanked earnings,
+and the player can cash out any time to bank it permanently. Currently
+**gated behind `isAdmin` end-to-end** — not visible to real players yet;
+this is a deliberate, easily-reversible temporary gate (grep `isAdmin &&`
+in Home.jsx and the money-push/money-cashout/admin Edge Functions), not a
+finished/shipped feature.
+
+- **Schema**: parallel `money_runs` table (not a `mode` column on
+  `daily_runs` — different terminal states/columns entirely), plus
+  `profiles.money_wallet_cents` (spendable) and `profiles.money_lifetime_cents`
+  (leaderboard rank, only ever increases) — split so a future shop can
+  spend the wallet without ever lowering leaderboard rank.
+- **RPCs**: `resolve_money_push`/`resolve_money_cashout` (security definer,
+  service-role only, row-locked), mirroring `resolve_push`'s pattern. Push
+  never touches `profiles` at all — only cash-out moves money out of the
+  run into the permanent columns, which is what makes "bust only loses
+  unbanked earnings" automatic.
+- **Edge Functions**: `money-push`, `money-cashout` — both re-check
+  `isAdmin` server-side (the actual enforcement point; the RPCs themselves
+  are revoked from anon/authenticated).
+- **Client**: `src/components/MoneyMode.jsx` is a deliberately independent
+  component (not threaded through Home.jsx's classic `state.status`
+  machine) — its bust-reveal choreography intentionally mirrors classic's
+  `runBustSequence` timing almost exactly, reusing the same `.bust-busted`/
+  `.bust-rarity` CSS. `src/lib/useParticles.js` was extracted out of
+  Home.jsx so both modes share the particle-burst system.
+- **Current polish state** (all implemented, locally tested, not yet
+  playable by real users due to the admin gate): money-bag button with
+  press/bounce physics and coin-pop-with-real-gravity trajectory; full
+  bust/bank reveal sequence matching classic's pacing; a wallet ("bank")
+  panel next to the run panel that stays visible pre-push, exits right
+  during a push, and reappears with a coin-flight-and-landing animation
+  (green/gold sparkle burst + sound on landing); a "tap" glow inviting the
+  next push, mirroring classic's busted-idle glow; a staggered slide
+  transition between classic ↔ money mode (`src/lib/modeTransition.js` —
+  shared timing/direction logic so both modes' JSX animate off the same
+  numbers); real sound effects (`public/coin_collect.mp3`,
+  `public/coin_bank.mp3`) alongside the existing synthesized cues in
+  `lib/sound.js`.
+- **Known-fixed bug worth knowing about**: the wallet panel used to show
+  `$0` before the first push instead of the real persistent balance. Root
+  cause was in `AuthContext.jsx` — the login-time `sync-stats` merge did
+  `setStats(data)` (a full overwrite) while a separate, independently-timed
+  fetch for `moneyWalletCents`/`moneyLifetimeCents` merged via
+  `setStats(prev => ({...prev, ...}))`. Whichever resolved second won; if
+  `sync-stats` landed after the wallet fetch, it silently wiped the money
+  fields back to `undefined`. Fixed by making both merge instead of
+  overwrite. If a similar "stats look right sometimes, wrong other times"
+  bug ever resurfaces, suspect a `setStats(fullObject)` call somewhere that
+  should be a functional merge instead.
+- **Not built yet**: a real shop/purchase flow (`MoneyShop.jsx` is a shell
+  — wallet balance shown, item cards disabled/"coming soon", no
+  `spend_money` RPC yet). Removing the admin gate for public rollout is a
+  separate future step once the mechanic itself has been validated further.
+
+## Security incident: stat tampering via `sync-stats` (2026-07-24, fixed)
+
+An account (`acheron`) was found with `best_streak: 999999999` and
+`total_pushes: 323434243` — discovered by eyeballing the Supabase table
+editor, not any automated alert (there isn't one yet — see below).
+
+**Root cause**: `merge_local_stats` (in `schema.sql`) exists so a
+brand-new signup's pre-account `localStorage` progress survives becoming
+server-authoritative — it does `best_streak = greatest(current, submitted)`
+etc., "only ever raises, never lowers." The `sync-stats` Edge Function
+that calls it took the submitted numbers straight from the client's
+request body with **no validation at all**. Since this ran on every login
+(not just once) with no bound on the values, any logged-in user could call
+`sync-stats` directly — bypassing the actual game entirely — with a
+hand-forged body (`{ bestStreak: 999999999, ... }`) and permanently inflate
+their own stats. Confirmed by reading `supabase/functions/sync-stats/index.ts`
+and `merge_local_stats` directly; the round, absurd submitted numbers are
+the signature of someone typing values into a forged request, not a game
+bug.
+
+**Fix (two independent layers, either alone now closes the hole)**:
+1. `sync-stats/index.ts` rejects the request outright (HTTP 400) if
+   `totalPushes > 100,000`, anything is negative, or `bestStreak > totalPushes`
+   (a streak can never exceed the pushes it took to build it — a free
+   invariant that was never checked before).
+2. `profiles.stats_migrated` (new column) makes `merge_local_stats` a
+   no-op past the first successful call per account — there's nothing
+   legitimate left to merge after that anyway. All existing accounts were
+   backfilled to `stats_migrated = true` immediately so nobody gets a
+   bonus free merge under the new logic.
+
+`acheron`'s `best_streak`/`total_pushes` were reset to 0. Both layers were
+verified live: a forged `999999999`-style payload now gets a 400; a
+plausible-looking forged payload (`9999`/`9999`) on an already-migrated
+account comes back completely unchanged.
+
+**Residual risk / what this doesn't cover**: this was narrowly scoped to
+`merge_local_stats` — the one place in the whole schema that trusted a
+client-submitted number in a "take the max" write. Everything else
+players' scores/currency run through (`resolve_push`, `resolve_money_push`,
+`resolve_money_cashout`) computes results **entirely server-side** from
+scratch (dice rolls happen in the RPC itself via `random()`, never trusting
+a client-reported outcome) — that pattern was already correct and wasn't
+part of this incident. If a similar bug is ever suspected again: grep for
+any RPC/Edge Function that takes a numeric value from `req.json()` or a
+function argument and writes it (even via `greatest()`/a monotonic
+merge) without a plausibility bound — that shape is what to distrust.
+There's still no automated anomaly alerting (a scheduled query flagging
+implausible jumps, e.g.) — this incident was caught by manually looking at
+the table editor, not tooling. Worth adding if this class of bug matters
+enough to want to catch it faster next time.

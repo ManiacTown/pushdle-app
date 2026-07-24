@@ -39,6 +39,20 @@ create table if not exists profiles (
   busted_at_zero    boolean not null default false,
   busted_at_one     boolean not null default false,
 
+  -- Set true the first time merge_local_stats successfully runs for this
+  -- account, then never again — see merge_local_stats below. Closes off
+  -- what was, until 2026-07-24, a real exploit: merge_local_stats trusted
+  -- whatever numbers the client claimed and only ever raised values, so
+  -- any logged-in user could call the sync-stats Edge Function directly
+  -- (bypassing the game entirely) with a forged body and permanently
+  -- inflate their own best_streak/total_pushes to anything at all — which
+  -- is exactly how one account ended up with a best_streak in the
+  -- hundreds of millions. The legitimate use case (folding in a brand-new
+  -- signup's pre-account localStorage progress) only ever applies once;
+  -- after that, the server's own resolve_push-tracked columns are the
+  -- sole source of truth and there's nothing left to merge.
+  stats_migrated    boolean not null default false,
+
   -- The emoji a player has chosen to show next to their name on the
   -- leaderboard, from a rare-or-better badge they've earned. Badge
   -- *eligibility* is still checked client-side only (badges are a derived
@@ -263,13 +277,25 @@ $$ language plpgsql security definer set search_path = public;
 revoke execute on function public.resolve_push from public, anon, authenticated;
 grant execute on function public.resolve_push to service_role;
 
--- One-time-per-login (safe to call anytime, really) merge of a player's
--- locally-tracked stats into their server profile row. Only ever RAISES
--- values (greatest()/or) — never lowers them — so calling this repeatedly,
--- from multiple devices, in any order, can only help: it's how an existing
--- player's pre-existing localStorage progress survives the move to
--- server-authoritative stats instead of silently resetting to zero the
--- first time they log in after this migration. See AuthContext.jsx.
+-- Runs ONCE per account (see stats_migrated above) to merge a brand-new
+-- signup's pre-account localStorage progress into their server profile
+-- row, so it isn't silently lost the moment stats become server-
+-- authoritative. Historically this ran on every login and trusted
+-- whatever numbers the client claimed (only ever raising them via
+-- greatest()/or, never lowering) — which meant anyone logged in could
+-- call the sync-stats Edge Function directly with a forged body and
+-- permanently inflate their own stats, since there was no bound on the
+-- submitted values and no limit on how many times this could run. Fixed
+-- 2026-07-24 two ways: (1) this is now a no-op once stats_migrated is
+-- already true — there's nothing left to legitimately merge after the
+-- first real login anyway, so repeat calls (forged or not) can't do
+-- anything; (2) even on that one legitimate call, submitted values are
+-- clamped to a plausible range rather than trusted outright — total_pushes
+-- capped at a generous but bounded ceiling, and best_streak can never
+-- exceed total_pushes (every streak push is also a total push, so a
+-- streak bigger than the total is a logical impossibility regardless of
+-- source). See AuthContext.jsx / sync-stats/index.ts, which layers the
+-- same bounds check on the way in as defense in depth.
 create or replace function public.merge_local_stats(
   p_user_id uuid,
   p_best_streak int,
@@ -283,11 +309,28 @@ returns table(
   out_best_streak int, out_total_pushes int, out_day_streak int,
   out_last_played_date date, out_busted_at_zero boolean, out_busted_at_one boolean
 ) as $$
+declare
+  v_already_migrated boolean;
+  v_total int;
+  v_best int;
+  v_day int;
 begin
+  select stats_migrated into v_already_migrated from profiles where id = p_user_id for update;
+
+  if v_already_migrated then
+    return query select best_streak, total_pushes, day_streak, last_played_date, busted_at_zero, busted_at_one
+      from profiles where id = p_user_id;
+    return;
+  end if;
+
+  v_total := least(greatest(p_total_pushes, 0), 100000);
+  v_best := least(greatest(p_best_streak, 0), v_total);
+  v_day := least(greatest(p_day_streak, 0), v_total);
+
   return query
   update profiles set
-    best_streak = greatest(profiles.best_streak, p_best_streak),
-    total_pushes = greatest(profiles.total_pushes, p_total_pushes),
+    best_streak = greatest(profiles.best_streak, v_best),
+    total_pushes = greatest(profiles.total_pushes, v_total),
     -- day_streak and last_played_date are taken together from whichever
     -- side has the more recent last_played_date, rather than maxed
     -- independently — greatest()-ing day_streak alone could pair a big
@@ -295,12 +338,13 @@ begin
     -- fabricate continuity that never actually happened.
     day_streak = case
       when p_last_played_date is not null and (profiles.last_played_date is null or p_last_played_date > profiles.last_played_date)
-      then p_day_streak else profiles.day_streak end,
+      then v_day else profiles.day_streak end,
     last_played_date = case
       when p_last_played_date is not null and (profiles.last_played_date is null or p_last_played_date > profiles.last_played_date)
       then p_last_played_date else profiles.last_played_date end,
     busted_at_zero = profiles.busted_at_zero or p_busted_zero,
-    busted_at_one = profiles.busted_at_one or p_busted_one
+    busted_at_one = profiles.busted_at_one or p_busted_one,
+    stats_migrated = true
   where id = p_user_id
   returning best_streak, total_pushes, day_streak, last_played_date, busted_at_zero, busted_at_one;
 end;
