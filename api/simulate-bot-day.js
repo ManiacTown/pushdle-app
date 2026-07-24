@@ -1,5 +1,16 @@
-// Vercel Cron endpoint — see vercel.json's `crons` entry, which hits this
-// once a day. Runs the exact same logic as scripts/simulate-bot-day.mjs
+// Vercel Cron endpoint — see vercel.json's `crons` entries, which hit this
+// TWICE a day (7am and 8am UTC), not once. That's deliberate: bots should
+// go live right at Pacific midnight (see src/lib/pacificDate.js), but
+// Vercel Cron only supports fixed UTC schedules, and Pacific midnight
+// itself moves between 07:00 UTC (PDT, summer) and 08:00 UTC (PST, winter)
+// as the year crosses the DST transition. Two static entries cover both —
+// whichever one lands first after the real Pacific midnight does the
+// actual seeding; the other fires into an already-seeded day and just
+// no-ops (simulateAllBots skips any bot with an existing run for today's
+// Pacific date). Cheaper than trying to keep a single schedule in sync
+// with DST by hand twice a year.
+//
+// Runs the exact same logic as scripts/simulate-bot-day.mjs
 // (shared via lib/bot-day-sim.mjs), just triggered by Vercel's own
 // scheduler instead of a person running the script by hand. This replaced
 // an earlier plan to use Windows Task Scheduler on a local machine —
