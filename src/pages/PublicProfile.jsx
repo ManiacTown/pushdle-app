@@ -29,7 +29,9 @@ export default function PublicProfile() {
   const { isAdmin } = useAuth();
   const [profile, setProfile] = useState(null);
   const [todayRun, setTodayRun] = useState(null);
-  const [moneyLifetimeCents, setMoneyLifetimeCents] = useState(null);
+  const [todayMoneyRun, setTodayMoneyRun] = useState(null);
+  const [moneyStats, setMoneyStats] = useState(null);
+  const [achievementTab, setAchievementTab] = useState('streak');
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
@@ -74,10 +76,25 @@ export default function PublicProfile() {
       if (isAdmin) {
         const { data: moneyData, error: moneyError } = await supabase
           .from('profiles')
-          .select('money_lifetime_cents')
+          .select(
+            'money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
+              'money_weekly_cents, money_best_weekly_cents, ' +
+              'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100'
+          )
           .eq('id', userId)
           .maybeSingle();
-        if (!cancelled && !moneyError) setMoneyLifetimeCents(moneyData?.money_lifetime_cents ?? 0);
+        if (!cancelled && !moneyError) setMoneyStats(moneyData ?? {});
+
+        // money_runs isn't publicly readable (see schema.sql) — this only
+        // succeeds for an admin viewer, via the "admins can read any money
+        // run" RLS policy added specifically for this tile.
+        const { data: moneyRun } = await supabase
+          .from('money_runs')
+          .select('earnings_cents, status')
+          .eq('user_id', userId)
+          .eq('date', today)
+          .maybeSingle();
+        if (!cancelled) setTodayMoneyRun(moneyRun ?? null);
       }
 
       setLoading(false);
@@ -113,24 +130,57 @@ export default function PublicProfile() {
     );
   }
 
+  // Explicit field picks — same reasoning as Profile.jsx's identical
+  // comment: keeps "streak badges are classic-mode only" true by
+  // construction rather than by coincidence. moneyStats is null for a
+  // non-admin viewer (never fetched at all, see the isAdmin gate above),
+  // so every money-* field below is simply undefined for them — the same
+  // "not earned" result earnedBadges already gives any missing field.
   const earned = earnedBadges({
     bestStreak: profile.best_streak,
     totalPushes: profile.total_pushes,
     dayStreak: profile.day_streak,
     bustedAtZero: profile.busted_at_zero,
     bustedAtOne: profile.busted_at_one,
+    moneyLifetimeCents: moneyStats?.money_lifetime_cents,
+    moneyBestRunCents: moneyStats?.money_best_run_cents,
+    moneyBestBankStreak: moneyStats?.money_best_bank_streak,
+    moneyReachedTop3Weekly: moneyStats?.money_reached_top3_weekly,
+    moneyBankedAfterOnePush: moneyStats?.money_banked_after_one_push,
+    moneyBustedOver100: moneyStats?.money_busted_over100,
   });
   const earnedIds = new Set(earned.map((b) => b.id));
 
-  const statTiles = [
+  // Split by achievementTab (see the toggle below) rather than one fixed
+  // list — normal-mode stats when viewing Normal Mode, money-mode stats
+  // when viewing Money Mode, instead of cramming both into the same panel
+  // regardless of which badge grid is showing. "Today's Money" mirrors
+  // "Today's Streak"'s own busted/live distinction: a busted run's
+  // earnings_cents is what was LOST, not banked, so it reads as $0 here,
+  // same "you didn't actually earn anything from a run you didn't bank"
+  // reasoning MoneyMode.jsx's own reveal already uses.
+  const streakStatTiles = [
     { label: "Today's Streak", value: todayRun?.streak ?? 0 },
     { label: 'Best Streak', value: profile.best_streak },
     { label: 'Total Pushes', value: profile.total_pushes },
     { label: 'Day Streak', value: profile.day_streak },
-    // TEMP admin-gated (see isAdmin above) — the money variant isn't ready
-    // for real players yet, so a regular viewer never sees this tile.
-    ...(isAdmin && moneyLifetimeCents !== null ? [{ label: 'Lifetime $', value: formatCents(moneyLifetimeCents) }] : []),
   ];
+  const moneyStatTiles = moneyStats
+    ? [
+        {
+          label: "Today's Money",
+          value: formatCents(todayMoneyRun?.status === 'dead' ? 0 : todayMoneyRun?.earnings_cents ?? 0),
+        },
+        { label: 'Most Banked', value: formatCents(moneyStats.money_best_run_cents) },
+        { label: 'Weekly $', value: formatCents(moneyStats.money_weekly_cents) },
+        { label: 'Best Weekly $', value: formatCents(moneyStats.money_best_weekly_cents) },
+        { label: 'Lifetime $', value: formatCents(moneyStats.money_lifetime_cents) },
+      ]
+    : [];
+  // TEMP admin-gated (see isAdmin above) — the money variant isn't ready
+  // for real players yet, so a regular viewer never sees the money tiles
+  // (or the tab that would even let them ask for that view).
+  const statTiles = achievementTab === 'money' && isAdmin ? moneyStatTiles : streakStatTiles;
 
   return (
     <div>
@@ -181,11 +231,33 @@ export default function PublicProfile() {
         </div>
       </div>
 
+      {/* TEMP admin gate, same as Profile.jsx's own achievement-tab toggle
+          and Leaderboard.jsx's money tab — a real viewer seeing this at
+          all would leak that money mode exists before it's ready. */}
+      {isAdmin && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+          <button
+            className="btn-ghost"
+            style={achievementTab === 'streak' ? { borderColor: 'var(--neon-cyan)', color: 'var(--neon-cyan)' } : undefined}
+            onClick={() => setAchievementTab('streak')}
+          >
+            Normal Mode
+          </button>
+          <button
+            className="btn-ghost"
+            style={achievementTab === 'money' ? { borderColor: '#ffd45e', color: '#ffd45e' } : undefined}
+            onClick={() => setAchievementTab('money')}
+          >
+            💰 Money Mode
+          </button>
+        </div>
+      )}
+
       {/* alignItems:'start' — see the same rule in Profile.jsx; keeps each
           category panel sized to its own badge count instead of stretched
           to match the tallest one sharing its grid row. */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
-        {BADGE_CATEGORIES.map((cat) => (
+        {BADGE_CATEGORIES.filter((cat) => cat.id.startsWith('money-') === (achievementTab === 'money')).map((cat) => (
           <div key={cat.id} className="panel spotlight" onMouseMove={spotlightMove}>
             <h3 style={{ fontSize: 14, marginBottom: 12 }}>{cat.label}</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

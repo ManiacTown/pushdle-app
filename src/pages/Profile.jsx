@@ -1,8 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext.jsx';
+import { supabase } from '../lib/supabaseClient.js';
+import { pacificDateString } from '../lib/pacificDate.js';
 import * as storage from '../lib/storage.js';
 import { BADGES, BADGE_CATEGORIES, BADGE_EMOJI, RARITY_META, earnedBadges } from '../lib/game.js';
+import { formatCents } from '../lib/money.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { playBadgeSelect } from '../lib/sound.js';
 
@@ -13,7 +16,7 @@ const USERNAME_BASE_FONT_SIZE = 22;
 const USERNAME_MIN_FONT_SIZE = 12;
 
 export default function Profile() {
-  const { user, logout, selectedEmoji, updateSelectedEmoji, stats: authStats } = useAuth();
+  const { user, logout, isAdmin, selectedEmoji, updateSelectedEmoji, stats: authStats } = useAuth();
   const location = useLocation();
   const [guestBestStreak, setGuestBestStreak] = useState(0);
   const [guestStats, setGuestStats] = useState({ totalPushes: 0, dayStreak: 0, bustedAtZero: false, bustedAtOne: false });
@@ -35,6 +38,19 @@ export default function Profile() {
   // mid-session (a real hybrid-device edge case, but not worth the extra
   // complexity here).
   const [isTouch] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches);
+  // Which achievement grid is showing — see the toggle above the grid
+  // below. The toggle itself only renders for isAdmin, same gate/reasoning
+  // as Leaderboard.jsx's money tab — a real player seeing a "Money" tab at
+  // all would leak that the mode exists before it's ready, even if every
+  // badge behind it reads as locked.
+  const [achievementTab, setAchievementTab] = useState('streak');
+  // Today's streak/money-run — mirrors PublicProfile.jsx's own
+  // todayRun/todayMoneyRun, just sourced per-mode below (guest local
+  // storage vs. a real daily_runs/money_runs row for a logged-in
+  // account) since this page, unlike PublicProfile.jsx, has a guest path
+  // to support too.
+  const [todayStreak, setTodayStreak] = useState(0);
+  const [todayMoneyRun, setTodayMoneyRun] = useState(null);
   const [usernameFontSize, setUsernameFontSize] = useState(USERNAME_BASE_FONT_SIZE);
   const headerRowRef = useRef(null);
   const nameRef = useRef(null);
@@ -61,8 +77,44 @@ export default function Profile() {
       storage.getBestStreak().then(setGuestBestStreak);
       storage.getStats().then(setGuestStats);
       storage.getSelectedEmoji().then(setGuestEmoji);
+      storage.getTodayState().then((s) => setTodayStreak(s.streak));
     }
   }, [user]);
+
+  // Logged-in counterpart to the guest fetch above — real rows instead of
+  // local storage. money_runs read is gated behind isAdmin, same as the
+  // achievement tab that shows it at all (see that toggle's own comment) —
+  // a non-admin account has no money_runs row to find anyway (money mode
+  // is gated client- AND server-side), so this just skips a query that
+  // would always come back empty for them.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const today = pacificDateString();
+    supabase
+      .from('daily_runs')
+      .select('streak')
+      .eq('user_id', user.id)
+      .eq('date', today)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled) setTodayStreak(data?.streak ?? 0);
+      });
+    if (isAdmin) {
+      supabase
+        .from('money_runs')
+        .select('earnings_cents, status')
+        .eq('user_id', user.id)
+        .eq('date', today)
+        .maybeSingle()
+        .then(({ data }) => {
+          if (!cancelled) setTodayMoneyRun(data ?? null);
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [user, isAdmin]);
 
   // AuthContext merges/holds the server-authoritative copy for logged-in
   // players (see its login-time merge and Home.jsx, which keeps it fresh
@@ -72,7 +124,26 @@ export default function Profile() {
   const stats = user ? authStats ?? { totalPushes: 0, dayStreak: 0, bustedAtZero: false, bustedAtOne: false } : guestStats;
   const statsLoading = user && !authStats;
 
-  const earned = earnedBadges({ bestStreak, ...stats });
+  // Explicit field picks, not a wholesale ...stats spread — stats is
+  // authStats for logged-in players, which carries every money_* field
+  // too (see AuthContext.jsx). Naming every field individually, streak
+  // AND money alike, is what keeps "streak badges are classic-mode only"
+  // true by construction rather than by coincidence — a wholesale spread
+  // would still work today (no streak check reads a money field) but
+  // wouldn't guard against a future badge accidentally doing so.
+  const earned = earnedBadges({
+    bestStreak,
+    totalPushes: stats.totalPushes,
+    dayStreak: stats.dayStreak,
+    bustedAtZero: stats.bustedAtZero,
+    bustedAtOne: stats.bustedAtOne,
+    moneyLifetimeCents: stats.moneyLifetimeCents,
+    moneyBestRunCents: stats.moneyBestRunCents,
+    moneyBestBankStreak: stats.moneyBestBankStreak,
+    moneyReachedTop3Weekly: stats.moneyReachedTop3Weekly,
+    moneyBankedAfterOnePush: stats.moneyBankedAfterOnePush,
+    moneyBustedOver100: stats.moneyBustedOver100,
+  });
   const earnedIds = new Set(earned.map((b) => b.id));
   // Guests never appear on the real leaderboard (see lib/storage.js's note),
   // so their flair is purely a local preview — logged-in players' flair is
@@ -159,11 +230,30 @@ export default function Profile() {
     await setFlair(currentEmoji === emoji ? null : emoji);
   }
 
-  const statTiles = [
+  // Split by achievementTab, same as PublicProfile.jsx's identical split —
+  // normal-mode stats while viewing Normal Mode, money-mode stats while
+  // viewing Money Mode, instead of one fixed panel regardless of which
+  // badge grid is showing. "Today's Money" mirrors "Today's Streak"'s own
+  // busted/live distinction: a busted run's earnings_cents is what was
+  // LOST, not banked, so it reads as $0, same reasoning as
+  // MoneyMode.jsx's own reveal and PublicProfile.jsx's tile.
+  const streakStatTiles = [
+    { label: "Today's Streak", value: todayStreak },
     { label: 'Best Streak', value: bestStreak },
     { label: 'Total Pushes', value: stats.totalPushes },
     { label: 'Day Streak', value: stats.dayStreak },
   ];
+  const moneyStatTiles = [
+    {
+      label: "Today's Money",
+      value: formatCents(todayMoneyRun?.status === 'dead' ? 0 : todayMoneyRun?.earnings_cents ?? 0),
+    },
+    { label: 'Most Banked', value: formatCents(stats.moneyBestRunCents) },
+    { label: 'Weekly $', value: formatCents(stats.moneyWeeklyCents) },
+    { label: 'Best Weekly $', value: formatCents(stats.moneyBestWeeklyCents) },
+    { label: 'Lifetime $', value: formatCents(stats.moneyLifetimeCents) },
+  ];
+  const statTiles = achievementTab === 'money' && isAdmin ? moneyStatTiles : streakStatTiles;
 
   // Every emoji an earned badge could show as flair, deduped — a quick-pick
   // row of all of them (see the flair panel below) beats making someone
@@ -229,7 +319,10 @@ export default function Profile() {
             Loading…
           </div>
         )}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+        {/* auto-fit, not a fixed 3 columns — the money tab has 5 tiles now
+            (was a fixed 3-tile streak-only panel), same flexible sizing
+            PublicProfile.jsx's identical panel already uses. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(70px, 1fr))', gap: 10 }}>
           {statTiles.map((s) => (
             <div
               key={s.label}
@@ -309,12 +402,40 @@ export default function Profile() {
         )}
       </div>
 
+      {/* TEMP admin gate, same reasoning as Leaderboard.jsx's money tab —
+          a real player seeing this toggle at all would leak that money
+          mode exists before it's ready, so it doesn't render otherwise.
+          Reuses that exact toggle pattern (two .btn-ghost buttons, active
+          state via inline style override) — the only tab precedent in the
+          codebase. Sits right above the grid it controls ("at the
+          bottom" of the page, where the achievement content itself
+          lives), not above the Stats/Flair panels — those stay unified
+          across both categories. */}
+      {isAdmin && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+          <button
+            className="btn-ghost"
+            style={achievementTab === 'streak' ? { borderColor: 'var(--neon-cyan)', color: 'var(--neon-cyan)' } : undefined}
+            onClick={() => setAchievementTab('streak')}
+          >
+            Normal Mode
+          </button>
+          <button
+            className="btn-ghost"
+            style={achievementTab === 'money' ? { borderColor: '#ffd45e', color: '#ffd45e' } : undefined}
+            onClick={() => setAchievementTab('money')}
+          >
+            💰 Money Mode
+          </button>
+        </div>
+      )}
+
       {/* alignItems:'start' — grid items default to stretch, which forces
           every panel in a row to match the tallest one (Streak's 7 badges
           vs Bust's 2, sharing a row, both rendering at Streak's height).
           This sizes each panel to just its own content instead. */}
       <div ref={badgeGridRef} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
-        {BADGE_CATEGORIES.map((cat) => (
+        {BADGE_CATEGORIES.filter((cat) => cat.id.startsWith('money-') === (achievementTab === 'money')).map((cat) => (
           <div key={cat.id} className="panel spotlight" onMouseMove={spotlightMove}>
             <h3 style={{ fontSize: 14, marginBottom: 12 }}>{cat.label}</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

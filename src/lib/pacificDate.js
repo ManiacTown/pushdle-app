@@ -44,3 +44,38 @@ export function msUntilNextPacificMidnight(date = new Date()) {
   const elapsedMs = ((hour * 60 + get('minute')) * 60 + get('second')) * 1000;
   return 86400000 - elapsedMs;
 }
+
+// Monday of the current Pacific week, as a YYYY-MM-DD string — powers the
+// weekly money leaderboard (Leaderboard.jsx's weekly sub-tab) and its cron
+// reset (api/weekly-money-reset.js). Once pacificDateString() above has
+// already done the real timezone correction, this is pure calendar-date
+// arithmetic on that string — no further TZ math needed, same reasoning
+// the rest of this file already relies on. Anchored at UTC noon (not
+// midnight) purely so subtracting days can never itself cross a DST
+// transition mid-calculation — noon sits nowhere near either transition.
+export function pacificWeekStartString(date = new Date()) {
+  const todayStr = pacificDateString(date);
+  const weekday = new Intl.DateTimeFormat('en-US', { timeZone: TIME_ZONE, weekday: 'short' }).format(date);
+  const DAYS_SINCE_MONDAY = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
+  const offset = DAYS_SINCE_MONDAY[weekday] ?? 0;
+  const [y, m, d] = todayStr.split('-').map(Number);
+  const anchor = new Date(Date.UTC(y, m - 1, d, 12));
+  anchor.setUTCDate(anchor.getUTCDate() - offset);
+  return anchor.toISOString().slice(0, 10);
+}
+
+// Live "resets in HH:MM:SS" countdown to the NEXT Pacific Monday midnight
+// — Leaderboard.jsx's weekly money sub-tab. Same approximate-24h-day
+// caveat as msUntilNextPacificMidnight above (off by an hour on the two
+// DST-transition days a year, display-only, harmless). Built from that
+// same function (today's own remaining time) plus however many full
+// extra days stand between today and next Monday — e.g. on a Monday
+// itself, that's 6 full days plus however many hours are left today,
+// landing a week out; on a Sunday, it's 0 full days plus the hours left
+// tonight.
+export function msUntilNextPacificWeekStart(date = new Date()) {
+  const weekday = new Intl.DateTimeFormat('en-US', { timeZone: TIME_ZONE, weekday: 'short' }).format(date);
+  const FULL_DAYS_AFTER_TODAY = { Mon: 6, Tue: 5, Wed: 4, Thu: 3, Fri: 2, Sat: 1, Sun: 0 };
+  const extraDays = FULL_DAYS_AFTER_TODAY[weekday] ?? 0;
+  return msUntilNextPacificMidnight(date) + extraDays * 86400000;
+}

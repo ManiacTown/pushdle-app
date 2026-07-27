@@ -312,3 +312,90 @@ const POKE_QUOTES = [
 export function getPokeQuip() {
   return POKE_QUOTES[Math.floor(Math.random() * POKE_QUOTES.length)];
 }
+
+// ---- Money variant (see MoneyMode.jsx) ----
+// Flat pools, not tiered by pushes/earnings like the classic quotes above
+// — money runs are much shorter on average (95% survival vs. classic's
+// 90%, but busting is still real, and cash-out ends most runs early
+// anyway), so there's less of a natural "escalating tone" arc to hang a
+// tier system on. Money-flavored humor (greed, banking, risk) rather than
+// reusing the streak-flavored lines above.
+
+const MONEY_QUOTES = [
+  "Greed is a strategy. A bad one, but a strategy.",
+  'The bag is heavier now. Coincidence?',
+  "You could stop. You won't.",
+  'Every push is a tiny negotiation with regret.',
+  'The bank teller has questions.',
+  "This is fine. It's all still theoretical money.",
+  'Diversifying your portfolio, one push at a time.',
+  'The house always has a cut. This is not the house.',
+  "You're not gambling. You're 'investing.'",
+  'Somewhere, a financial advisor is sighing.',
+  'The bag knows you want more. It always knows.',
+  'Cash out is right there. Right there.',
+  "One more push. Very responsible of you.",
+  'This is technically a savings plan.',
+  'The math still takes its 5% eventually.',
+  "You've made banking look like an extreme sport.",
+  'The bag is starting to feel personal.',
+  'Risk it for the biscuit. Or the rent.',
+  "Your wallet is watching this happen live.",
+  'This is the opposite of a rainy day fund.',
+];
+
+export function getMoneyQuote() {
+  return MONEY_QUOTES[Math.floor(Math.random() * MONEY_QUOTES.length)];
+}
+
+// Idle text once a money run busts — picked once at the moment it happens
+// and held (not re-rolled by poking, unlike POKE_QUOTES above), same as
+// classic's bustQuote. Busting in money mode loses only this run's
+// unbanked earnings, so the tone leans "that money's gone, not you."
+const MONEY_BUST_QUOTES = [
+  'The bag ran out of luck before you did.',
+  'That money is gone. You, presumably, are fine.',
+  'Unbanked and unbothered? Let\'s go with that.',
+  'The bag bit back. It happens.',
+  'Well, that was theoretical money anyway.',
+  "Easy come, easier go.",
+  'The house always collects eventually.',
+  'That cash-out button was right there.',
+  "You'll bank it next time. Probably.",
+  'A bold run, an unbanked ending.',
+  'The bag has trust issues now.',
+  'Some money you never really had.',
+  "That's a lesson in diversification.",
+  'The math finally sent an invoice.',
+  'Tomorrow, the bag resets. So do you.',
+];
+
+export function getMoneyBustQuote() {
+  return MONEY_BUST_QUOTES[Math.floor(Math.random() * MONEY_BUST_QUOTES.length)];
+}
+
+// Idle text once a money run is successfully banked — picked once at the
+// moment it happens, same pattern as the bust quote above but with the
+// opposite energy (satisfied, a little smug) since this is the one good
+// outcome the mode has.
+const MONEY_BANK_QUOTES = [
+  'Locked in. The bag respects discipline.',
+  "That's the whole game, actually: knowing when to stop.",
+  'Real money now. Not theoretical anymore.',
+  'The wallet just got a little heavier.',
+  'A rare display of restraint. Well played.',
+  "You beat the bag at its own game.",
+  'That one actually made it to the bank.',
+  'Greed: managed. Bag: defeated.',
+  'The math owes you one, for once.',
+  'Cashed out, no regrets, mostly.',
+  'A responsible adult decision. Shocking.',
+  'The bag is a little lighter. Your wallet is not.',
+  "That's what a win looks like around here.",
+  'Banked and unbothered.',
+  'The house did not, in fact, always win.',
+];
+
+export function getMoneyBankQuote() {
+  return MONEY_BANK_QUOTES[Math.floor(Math.random() * MONEY_BANK_QUOTES.length)];
+}

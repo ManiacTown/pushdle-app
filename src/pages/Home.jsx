@@ -1,9 +1,18 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
 import * as storage from '../lib/storage.js';
 import { pacificDateString, msUntilNextPacificMidnight } from '../lib/pacificDate.js';
-import { rollPush, rarityForStreak, formatRarity, earnedBadges, buildShareText, BADGES, RARITY_META } from '../lib/game.js';
+import {
+  rollPush,
+  rarityForStreak,
+  formatRarity,
+  earnedBadges,
+  buildShareText,
+  BADGES,
+  maxStatsForAllBadges,
+  zeroStatsForAllBadges,
+  camelToSnakeFields,
+} from '../lib/game.js';
 import { getQuoteForStreak, getBustQuoteForStreak, getPokeQuip } from '../lib/quotes.js';
 import { MONEY_SUCCESS_CHANCE } from '../lib/money.js';
 import { modeSlotStyle, MODE_TRANSITION_PHASE_MS } from '../lib/modeTransition.js';
@@ -14,8 +23,9 @@ import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { useParticles } from '../lib/useParticles.js';
 import OnboardingModal from '../components/OnboardingModal.jsx';
-import MoneyMode from '../components/MoneyMode.jsx';
+import MoneyMode, { MONEY_BADGE_REVEAL_DELAY_MS } from '../components/MoneyMode.jsx';
 import MoneyShop from '../components/MoneyShop.jsx';
+import BadgeToastStack from '../components/BadgeToast.jsx';
 
 const DEFAULT_STATS = { totalPushes: 0, dayStreak: 0, lastPlayedDate: null, bustedAtZero: false, bustedAtOne: false };
 // The "intensity" system (button heartbeat + background glow, see the
@@ -258,6 +268,16 @@ export default function Home() {
   useEffect(() => {
     setOddsFlashKey((k) => k + 1);
   }, [uiMode]);
+  // Mirrors uiMode for revealBadgeToast below, which needs the LIVE mode at
+  // the moment a scheduled reveal actually fires — a bust/cash-out can
+  // resolve (server round trip included) well after the user's already
+  // switched away from the mode that earned it, and a reveal scheduled
+  // before that switch doesn't get cancelled just because dismissBadgeToast
+  // ran first (there was nothing pending yet to cancel).
+  const uiModeRef = useRef(uiMode);
+  useEffect(() => {
+    uiModeRef.current = uiMode;
+  }, [uiMode]);
   // Drives the staggered slide transition between classic/money content —
   // null outside a switch. See src/lib/modeTransition.js for what each
   // phase/direction actually renders as; startModeSwitch below is what
@@ -268,6 +288,11 @@ export default function Home() {
   function startModeSwitch(target) {
     if (modeTransition || target === uiMode) return;
     playNav(); // reused as-is — already described as "a light, airy tick"
+    // A toast earned in the mode we're LEAVING shouldn't just vanish when
+    // that mode's component unmounts a moment from now — start its exit
+    // animation right away so it's finished (or nearly so) by the time the
+    // swap below actually happens.
+    dismissBadgeToast();
     const direction = target === 'money' ? 'forward' : 'backward';
     setModeTransition({ direction, phase: 'exit' });
     setTimeout(() => {
@@ -277,21 +302,30 @@ export default function Home() {
     }, MODE_TRANSITION_PHASE_MS);
   }
   const [showMoneyShop, setShowMoneyShop] = useState(false);
-  // Bumped by adminResetMoneyDay to force MoneyMode to remount — simplest
-  // way to make it re-fetch a clean run state, matching how
-  // adminResetDay/adminResetDayServer just wipe the row server-side and
-  // let the normal load-on-mount path pick up the fresh state.
-  const [moneyResetKey, setMoneyResetKey] = useState(0);
+  // Bumped by adminResetMoneyDay to tell MoneyMode to re-fetch a clean run
+  // state after its server-side row gets wiped — a signal prop MoneyMode
+  // itself reacts to (see its own resetSignal effect), not a `key`-forced
+  // remount like this used to be. A remount right at this exact spot
+  // (conditionally rendered by uiMode, where a mode switch ALSO swaps
+  // element types) turned out to risk leaving a stale MoneyMode instance
+  // behind after later switching back to classic — confirmed via repeated
+  // live reproduction, see MoneyMode.jsx's own comment on resetSignal.
+  const [moneyResetSignal, setMoneyResetSignal] = useState(0);
   // Bumped by the Force Bust button (when uiMode==='money') to tell
   // MoneyMode to bust itself in place — see the comment above
   // adminForceBustMoney's old body for why this can't just be another
-  // moneyResetKey-style remount.
+  // signal-prop-triggered reset.
   const [moneyForceBustSignal, setMoneyForceBustSignal] = useState(0);
   const [buttonHover, setButtonHover] = useState(false);
   const [stats, setStats] = useState(DEFAULT_STATS);
   const [earnedAtRunStart, setEarnedAtRunStart] = useState(new Set());
   const [newBadges, setNewBadges] = useState([]);
   const [showBadges, setShowBadges] = useState(false);
+  // True for exactly the duration of the toast's exit animation (see
+  // dismissBadgeToast below and global.css's .badge-toast-stack.leaving) —
+  // showBadges/newBadges stay populated the whole time so the toast keeps
+  // rendering (now with the .leaving class) instead of unmounting instantly.
+  const [badgesLeaving, setBadgesLeaving] = useState(false);
   // The default "1 in 10 chance this ends it." subtext, once the streak
   // reaches 3, gets replaced by one of these — re-rolled every 3 pushes
   // (see the effect below), not every push, so each one actually gets a
@@ -335,6 +369,19 @@ export default function Home() {
   // display short.
   const pokeQuipTimerRef = useRef(null);
   const timers = useRef([]);
+  // The timeout id of a badge-toast reveal that's been scheduled but
+  // hasn't fired yet (see revealBadgeToast/dismissBadgeToast below) — kept
+  // separate from the bulk `timers` array so it can be specifically
+  // cancelled (not just left to fire later) when the mode that earned it
+  // gets left before the reveal ever happens.
+  const pendingRevealTimerRef = useRef(null);
+  // Mirrors showBadges for use inside the reveal timeout's callback, which
+  // otherwise closes over whatever showBadges was at the moment the timer
+  // was scheduled (seconds earlier) rather than its live value.
+  const showBadgesRef = useRef(false);
+  useEffect(() => {
+    showBadgesRef.current = showBadges;
+  }, [showBadges]);
   const statsInitialized = useRef(false);
   const streakPanelRef = useRef(null);
   const { collapsed: chromeCollapsed, setCollapsed } = useChrome();
@@ -438,7 +485,24 @@ export default function Home() {
       setStats(s);
       // Snapshot of what's already earned before this run's pushes count,
       // so a bust can later diff against it to find what's newly earned.
-      setEarnedAtRunStart(new Set(earnedBadges({ bestStreak: best, ...s }).map((b) => b.id)));
+      // Explicit field picks, not a wholesale ...s spread — s is authStats
+      // for logged-in players, which also carries moneyWalletCents/
+      // moneyLifetimeCents (see AuthContext.jsx) now that the money
+      // variant exists. No badge check reads those today, but streak
+      // badges are classic-mode only by design (see BADGES in game.js) —
+      // picking fields explicitly keeps that true by construction instead
+      // of by coincidence.
+      setEarnedAtRunStart(
+        new Set(
+          earnedBadges({
+            bestStreak: best,
+            totalPushes: s.totalPushes,
+            dayStreak: s.dayStreak,
+            bustedAtZero: s.bustedAtZero,
+            bustedAtOne: s.bustedAtOne,
+          }).map((b) => b.id)
+        )
+      );
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, authStats]);
@@ -602,14 +666,45 @@ export default function Home() {
     timers.current = [];
   }
 
+  // Dismisses whatever badge toast is currently on screen (from EITHER
+  // mode — see the shared state at the top of this component) by playing
+  // its exit animation first (badgeSlideOut, see global.css), then
+  // actually clearing showBadges/newBadges once that finishes — instead of
+  // just wiping the state and having it disappear instantly. Safe to call
+  // when nothing's showing (no-op).
+  //
+  // Also cancels a reveal that's been SCHEDULED but hasn't fired yet (e.g.
+  // classic's 8000ms post-bust delay) — without this, switching modes (or
+  // starting a new run) during that delay window wouldn't stop it: the
+  // pending toast would still pop up later, now in whatever mode you've
+  // since moved to, and then just sit there since nothing else would ever
+  // dismiss it. The cancelled badges are deliberately NOT folded into
+  // earnedAtRunStart here — they'll naturally show up again as "newly
+  // earned" next time their own mode actually resolves a run, rather than
+  // being lost or force-shown somewhere unrelated.
+  function dismissBadgeToast() {
+    if (pendingRevealTimerRef.current) {
+      clearTimeout(pendingRevealTimerRef.current);
+      pendingRevealTimerRef.current = null;
+    }
+    if (!showBadges) return;
+    setBadgesLeaving(true);
+    timers.current.push(
+      setTimeout(() => {
+        setShowBadges(false);
+        setNewBadges([]);
+        setBadgesLeaving(false);
+      }, 400)
+    );
+  }
+
   function resetBustVisuals() {
     setShowBusted(false);
     setBustedSettled(false);
     setBustedSlid(false);
     setShowRarity(false);
     setBustRevealing(false);
-    setShowBadges(false);
-    setNewBadges([]);
+    dismissBadgeToast();
     setInstant(false);
     setShareStatus('');
     setBustQuote(null);
@@ -806,6 +901,61 @@ export default function Home() {
     recordBustAndCheckBadges(streak, serverStats);
   }
 
+  // Shared by recordBustAndCheckBadges (classic) and checkMoneyBadges
+  // (money) — schedules a badge-toast reveal `delayMs` out for whichever
+  // mode ('classic'/'money') earned `newly`, first cancelling any earlier
+  // scheduled-but-unfired reveal (pendingRevealTimerRef) so a mode switch
+  // or new run that happens before THIS one even fires can't leave two
+  // reveals racing.
+  //
+  // `forMode` is re-checked against the LIVE uiMode (uiModeRef) right when
+  // the timer actually fires, not just at schedule time — a bust/cash-out
+  // resolution can include a server round trip, so it's possible to
+  // schedule this, switch modes while it's still in flight, and only then
+  // have it fire — dismissBadgeToast's own pendingRevealTimerRef
+  // cancellation only catches reveals that were ALREADY scheduled at the
+  // moment of the switch, not ones scheduled after. If the mode's since
+  // changed, this bails without showing (and without folding into
+  // earnedAtRunStart) — same as a cancelled reveal, it'll naturally
+  // resurface next time that mode actually resolves a run.
+  //
+  // If a toast is still actively showing once this one's turn comes up
+  // (showBadgesRef — read live, not the value from whenever this was
+  // scheduled), it's dismissed first (the same exit animation
+  // dismissBadgeToast plays) and `newly` only shows once that finishes —
+  // rather than the cards just being swapped out from under whatever's on
+  // screen, which read as a glitchy shove.
+  function revealBadgeToast(newly, delayMs, forMode) {
+    if (pendingRevealTimerRef.current) clearTimeout(pendingRevealTimerRef.current);
+    const showNow = () => {
+      measureStreakPanelTop();
+      setNewBadges(newly);
+      setShowBadges(true);
+      setBadgesLeaving(false);
+      playBadge();
+      // Folded into earnedAtRunStart right as the toast reveals, not just
+      // left for the next login to pick up — earnedAtRunStart is otherwise
+      // only ever set once per login/guest-session (see the effect that
+      // seeds it), so without this, the SAME badge could re-trigger
+      // "newly earned" on a later bust within one session (e.g. an admin
+      // Force Bust, or now that switching modes makes multiple busts in
+      // one sitting normal).
+      setEarnedAtRunStart((prev) => new Set([...prev, ...newly.map((b) => b.id)]));
+    };
+    const id = setTimeout(() => {
+      pendingRevealTimerRef.current = null;
+      if (uiModeRef.current !== forMode) return;
+      if (showBadgesRef.current) {
+        setBadgesLeaving(true);
+        timers.current.push(setTimeout(showNow, 400));
+      } else {
+        showNow();
+      }
+    }, delayMs);
+    pendingRevealTimerRef.current = id;
+    timers.current.push(id);
+  }
+
   async function recordBustAndCheckBadges(streak, serverStats) {
     let s;
     if (serverStats) {
@@ -824,7 +974,6 @@ export default function Home() {
     const earnedNow = earnedBadges({ bestStreak: finalBest, ...s });
     const newly = earnedNow.filter((b) => !earnedAtRunStart.has(b.id));
     if (newly.length > 0) {
-      setNewBadges(newly);
       storage.saveTodayNewBadges(newly.map((b) => b.id));
       // Timed to land after the home page's chrome has FINISHED resetting
       // (streak > 0 — see runBustSequence's setBustRevealing(false) at
@@ -849,14 +998,26 @@ export default function Home() {
       // even with the delay. Forcing one more explicit measurement right
       // here, immediately before revealing, closes that gap directly
       // instead of just hoping the passive observer already caught up.
-      timers.current.push(
-        setTimeout(() => {
-          measureStreakPanelTop();
-          setShowBadges(true);
-          playBadge();
-        }, streak > 0 ? 8000 : 3000)
-      );
+      revealBadgeToast(newly, streak > 0 ? 8000 : 3000, 'classic');
     }
+  }
+
+  // Money-mode equivalent of recordBustAndCheckBadges above — passed down
+  // as MoneyMode's onMoneyResolved prop, called right after it refreshes
+  // its own money-badge-fields slice from the server (see
+  // AuthContext.jsx's refreshMoneyStats — MoneyMode's own setStats calls
+  // never touch those fields, only wallet/lifetime cents). Diffs against
+  // the SAME shared earnedAtRunStart baseline classic mode uses — a badge
+  // is a badge regardless of which mode earned it — then reveals on a
+  // fixed delay matching MoneyMode's own reveal-sequence timing, rather
+  // than classic's variable 8000/3000ms split (every money run, bust or
+  // cash-out, runs the same ~7.9s sequence, so there's no streak-0-style
+  // short-circuit to account for here).
+  function checkMoneyBadges(freshMoneyStats) {
+    const earnedNow = earnedBadges({ ...authStats, ...freshMoneyStats });
+    const newly = earnedNow.filter((b) => !earnedAtRunStart.has(b.id));
+    if (newly.length === 0) return;
+    revealBadgeToast(newly, MONEY_BADGE_REVEAL_DELAY_MS, 'money');
   }
 
   function triggerBust(streak) {
@@ -972,18 +1133,19 @@ export default function Home() {
     await loadRunState();
   }
 
-  // Deletes today's money_runs row server-side, then remounts MoneyMode
-  // (via moneyResetKey) so it re-fetches — same "wipe, then let the normal
-  // load-on-mount path pick up the fresh state" approach as
-  // adminResetDayServer above, just without needing this component to know
-  // anything about MoneyMode's internal state shape.
+  // Deletes today's money_runs row server-side, then signals MoneyMode
+  // (via moneyResetSignal) to re-fetch — same "wipe, then let the normal
+  // load path pick up the fresh state" approach as adminResetDayServer
+  // above, just without needing this component to know anything about
+  // MoneyMode's internal state shape.
   async function adminResetMoneyDay() {
     const { error } = await supabase.functions.invoke('admin', { body: { action: 'reset_money_day' } });
     if (error) {
       console.error('reset money day failed:', error);
       return;
     }
-    setMoneyResetKey((k) => k + 1);
+    dismissBadgeToast();
+    setMoneyResetSignal((k) => k + 1);
   }
 
   // Shares the classic "Force bust" button (see the onClick branch below)
@@ -996,6 +1158,12 @@ export default function Home() {
   // debris, then the full timed reveal — since it already owns all of
   // that logic and this session's real state (pushes/earnings) in memory.
 
+  // Money fields are only meaningful for logged-in accounts (money mode
+  // has no guest path at all), so the local guest mirror below only ever
+  // gets the classic-mode subset of whatever zeroStatsForAllBadges()/
+  // maxStatsForAllBadges() derive — the server call further down gets the
+  // FULL derived set (classic + money), since that's the one place money
+  // badges actually live.
   async function adminResetBadges() {
     clearTimers();
     resetBustVisuals();
@@ -1007,39 +1175,47 @@ export default function Home() {
     setStats(DEFAULT_STATS);
     setEarnedAtRunStart(new Set());
     if (user) {
-      const { data } = await supabase.functions.invoke('admin', { body: { action: 'reset_badges' } });
-      if (data) {
-        const { success, ...serverStats } = data;
-        setAuthStats(serverStats);
+      // Derived from BADGES itself (see game.js) — adding a new badge is
+      // automatically enough to make "reset all badges" clear it too,
+      // nothing here needs updating by hand.
+      const zeroed = zeroStatsForAllBadges();
+      const fields = { ...camelToSnakeFields(zeroed), last_played_date: null };
+      const { data } = await supabase.functions.invoke('admin', { body: { action: 'reset_badges', fields } });
+      if (data?.success) {
+        setAuthStats((prev) => ({ ...prev, ...zeroed }));
       }
     }
   }
 
   // Dev-only: maxes out every stat every badge check reads, so all of them
-  // (including the two bust-flavor ones) come back earned at once — for
-  // testing the badge list/flair UI without actually grinding for them.
-  // Sets earnedAtRunStart to match so this doesn't also fire a "new badge"
-  // toast on the next bust.
+  // (including the two bust-flavor ones, and every money badge) come back
+  // earned at once — for testing the badge list/flair UI without actually
+  // grinding for them. Sets earnedAtRunStart to match so this doesn't also
+  // fire a "new badge" toast on the next bust.
   async function adminClaimAllBadges() {
     clearTimers();
     resetBustVisuals();
-    const maxed = {
-      totalPushes: 1000,
-      dayStreak: 100,
+    // Derived from BADGES itself (see game.js) — adding a new badge is
+    // automatically enough to make "claim all badges" grant it too,
+    // nothing here needs updating by hand.
+    const maxedAll = maxStatsForAllBadges();
+    const localMaxed = {
+      totalPushes: maxedAll.totalPushes,
+      dayStreak: maxedAll.dayStreak,
       lastPlayedDate: pacificDateString(),
-      bustedAtZero: true,
-      bustedAtOne: true,
+      bustedAtZero: maxedAll.bustedAtZero,
+      bustedAtOne: maxedAll.bustedAtOne,
     };
-    await storage.saveStats(maxed);
-    await storage.setBestStreak(100);
-    setStats(maxed);
-    setBestStreakState(100);
-    setEarnedAtRunStart(new Set(earnedBadges({ bestStreak: 100, ...maxed }).map((b) => b.id)));
+    await storage.saveStats(localMaxed);
+    await storage.setBestStreak(maxedAll.bestStreak);
+    setStats(localMaxed);
+    setBestStreakState(maxedAll.bestStreak);
+    setEarnedAtRunStart(new Set(earnedBadges(maxedAll).map((b) => b.id)));
     if (user) {
-      const { data } = await supabase.functions.invoke('admin', { body: { action: 'claim_all_badges' } });
-      if (data) {
-        const { success, ...serverStats } = data;
-        setAuthStats(serverStats);
+      const fields = { ...camelToSnakeFields(maxedAll), last_played_date: pacificDateString() };
+      const { data } = await supabase.functions.invoke('admin', { body: { action: 'claim_all_badges', fields } });
+      if (data?.success) {
+        setAuthStats((prev) => ({ ...prev, ...maxedAll }));
       }
     }
   }
@@ -1129,7 +1305,12 @@ export default function Home() {
       )}
 
       {uiMode === 'money' ? (
-        <MoneyMode key={moneyResetKey} forceBustSignal={moneyForceBustSignal} modeTransition={modeTransition} />
+        <MoneyMode
+          forceBustSignal={moneyForceBustSignal}
+          resetSignal={moneyResetSignal}
+          modeTransition={modeTransition}
+          onMoneyResolved={checkMoneyBadges}
+        />
       ) : (
       <div
         className={shaking ? 'screen-shake' : ''}
@@ -1378,81 +1559,26 @@ export default function Home() {
             </div>
           )}
 
-          {showBadges && newBadges.length > 0 && (
-            <div
-              className="badge-toast-stack"
-              // Lines up with the streak panel's own top (--streak-panel-top,
-              // measured off the actual panel — see the useLayoutEffect
-              // above), not the Admin corner. Wrapped in max() with the
-              // dev-panel clearance so it still can't land on top of an
-              // open panel on the rare screens narrow/short enough for
-              // that to actually reach this far down.
-              style={{
-                top: showAdmin
-                  ? 'max(var(--streak-panel-top), calc(var(--admin-top) + var(--nav-bar-height) + 300px))'
-                  : 'var(--streak-panel-top)',
-              }}
-            >
-              <div className={'badge-toast-banner' + (instant ? ' instant' : '')}>
-                {newBadges.length === 1 ? 'New Badge' : 'New Badges'}
-              </div>
-              {newBadges.map((b, i) => (
-                <BadgeToastCard key={b.id} badge={b} index={i} instant={instant} />
-              ))}
-            </div>
-          )}
+          <BadgeToastStack
+            show={showBadges}
+            newBadges={newBadges}
+            instant={instant}
+            leaving={badgesLeaving}
+            // Lines up with the streak panel's own top (--streak-panel-top,
+            // measured off the actual panel — see the useLayoutEffect
+            // above), not the Admin corner. Wrapped in max() with the
+            // dev-panel clearance so it still can't land on top of an
+            // open panel on the rare screens narrow/short enough for
+            // that to actually reach this far down.
+            topStyle={{
+              top: showAdmin
+                ? 'max(var(--streak-panel-top), calc(var(--admin-top) + var(--nav-bar-height) + 300px))'
+                : 'var(--streak-panel-top)',
+            }}
+          />
         </>,
         document.body
       )}
-    </div>
-  );
-}
-
-// Icon sized to match its own card's text column (pill row + "Badge
-// earned" row) instead of a static font-size — a fixed size would either
-// undershoot on cards where the pill wraps to its own line (RARE/EPIC
-// etc. can push the column taller) or overshoot on plain one-line cards.
-// Measured per-card (not a shared CSS var, unlike --nav-bar-clearance/
-// --streak-panel-top) because multiple badges can be earned in the same
-// bust and each card's column can end up a different height.
-function BadgeToastCard({ badge, index, instant }) {
-  const columnRef = useRef(null);
-  const [iconSize, setIconSize] = useState(18);
-  const navigate = useNavigate();
-
-  useLayoutEffect(() => {
-    const el = columnRef.current;
-    if (!el) return;
-    const measure = () => setIconSize(el.getBoundingClientRect().height);
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  return (
-    <div
-      className={'badge-toast' + (instant ? ' instant' : '')}
-      onClick={() => {
-        playNav();
-        navigate('/profile', { state: { scrollToBadges: true } });
-      }}
-      title="View your badges"
-      style={{
-        animationDelay: instant ? '0s' : `${index * 0.15}s`,
-        '--rarity-color': RARITY_META[badge.rarity].color,
-        cursor: 'pointer',
-      }}
-    >
-      <div className="badge-toast-icon" style={{ fontSize: iconSize, lineHeight: `${iconSize}px` }}>
-        🏅
-      </div>
-      <div className="badge-toast-col" ref={columnRef}>
-        <div className="badge-toast-pill-row">
-          <span className="badge-rarity">{RARITY_META[badge.rarity].label}</span>
-        </div>
-        <div className="badge-toast-sub">Badge earned</div>
-      </div>
     </div>
   );
 }

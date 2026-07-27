@@ -96,22 +96,9 @@ export function AuthProvider({ children }) {
     // kept separate from role/selected_emoji so a not-yet-migrated
     // database (missing these columns) can't take that query down too —
     // this one just silently no-ops, leaving the fields undefined, until
-    // the migration's run. Merged into `stats` via a functional update
-    // (not a plain overwrite) since this resolves independently of the
-    // sync-stats call below and either could land first.
-    supabase
-      .from('profiles')
-      .select('money_wallet_cents, money_lifetime_cents')
-      .eq('id', user.id)
-      .single()
-      .then(({ data, error }) => {
-        if (error) return;
-        setStats((prev) => ({
-          ...prev,
-          moneyWalletCents: data?.money_wallet_cents ?? 0,
-          moneyLifetimeCents: data?.money_lifetime_cents ?? 0,
-        }));
-      });
+    // the migration's run. See refreshMoneyStats below — this is just its
+    // login-time call.
+    refreshMoneyStats();
 
     // Merges any locally-tracked progress (from before stats were
     // server-authoritative, or from guest play on this device pre-login)
@@ -184,6 +171,48 @@ export function AuthProvider({ children }) {
     setSelectedEmojiState(emoji);
   }
 
+  // Re-fetches every money-badge-relevant profile field and merges the
+  // result into `stats` (functional update, not a replace — this can race
+  // the sync-stats merge below, same reasoning as that call's own
+  // comment). Called once at login (see the [user] effect above) AND
+  // exposed here so MoneyMode.jsx can call it on demand right after a
+  // push/cash-out resolves — those RPCs write these columns server-side,
+  // but MoneyMode only ever pushes moneyWalletCents/moneyLifetimeCents
+  // into stats itself (see launchCoinToWallet), so without this the rest
+  // of the money badge fields would silently go stale until a reload.
+  // Returns the fetched camelCase slice (or null on error/logged-out) so a
+  // caller can diff against it immediately, without waiting on a re-render
+  // to see the new stats.
+  async function refreshMoneyStats() {
+    if (!user) return null;
+    const { data, error } = await supabase
+      .from('profiles')
+      .select(
+        'money_wallet_cents, money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
+          'money_weekly_cents, money_best_weekly_cents, ' +
+          'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100'
+      )
+      .eq('id', user.id)
+      .single();
+    if (error) return null;
+    const next = {
+      moneyWalletCents: data?.money_wallet_cents ?? 0,
+      moneyLifetimeCents: data?.money_lifetime_cents ?? 0,
+      // Money-badge fields (see game.js's money-* BADGES).
+      moneyBestRunCents: data?.money_best_run_cents ?? 0,
+      moneyBestBankStreak: data?.money_best_bank_streak ?? 0,
+      moneyReachedTop3Weekly: !!data?.money_reached_top3_weekly,
+      moneyBankedAfterOnePush: !!data?.money_banked_after_one_push,
+      moneyBustedOver100: !!data?.money_busted_over100,
+      // Profile.jsx's own money-tab stat tiles (see there) — same fields
+      // PublicProfile.jsx fetches separately for viewing someone else.
+      moneyWeeklyCents: data?.money_weekly_cents ?? 0,
+      moneyBestWeeklyCents: data?.money_best_weekly_cents ?? 0,
+    };
+    setStats((prev) => ({ ...prev, ...next }));
+    return next;
+  }
+
   // Called by OnboardingModal.jsx when a logged-in player dismisses it —
   // only ever sets true, mirroring the column's own one-way semantics.
   async function markOnboardingSeen() {
@@ -206,6 +235,10 @@ export function AuthProvider({ children }) {
         // Home on a later remount — sees it immediately rather than the
         // stale login-time merge snapshot.
         setStats,
+        // Lets MoneyMode.jsx pull a fresh money-badge-fields snapshot on
+        // demand (see refreshMoneyStats above) — the login-time fetch
+        // alone goes stale the instant a push/cash-out happens.
+        refreshMoneyStats,
         // null = logged out, or logged in but not loaded yet — see
         // OnboardingModal.jsx, which treats null as "don't render yet".
         onboardingSeen,

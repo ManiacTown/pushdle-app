@@ -25,6 +25,20 @@ export const BADGE_CATEGORIES = [
   { id: 'pushes', label: 'Total Pushes' },
   { id: 'days', label: 'Days Played' },
   { id: 'bust', label: 'Bust' },
+  // Money-variant categories (admin-gated for now, same as the mode
+  // itself) — kept as separate ids/labels rather than folded into the
+  // 4 above, both because "streak badges are classic-mode only" (see
+  // AuthContext.jsx/Home.jsx's explicit-field-pick comments from earlier
+  // this session) and because a combined grid would be one long scroll —
+  // see Profile.jsx's streak/money tab split.
+  { id: 'money-run', label: 'Best Run' },
+  { id: 'money-lifetime', label: 'Lifetime Earnings' },
+  { id: 'money-streak', label: 'Banking Streak' },
+  // Merged from what were previously two separate categories (weekly-rank
+  // and situational/style badges) into one — both were small enough on
+  // their own (1 and 2 badges) that splitting them felt like padding out
+  // the grid rather than meaningfully grouping anything.
+  { id: 'money-unique', label: 'Unique' },
 ];
 
 // Rarity is flavor on top of the check thresholds above — common/rare/
@@ -38,33 +52,126 @@ export const RARITY_META = {
   special: { label: 'Special', color: 'var(--neon-red)' },
 };
 
+// Declarative on purpose — `field` + `min` instead of a `check` function —
+// so "what stats value satisfies every badge" is itself derivable (see
+// maxStatsForAllBadges/zeroStatsForAllBadges below), not just checkable.
+// That's what lets the admin "claim all badges"/"reset all badges" tools
+// (Home.jsx's adminClaimAllBadges/adminResetBadges) stay correct
+// automatically as badges are added, instead of needing a hand-maintained
+// second copy of every threshold. `min: true` marks a boolean flag badge
+// (checked for truthiness, not compared numerically) — everything else is
+// a plain `stats[field] >= min` numeric check.
 export const BADGES = [
-  { id: 'streak-1', label: 'Baby Steps', category: 'streak', hint: 'Reach a streak of 1', rarity: 'common', check: (s) => s.bestStreak >= 1 },
-  { id: 'streak-10', label: 'Average', category: 'streak', hint: 'Reach a streak of 10', rarity: 'common', check: (s) => s.bestStreak >= 10 },
-  { id: 'streak-20', label: 'Lucky', category: 'streak', hint: 'Reach a streak of 20', rarity: 'rare', check: (s) => s.bestStreak >= 20 },
-  { id: 'streak-30', label: 'Extremely Lucky', category: 'streak', hint: 'Reach a streak of 30', rarity: 'rare', check: (s) => s.bestStreak >= 30 },
-  { id: 'streak-40', label: 'Four Leaf Clover', category: 'streak', hint: 'Reach a streak of 40', rarity: 'legendary', check: (s) => s.bestStreak >= 40 },
-  { id: 'streak-50', label: 'RNG Emperor', category: 'streak', hint: 'Reach a streak of 50', rarity: 'legendary', check: (s) => s.bestStreak >= 50 },
-  { id: 'streak-100', label: 'Luck 100', category: 'streak', hint: 'Reach a streak of 100', rarity: 'special', check: (s) => s.bestStreak >= 100 },
+  { id: 'streak-1', label: 'Baby Steps', category: 'streak', hint: 'Reach a streak of 1', rarity: 'common', field: 'bestStreak', min: 1 },
+  { id: 'streak-10', label: 'Average', category: 'streak', hint: 'Reach a streak of 10', rarity: 'common', field: 'bestStreak', min: 10 },
+  { id: 'streak-20', label: 'Lucky', category: 'streak', hint: 'Reach a streak of 20', rarity: 'rare', field: 'bestStreak', min: 20 },
+  { id: 'streak-30', label: 'Extremely Lucky', category: 'streak', hint: 'Reach a streak of 30', rarity: 'rare', field: 'bestStreak', min: 30 },
+  { id: 'streak-40', label: 'Four Leaf Clover', category: 'streak', hint: 'Reach a streak of 40', rarity: 'legendary', field: 'bestStreak', min: 40 },
+  { id: 'streak-50', label: 'RNG Emperor', category: 'streak', hint: 'Reach a streak of 50', rarity: 'legendary', field: 'bestStreak', min: 50 },
+  { id: 'streak-100', label: 'Luck 100', category: 'streak', hint: 'Reach a streak of 100', rarity: 'special', field: 'bestStreak', min: 100 },
 
-  { id: 'bust-1', label: 'Crash Bomber', category: 'bust', hint: 'Bust on a streak of 1', rarity: 'common', check: (s) => !!s.bustedAtOne },
-  { id: 'bust-0', label: 'How Is This Even Possible?!', category: 'bust', hint: 'Bust on your very first push', rarity: 'special', check: (s) => !!s.bustedAtZero },
+  { id: 'bust-1', label: 'Crash Bomber', category: 'bust', hint: 'Bust on a streak of 1', rarity: 'common', field: 'bustedAtOne', min: true },
+  { id: 'bust-0', label: 'How Is This Even Possible?!', category: 'bust', hint: 'Bust on your very first push', rarity: 'special', field: 'bustedAtZero', min: true },
 
-  { id: 'days-7', label: 'I Like This Game', category: 'days', hint: 'Play 7 days in a row', rarity: 'common', check: (s) => (s.dayStreak || 0) >= 7 },
-  { id: 'days-15', label: 'Clocked In', category: 'days', hint: 'Play 15 days in a row', rarity: 'common', check: (s) => (s.dayStreak || 0) >= 15 },
-  { id: 'days-30', label: 'Dedicated', category: 'days', hint: 'Play 30 days in a row', rarity: 'rare', check: (s) => (s.dayStreak || 0) >= 30 },
-  { id: 'days-50', label: 'The Long Haul', category: 'days', hint: 'Play 50 days in a row', rarity: 'rare', check: (s) => (s.dayStreak || 0) >= 50 },
-  { id: 'days-100', label: 'Probably An Addiction', category: 'days', hint: 'Play 100 days in a row', rarity: 'legendary', check: (s) => (s.dayStreak || 0) >= 100 },
+  { id: 'days-7', label: 'I Like This Game', category: 'days', hint: 'Play 7 days in a row', rarity: 'common', field: 'dayStreak', min: 7 },
+  { id: 'days-15', label: 'Clocked In', category: 'days', hint: 'Play 15 days in a row', rarity: 'common', field: 'dayStreak', min: 15 },
+  { id: 'days-30', label: 'Dedicated', category: 'days', hint: 'Play 30 days in a row', rarity: 'rare', field: 'dayStreak', min: 30 },
+  { id: 'days-50', label: 'The Long Haul', category: 'days', hint: 'Play 50 days in a row', rarity: 'rare', field: 'dayStreak', min: 50 },
+  { id: 'days-100', label: 'Probably An Addiction', category: 'days', hint: 'Play 100 days in a row', rarity: 'legendary', field: 'dayStreak', min: 100 },
 
-  { id: 'pushes-25', label: 'Button Enjoyer', category: 'pushes', hint: '25 total pushes', rarity: 'common', check: (s) => (s.totalPushes || 0) >= 25 },
-  { id: 'pushes-100', label: 'Button Enthusiast', category: 'pushes', hint: '100 total pushes', rarity: 'common', check: (s) => (s.totalPushes || 0) >= 100 },
-  { id: 'pushes-200', label: 'Button Superfan', category: 'pushes', hint: '200 total pushes', rarity: 'rare', check: (s) => (s.totalPushes || 0) >= 200 },
-  { id: 'pushes-500', label: 'Button Masher', category: 'pushes', hint: '500 total pushes', rarity: 'rare', check: (s) => (s.totalPushes || 0) >= 500 },
-  { id: 'pushes-1000', label: 'Boop.', category: 'pushes', hint: '1000 total pushes', rarity: 'legendary', check: (s) => (s.totalPushes || 0) >= 1000 },
+  { id: 'pushes-25', label: 'Button Enjoyer', category: 'pushes', hint: '25 total pushes', rarity: 'common', field: 'totalPushes', min: 25 },
+  { id: 'pushes-100', label: 'Button Enthusiast', category: 'pushes', hint: '100 total pushes', rarity: 'common', field: 'totalPushes', min: 100 },
+  { id: 'pushes-200', label: 'Button Superfan', category: 'pushes', hint: '200 total pushes', rarity: 'rare', field: 'totalPushes', min: 200 },
+  { id: 'pushes-500', label: 'Button Masher', category: 'pushes', hint: '500 total pushes', rarity: 'rare', field: 'totalPushes', min: 500 },
+  { id: 'pushes-1000', label: 'Boop.', category: 'pushes', hint: '1000 total pushes', rarity: 'legendary', field: 'totalPushes', min: 1000 },
+
+  // ---- Money variant (admin-gated) ----
+  // Reads moneyBestRunCents/moneyLifetimeCents/moneyBestBankStreak/etc off
+  // the same stats object as everything above (see AuthContext.jsx) — just
+  // a different set of fields, all sourced from profiles' money_* columns.
+  // moneyBestBankStreak/moneyBestRunCents are permanent greatest()-tracked
+  // maxima (mirrors bestStreak), NOT the live current values — earning one
+  // of these keeps it earned even if a later run busts or the streak
+  // breaks. See schema.sql's resolve_money_cashout for where these are set.
+  { id: 'money-streak-1', label: 'Pocket Change', category: 'money-streak', hint: 'Cash out for the first time', rarity: 'common', field: 'moneyBestBankStreak', min: 1 },
+  { id: 'money-streak-5', label: 'Penny Pincher', category: 'money-streak', hint: 'Bank 5 days in a row', rarity: 'common', field: 'moneyBestBankStreak', min: 5 },
+  { id: 'money-streak-15', label: 'Ebenezer Scrooge', category: 'money-streak', hint: 'Bank 15 days in a row', rarity: 'rare', field: 'moneyBestBankStreak', min: 15 },
+
+  { id: 'money-lifetime-250', label: 'Nest Egg', category: 'money-lifetime', hint: 'Earn $250 lifetime', rarity: 'common', field: 'moneyLifetimeCents', min: 25000 },
+  { id: 'money-lifetime-1000', label: 'Coin Collector', category: 'money-lifetime', hint: 'Earn $1,000 lifetime', rarity: 'common', field: 'moneyLifetimeCents', min: 100000 },
+  { id: 'money-lifetime-2500', label: 'The Vault', category: 'money-lifetime', hint: 'Earn $2,500 lifetime', rarity: 'rare', field: 'moneyLifetimeCents', min: 250000 },
+  { id: 'money-lifetime-10000', label: 'Moneybags', category: 'money-lifetime', hint: 'Earn $10,000 lifetime', rarity: 'rare', field: 'moneyLifetimeCents', min: 1000000 },
+
+  { id: 'money-run-25', label: 'Steady Hand', category: 'money-run', hint: 'Bank $25 in a single run', rarity: 'common', field: 'moneyBestRunCents', min: 2500 },
+  { id: 'money-run-50', label: 'The Banker', category: 'money-run', hint: 'Bank $50 in a single run', rarity: 'rare', field: 'moneyBestRunCents', min: 5000 },
+  { id: 'money-run-100', label: 'Midas Touch', category: 'money-run', hint: 'Bank $100 in a single run', rarity: 'legendary', field: 'moneyBestRunCents', min: 10000 },
+  { id: 'money-run-250', label: 'Lottery', category: 'money-run', hint: 'Bank $250 in a single run', rarity: 'special', field: 'moneyBestRunCents', min: 25000 },
+
+  { id: 'money-style-walkaway', label: 'Walking Away', category: 'money-unique', hint: 'Cash out after just 1 push', rarity: 'common', field: 'moneyBankedAfterOnePush', min: true },
+  { id: 'money-rank-top3', label: 'Golden Goose', category: 'money-unique', hint: 'Reach top 3 on the weekly money leaderboard', rarity: 'legendary', field: 'moneyReachedTop3Weekly', min: true },
+  { id: 'money-style-greedy', label: 'Too Greedy', category: 'money-unique', hint: 'Bust with $100+ unbanked in one run', rarity: 'legendary', field: 'moneyBustedOver100', min: true },
 ];
 
+function badgeIsEarned(badge, stats) {
+  const value = stats[badge.field];
+  return badge.min === true ? !!value : (value || 0) >= badge.min;
+}
+
 export function earnedBadges(stats) {
-  return BADGES.filter((b) => b.check(stats));
+  return BADGES.filter((b) => badgeIsEarned(b, stats));
+}
+
+// Every field any badge reads, maxed out to whatever value guarantees it's
+// earned (the highest `min` seen per field; `true` for boolean flags) —
+// powers the admin "claim all badges" dev tool (Home.jsx's
+// adminClaimAllBadges). Adding a new badge above is automatically enough
+// to make it claimable too; nothing here needs updating by hand.
+export function maxStatsForAllBadges() {
+  const result = {};
+  for (const b of BADGES) {
+    if (b.min === true) {
+      result[b.field] = true;
+    } else {
+      result[b.field] = Math.max(result[b.field] || 0, b.min);
+    }
+  }
+  return result;
+}
+
+// Every field any badge reads, reset to its "not earned" value (0 or
+// false) — powers the admin "reset all badges" dev tool (Home.jsx's
+// adminResetBadges). Same auto-updates-with-BADGES property as
+// maxStatsForAllBadges above.
+export function zeroStatsForAllBadges() {
+  const result = {};
+  for (const b of BADGES) {
+    result[b.field] = b.min === true ? false : 0;
+  }
+  return result;
+}
+
+// Mechanical camelCase -> snake_case key conversion — every stats field
+// name in this codebase already follows that correspondence 1:1 with its
+// `profiles` column (bestStreak/best_streak, moneyLifetimeCents/
+// money_lifetime_cents, moneyReachedTop3Weekly/money_reached_top3_weekly,
+// ...), so this needs no manual mapping table or special-cased rules
+// either — deliberately kept to the single obvious rule (insert _ before
+// each uppercase letter) rather than trying to also guess where digit
+// runs belong, since that guess isn't actually knowable from the
+// camelCase spelling alone (compare moneyReachedTop3Weekly, no
+// underscore before "3", against a column that USED to be named
+// money_busted_over_100, underscore before "100" — same digit-after-
+// lowercase shape, different real answer). The column that broke this
+// was renamed (money_busted_over_100 -> money_busted_over100) to match
+// the convention instead — see schema.sql's own comment on that column.
+// Used by Home.jsx to turn maxStatsForAllBadges()/zeroStatsForAllBadges()
+// into the column names the admin Edge Function actually writes.
+export function camelToSnakeFields(obj) {
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    result[key.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase())] = value;
+  }
+  return result;
 }
 
 // Wordle-style shareable summary of a finished (busted) run. Uncapped on
@@ -97,4 +204,12 @@ export const BADGE_EMOJI = {
   'pushes-200': '🟢',
   'pushes-500': '🔴',
   'pushes-1000': '💥',
+  'money-streak-15': '🧓',
+  'money-lifetime-2500': '🏦',
+  'money-lifetime-10000': '💰',
+  'money-run-50': '💵',
+  'money-run-100': '🙌',
+  'money-run-250': '🤑',
+  'money-rank-top3': '🐔',
+  'money-style-greedy': '😵',
 };

@@ -2,6 +2,8 @@
   "rewrites": [{ "source": "/((?!api/).*)", "destination": "/index.html" }],
   "crons": [
     { "path": "/api/simulate-bot-day", "schedule": "0 7 * * *" },
-    { "path": "/api/simulate-bot-day", "schedule": "0 8 * * *" }
+    { "path": "/api/simulate-bot-day", "schedule": "0 8 * * *" },
+    { "path": "/api/weekly-money-reset", "schedule": "0 7 * * 1" },
+    { "path": "/api/weekly-money-reset", "schedule": "0 8 * * 1" }
   ]
 }

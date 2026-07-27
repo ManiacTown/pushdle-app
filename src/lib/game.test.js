@@ -10,6 +10,9 @@ import {
   BADGES,
   BADGE_EMOJI,
   RARITY_META,
+  maxStatsForAllBadges,
+  zeroStatsForAllBadges,
+  camelToSnakeFields,
 } from './game.js';
 
 afterEach(() => {
@@ -88,6 +91,62 @@ describe('earnedBadges', () => {
   it('every badge id is unique', () => {
     const ids = BADGES.map((b) => b.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe('maxStatsForAllBadges / zeroStatsForAllBadges', () => {
+  it('maxStatsForAllBadges satisfies every single badge', () => {
+    const maxed = maxStatsForAllBadges();
+    const ids = earnedBadges(maxed).map((b) => b.id);
+    expect(ids.sort()).toEqual(BADGES.map((b) => b.id).sort());
+  });
+
+  it('zeroStatsForAllBadges satisfies no badge at all', () => {
+    expect(earnedBadges(zeroStatsForAllBadges())).toEqual([]);
+  });
+
+  it('both cover the exact same set of fields as BADGES references', () => {
+    const expectedFields = new Set(BADGES.map((b) => b.field));
+    expect(new Set(Object.keys(maxStatsForAllBadges()))).toEqual(expectedFields);
+    expect(new Set(Object.keys(zeroStatsForAllBadges()))).toEqual(expectedFields);
+  });
+});
+
+describe('camelToSnakeFields', () => {
+  it('converts every camelCase key to snake_case, values untouched', () => {
+    expect(camelToSnakeFields({ bestStreak: 1, moneyLifetimeCents: 2, totalPushes: 3 })).toEqual({
+      best_streak: 1,
+      money_lifetime_cents: 2,
+      total_pushes: 3,
+    });
+  });
+
+  it('leaves an already-lowercase key unchanged', () => {
+    expect(camelToSnakeFields({ role: 'admin' })).toEqual({ role: 'admin' });
+  });
+
+  // Regression case: a digit run has no capital letter marking a word
+  // boundary the way every OTHER break does, so it's genuinely ambiguous
+  // from the camelCase spelling alone whether an underscore belongs there
+  // (compare moneyReachedTop3Weekly, no underscore before "3", against
+  // moneyBustedOver100 — same shape, and its matching column USED to have
+  // one, money_busted_over_100, until it was renamed to match this
+  // simpler no-guessing rule instead — see the function's own comment).
+  it('does not guess an underscore before a digit run — no capital letter there to trigger one', () => {
+    expect(camelToSnakeFields({ moneyBustedOver100: true, moneyReachedTop3Weekly: true })).toEqual({
+      money_busted_over100: true,
+      money_reached_top3_weekly: true,
+    });
+  });
+
+  it('every field any badge references converts without a stray/missing underscore around a digit', () => {
+    const converted = Object.keys(camelToSnakeFields(maxStatsForAllBadges()));
+    expect(converted).toContain('money_busted_over100');
+    expect(converted).toContain('money_reached_top3_weekly');
+    // Spot-check a representative few rather than hardcoding all of them —
+    // this is really guarding against a digit-boundary regression on some
+    // *future* field, not re-deriving the whole list.
+    expect(converted).toEqual(expect.arrayContaining(['best_streak', 'money_lifetime_cents', 'money_best_bank_streak']));
   });
 });
 

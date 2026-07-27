@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient.js';
-import { pacificDateString } from '../lib/pacificDate.js';
+import { pacificDateString, msUntilNextPacificWeekStart } from '../lib/pacificDate.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
 import { formatCents } from '../lib/money.js';
@@ -12,6 +12,88 @@ const RANK_COLORS = ['#ffd45e', '#c9d3e0', '#e8935a'];
 // Rows per page — once the merged real+bot list exceeds this, pagination
 // controls appear below the board.
 const PAGE_SIZE = 50;
+
+// Same shape as MoneyMode.jsx's identical helper (next-run/next-reset
+// countdowns) — small enough that a shared lib extraction isn't worth it
+// for two call sites.
+function formatCountdown(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = String(Math.floor(total / 3600)).padStart(2, '0');
+  const m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
+  const s = String(total % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
+
+// Last week's top 3 by money_weekly_cents (see api/weekly-money-reset.js,
+// which snapshots this into money_weekly_resets.top3 right before each
+// Monday reset) — rendered 2nd/1st/3rd left-to-right, classic podium
+// order, with block height tracking rank. Real graphics can swap in for
+// these plain CSS blocks later; the data/layout underneath won't change.
+function WeeklyPodium({ top3 }) {
+  // Its own useNavigate(), not a prop drilled down from Leaderboard — this
+  // is rendered as a real component (<WeeklyPodium .../>), so it's free to
+  // call hooks directly, same as any other component in this file.
+  const navigate = useNavigate();
+  if (!top3 || top3.length === 0) {
+    return (
+      <div className="mono" style={{ fontSize: 9, color: 'var(--text-dim)', textAlign: 'center', alignSelf: 'center', maxWidth: 140 }}>
+        No champions yet — check back after the first weekly reset.
+      </div>
+    );
+  }
+  const order = [1, 0, 2];
+  const heights = [64, 46, 34];
+  const medals = ['🥇', '🥈', '🥉'];
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
+      {order.map((rankIdx) => {
+        const entry = top3[rankIdx];
+        if (!entry) return <div key={rankIdx} style={{ width: 50 }} />;
+        // Same navigation as the regular row list below (playNav + push to
+        // the read-only PublicProfile route) — entry.userId is a real
+        // profiles.id either way, bot or real account, so this always
+        // resolves. Snapshotted username/emoji still display even if
+        // that account has since renamed/changed flair; only the
+        // navigation itself uses the live id.
+        const goToProfile = () => {
+          playNav();
+          navigate(`/player/${entry.userId}`);
+        };
+        return (
+          <div
+            key={rankIdx}
+            className="mono"
+            onClick={goToProfile}
+            style={{ width: 50, textAlign: 'center', cursor: 'pointer' }}
+          >
+            <div style={{ fontSize: 15, marginBottom: 2 }}>{entry.emoji || ''}</div>
+            <div style={{ fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>
+              {entry.username}
+            </div>
+            <div
+              style={{
+                marginTop: 4,
+                height: heights[rankIdx],
+                borderRadius: '6px 6px 0 0',
+                background: `${RANK_COLORS[rankIdx]}22`,
+                border: `1px solid ${RANK_COLORS[rankIdx]}66`,
+                borderBottom: 'none',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 2,
+              }}
+            >
+              <div style={{ fontSize: 13 }}>{medals[rankIdx]}</div>
+              <div style={{ fontSize: 9, fontWeight: 700, color: RANK_COLORS[rankIdx] }}>{formatCents(entry.scoreCents)}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function Leaderboard() {
   const { user, isAdmin } = useAuth();
@@ -23,6 +105,40 @@ export default function Leaderboard() {
   // even if somehow set to 'money' while logged out/non-admin, since the
   // fetch effect below only ever queries the money branch when isAdmin.
   const [tab, setTab] = useState('streak');
+  // Sub-toggle within the money tab only (not a third top-level tab) —
+  // 'lifetime' reads money_lifetime_cents (never goes down), 'weekly'
+  // reads money_weekly_cents (reset by api/weekly-money-reset.js every
+  // Monday — see that file and game.js's "Golden Goose" badge, which
+  // snapshots the top 3 here into something permanent right before the
+  // reset happens).
+  const [moneyPeriod, setMoneyPeriod] = useState('lifetime');
+  // Last week's champions (see WeeklyPodium above) — fetched once per
+  // visit to the money tab, independent of moneyPeriod (it's always "last
+  // week," regardless of which period you're currently browsing).
+  const [lastWeekTop3, setLastWeekTop3] = useState([]);
+  // Ticks once a second purely to force a re-render, so the weekly
+  // countdown below (which reads the live clock fresh every render, not
+  // from this state) stays current — same pattern as MoneyMode.jsx/
+  // Home.jsx's own countdown timers.
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !isAdmin || tab !== 'money') return;
+    supabase
+      .from('money_weekly_resets')
+      .select('top3')
+      .order('week_start', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => {
+        setLastWeekTop3(data?.top3 ?? []);
+      });
+  }, [tab, isAdmin]);
 
   useEffect(() => {
     setPage(0);
@@ -37,13 +153,16 @@ export default function Leaderboard() {
         setAllRows([]);
         return;
       }
-      // Lifetime total, not a per-day score — reads straight from profiles
-      // rather than joining through money_runs (which only holds TODAY's
-      // in-progress run, and isn't publicly readable anyway — see schema.sql).
+      // Both columns live on profiles, not money_runs (which only holds
+      // TODAY's in-progress run, and isn't publicly readable anyway — see
+      // schema.sql) — money_lifetime_cents never goes down,
+      // money_weekly_cents resets every Monday (see moneyPeriod's comment
+      // above). Same query shape either way, just a different column.
+      const scoreColumn = moneyPeriod === 'weekly' ? 'money_weekly_cents' : 'money_lifetime_cents';
       supabase
         .from('profiles')
-        .select('id, username, selected_emoji, money_lifetime_cents')
-        .order('money_lifetime_cents', { ascending: false })
+        .select(`id, username, selected_emoji, ${scoreColumn}`)
+        .order(scoreColumn, { ascending: false })
         .limit(1000)
         .then(({ data, error }) => {
           const rows =
@@ -52,7 +171,7 @@ export default function Leaderboard() {
                   userId: row.id,
                   name: row.username ?? 'Unknown',
                   emoji: row.selected_emoji ?? null,
-                  score: row.money_lifetime_cents,
+                  score: row[scoreColumn],
                   me: user ? row.id === user.id : false,
                 }))
               : [];
@@ -84,7 +203,7 @@ export default function Leaderboard() {
             : [];
         setAllRows(rows);
       });
-  }, [user, tab, isAdmin]);
+  }, [user, tab, moneyPeriod, isAdmin]);
 
   const pageCount = Math.max(1, Math.ceil(allRows.length / PAGE_SIZE));
   const rows = allRows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
@@ -101,37 +220,104 @@ export default function Leaderboard() {
     // wider, it just gets sparser.
     <div className="panel spotlight" onMouseMove={spotlightMove} style={{ maxWidth: 460, margin: '0 auto' }}>
       <h3 style={{ fontSize: 15, marginBottom: 14 }}>
-        {tab === 'money' ? 'Lifetime money leaderboard' : "Today's leaderboard"}
+        {tab === 'money'
+          ? moneyPeriod === 'weekly'
+            ? "This week's money leaderboard"
+            : 'Lifetime money leaderboard'
+          : "Today's leaderboard"}
       </h3>
       {/* TEMP admin gate — the money variant isn't ready for real players
           yet, so this tab is hidden rather than showing everyone a
           permanently-empty board for a mode they can't play. Remove this
-          isAdmin check once it's ready for everyone. */}
+          isAdmin check once it's ready for everyone. The tab row + sub-
+          toggle live in a column on the left; the podium (only in the
+          money tab) sits beside them on the right, not below — that's the
+          "red circled" space from the screenshot. */}
       {isAdmin && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-          <button
-            className="btn-ghost"
-            style={tab === 'streak' ? { borderColor: 'var(--neon-cyan)', color: 'var(--neon-cyan)' } : undefined}
-            onClick={() => setTab('streak')}
-          >
-            Streak
-          </button>
-          <button
-            className="btn-ghost"
-            style={tab === 'money' ? { borderColor: '#ffd45e', color: '#ffd45e' } : undefined}
-            onClick={() => setTab('money')}
-          >
-            💰 Money
-          </button>
+        <div style={{ display: 'flex', gap: 12, marginBottom: 14, alignItems: 'flex-start', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn-ghost"
+                style={tab === 'streak' ? { borderColor: 'var(--neon-cyan)', color: 'var(--neon-cyan)' } : undefined}
+                onClick={() => setTab('streak')}
+              >
+                Streak
+              </button>
+              <button
+                className="btn-ghost"
+                style={tab === 'money' ? { borderColor: '#ffd45e', color: '#ffd45e' } : undefined}
+                onClick={() => setTab('money')}
+              >
+                💰 Money
+              </button>
+            </div>
+            {/* Sub-toggle, only within the money tab — same button pattern
+                one level down, cyan/gold swapped for a plain violet accent
+                so it doesn't visually compete with the tab row above it.
+                This Week first (was Lifetime) — the more actionable/live
+                view of the two now leads. */}
+            {tab === 'money' && (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="btn-ghost"
+                  style={
+                    moneyPeriod === 'weekly'
+                      ? { borderColor: 'rgba(139,92,246,0.7)', color: 'var(--text)', fontSize: 11 }
+                      : { fontSize: 11 }
+                  }
+                  onClick={() => setMoneyPeriod('weekly')}
+                >
+                  This Week
+                </button>
+                <button
+                  className="btn-ghost"
+                  style={
+                    moneyPeriod === 'lifetime'
+                      ? { borderColor: 'rgba(139,92,246,0.7)', color: 'var(--text)', fontSize: 11 }
+                      : { fontSize: 11 }
+                  }
+                  onClick={() => setMoneyPeriod('lifetime')}
+                >
+                  Lifetime
+                </button>
+              </div>
+            )}
+          </div>
+          {tab === 'money' && (
+            <div>
+              <div
+                className="mono"
+                style={{ fontSize: 8, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6, textAlign: 'center' }}
+              >
+                Last week
+              </div>
+              <WeeklyPodium top3={lastWeekTop3} />
+            </div>
+          )}
         </div>
       )}
       <div className="mono" style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 14 }}>
         {!isSupabaseConfigured
           ? 'Accounts aren’t configured on this deployment yet.'
+          : tab === 'money' && moneyPeriod === 'weekly'
+          ? 'Resets every Monday — top 3 here earn the Golden Goose badge right before the reset.'
           : tab === 'money'
           ? 'Total money ever cashed out — spending in the shop never lowers this.'
           : 'Real runs from logged-in players — guest runs stay local and never appear here.'}
       </div>
+      {/* Live countdown to next Monday midnight (Pacific) — see
+          msUntilNextPacificWeekStart. Sits between the "resets every
+          Monday" description above and the rank banner below, per the
+          ask. tick (see the effect above) is what keeps this re-rendering
+          every second even though it's never read directly here — same
+          "force a re-render, recompute the real value fresh" pattern
+          MoneyMode.jsx's own countdown uses. */}
+      {tab === 'money' && moneyPeriod === 'weekly' && (
+        <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 14 }}>
+          Resets in <span style={{ color: 'var(--neon-cyan)', fontWeight: 700 }}>{formatCountdown(msUntilNextPacificWeekStart())}</span>
+        </div>
+      )}
       {myRank >= 0 && (
         <div
           className="mono"

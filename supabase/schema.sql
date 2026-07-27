@@ -32,9 +32,14 @@ create table if not exists profiles (
   -- was previously tracked client-side in localStorage, on login, so
   -- existing players' progress isn't lost by this becoming authoritative).
   -- Guests have no row here at all — they stay purely local, same as ever.
-  best_streak       int not null default 0,
-  total_pushes      int not null default 0,
-  day_streak        int not null default 0,
+  -- The >= 0 checks on this and every other stat/currency column below are
+  -- defense in depth, not the primary guard (that's the admin Edge
+  -- Function's ALLOWED_BADGE_FIELDS allowlist and the RPCs' own
+  -- greatest()/increment-only logic) — belt-and-suspenders against a
+  -- negative value ever landing here by any path.
+  best_streak       int not null default 0 check (best_streak >= 0),
+  total_pushes      int not null default 0 check (total_pushes >= 0),
+  day_streak        int not null default 0 check (day_streak >= 0),
   last_played_date  date,
   busted_at_zero    boolean not null default false,
   busted_at_one     boolean not null default false,
@@ -63,7 +68,8 @@ create table if not exists profiles (
   -- actually earned that badge. Keep this list in sync with
   -- src/lib/game.js's BADGE_EMOJI.
   selected_emoji    text check (selected_emoji is null or selected_emoji in
-                       ('⭐','🌀','🍀','🎲','🎲💯🎲','💀','🔥','⚡','🚀','🟢','🔴','💥')),
+                       ('⭐','🌀','🍀','🎲','🎲💯🎲','💀','🔥','⚡','🚀','🟢','🔴','💥',
+                        '🧓','🏦','💰','💵','🙌','🤑','🐔','😵')),
 
   -- Whether this player has dismissed the first-visit "how to play" modal
   -- (see OnboardingModal.jsx) on ANY device — only ever set true, never
@@ -82,8 +88,48 @@ create table if not exists profiles (
   -- entire reason spending in the shop can never move someone's
   -- leaderboard rank. Both are NOT client-updatable (see the grant below)
   -- — only resolve_money_push/resolve_money_cashout write them.
-  money_wallet_cents    int not null default 0,
-  money_lifetime_cents  int not null default 0
+  money_wallet_cents    int not null default 0 check (money_wallet_cents >= 0),
+  money_lifetime_cents  int not null default 0 check (money_lifetime_cents >= 0),
+
+  -- Money-badge tracking (see game.js's money-* BADGES) — all written
+  -- exclusively by resolve_money_push/resolve_money_cashout below, same
+  -- restricted-grant treatment as the money columns above.
+  -- Best single run ever banked — greatest() on every cash-out, mirrors
+  -- how best_streak tracks classic's longest run.
+  money_best_run_cents          int not null default 0 check (money_best_run_cents >= 0),
+  -- This WEEK's earnings — resets to 0 by the weekly cron (see
+  -- api/weekly-money-reset.js), unlike money_lifetime_cents which never
+  -- goes down. Powers Leaderboard.jsx's weekly money sub-tab.
+  money_weekly_cents             int not null default 0 check (money_weekly_cents >= 0),
+  -- Best money_weekly_cents ever reached, ACROSS all weeks — greatest() on
+  -- every cash-out (money_weekly_cents only ever rises within a week, so
+  -- its value right before a given week's reset is that week's peak; this
+  -- just keeps the highest peak seen over every week so far). Powers
+  -- PublicProfile.jsx's money-tab stat tile.
+  money_best_weekly_cents        int not null default 0 check (money_best_weekly_cents >= 0),
+  -- Consecutive-day cash-out streak. money_bank_streak is the LIVE value
+  -- (can drop to 0 on a bust or a skipped day); money_best_bank_streak is
+  -- a permanent greatest() of it, same "earn it once, keep it forever"
+  -- property best_streak already has — deliberately NOT like classic's
+  -- day_streak-based badges, which check the live value and can silently
+  -- un-earn (see the money-streak-* badges' own comment in game.js).
+  money_bank_streak              int not null default 0 check (money_bank_streak >= 0),
+  money_best_bank_streak         int not null default 0 check (money_best_bank_streak >= 0),
+  -- Gap-detection for money_bank_streak — mirrors last_played_date's role
+  -- for day_streak. Null until the first-ever cash-out.
+  money_last_banked_date         date,
+  -- One-way flags, same pattern as busted_at_zero/busted_at_one above —
+  -- each backs exactly one badge and only ever flips true.
+  money_reached_top3_weekly      boolean not null default false,
+  money_banked_after_one_push    boolean not null default false,
+  -- No underscore before "100" — deliberately matches money_reached_top3_weekly's
+  -- own no-underscore-before-a-digit-run naming above, not a typo. Keeping
+  -- both flag columns on the same convention is what lets
+  -- game.js's camelToSnakeFields() stay a pure mechanical regex with no
+  -- per-field exceptions (an earlier version of this column WAS
+  -- money_busted_over_100, which broke that; see this file's git history
+  -- and game.js's camelToSnakeFields comment).
+  money_busted_over100           boolean not null default false
 );
 
 alter table profiles enable row level security;
@@ -389,6 +435,18 @@ create policy "users can read their own money run"
   on money_runs for select
   using (auth.uid() = user_id);
 
+-- Second SELECT policy, not a replacement — Postgres RLS policies for the
+-- same command OR together, so a row is visible if EITHER this or the one
+-- above allows it. Lets PublicProfile.jsx's "Today's Money" stat tile work
+-- for an admin viewer looking at someone else's profile (same viewer-
+-- isAdmin gate that tile already uses client-side) without opening
+-- everyone's live in-progress run to the public — this is the first RLS
+-- policy in this file to check the CALLER's own role (via profiles,
+-- itself publicly readable) rather than just auth.uid() directly.
+create policy "admins can read any money run"
+  on money_runs for select
+  using (exists (select 1 from profiles where profiles.id = auth.uid() and profiles.role = 'admin'));
+
 grant select on money_runs to authenticated;
 grant all on money_runs to service_role;
 
@@ -438,6 +496,14 @@ begin
     update money_runs set pushes = v_pushes, earnings_cents = v_earnings where id = v_id;
   else
     update money_runs set status = 'dead' where id = v_id returning status into v_status;
+    -- money_busted_over100 (see game.js's "Too Greedy" badge) — v_earnings
+    -- here is this run's unbanked total right before the bust, since a
+    -- bust never adds to it. Busting also breaks the banking streak,
+    -- same as classic's day_streak breaking on a missed day.
+    update profiles set
+      money_busted_over100 = money_busted_over100 or (v_earnings >= 10000),
+      money_bank_streak = 0
+    where id = p_user_id;
   end if;
 
   return query select v_pushes, v_earnings, v_status, v_success;
@@ -463,11 +529,15 @@ returns table(
 declare
   v_id bigint;
   v_earnings int;
+  v_pushes int;
   v_status text;
   v_wallet int;
   v_lifetime int;
+  v_last_banked date;
+  v_prev_streak int;
+  v_new_streak int;
 begin
-  select id, earnings_cents, status into v_id, v_earnings, v_status
+  select id, earnings_cents, pushes, status into v_id, v_earnings, v_pushes, v_status
     from money_runs
     where user_id = p_user_id and date = p_date
     for update;
@@ -479,9 +549,34 @@ begin
     return;
   end if;
 
+  -- Locked separately from money_runs above (different table) — cheap
+  -- insurance against a concurrent cash-out on the same user corrupting
+  -- the streak math below, even though the money_runs lock already rules
+  -- out two cash-outs landing for the same user+date.
+  select money_last_banked_date, money_bank_streak into v_last_banked, v_prev_streak
+    from profiles where id = p_user_id for update;
+
+  -- Streak continues only if the last bank was literally yesterday
+  -- (Pacific) — a null v_last_banked (first-ever cash-out) or any bigger
+  -- gap both fall through to "start a new streak of 1", same "greatest()
+  -- for the permanent badge, live value for the current one" split
+  -- money_best_bank_streak/money_bank_streak documents in schema.sql.
+  v_new_streak := case when v_last_banked = p_date - 1 then v_prev_streak + 1 else 1 end;
+
   update profiles set
     money_wallet_cents = money_wallet_cents + v_earnings,
-    money_lifetime_cents = money_lifetime_cents + v_earnings
+    money_lifetime_cents = money_lifetime_cents + v_earnings,
+    money_best_run_cents = greatest(money_best_run_cents, v_earnings),
+    money_weekly_cents = money_weekly_cents + v_earnings,
+    -- Both sides reference the OLD money_weekly_cents (every SET
+    -- expression in one UPDATE sees the pre-update row), so this is the
+    -- exact same "new weekly total" as the line above — just also kept as
+    -- an all-time peak instead of being allowed to reset with the week.
+    money_best_weekly_cents = greatest(money_best_weekly_cents, money_weekly_cents + v_earnings),
+    money_banked_after_one_push = money_banked_after_one_push or (v_pushes = 1),
+    money_bank_streak = v_new_streak,
+    money_best_bank_streak = greatest(money_best_bank_streak, v_new_streak),
+    money_last_banked_date = p_date
   where id = p_user_id
   returning money_wallet_cents, money_lifetime_cents into v_wallet, v_lifetime;
 
@@ -493,3 +588,40 @@ $$ language plpgsql security definer set search_path = public;
 
 revoke execute on function public.resolve_money_cashout from public, anon, authenticated;
 grant execute on function public.resolve_money_cashout to service_role;
+
+-- ---- Weekly money leaderboard reset (see api/weekly-money-reset.js) ----
+--
+-- Idempotency guard for the weekly cron, same shape/purpose as
+-- daily_runs'/money_runs' own unique(user_id, date) — Vercel Cron fires
+-- this endpoint twice around the Pacific-midnight DST boundary on
+-- purpose (see vercel.json's comment), same as the existing daily
+-- bot-seeding cron. Whichever call lands first successfully inserts its
+-- week_start and does the real work; the second hits a unique-violation
+-- and no-ops, rather than double-resetting money_weekly_cents or
+-- double-granting money_reached_top3_weekly.
+create table if not exists money_weekly_resets (
+  week_start date primary key,
+  ran_at timestamptz not null default now(),
+  -- Snapshot of that week's top 3 by money_weekly_cents, written by
+  -- api/weekly-money-reset.js right after granting money_reached_top3_weekly
+  -- and before zeroing everyone's weekly total — [{userId, username, emoji,
+  -- scoreCents}, ...], ranked, up to 3 entries (fewer if fewer than 3
+  -- players had a nonzero week). Snapshotted (username/emoji captured at
+  -- that moment, not looked up live) so Leaderboard.jsx's "last week's
+  -- champions" podium keeps showing who was actually being celebrated even
+  -- if they've since renamed or changed flair — same reasoning
+  -- buildShareText-style snapshots elsewhere in this app favor a frozen
+  -- copy over a live join for anything meant to commemorate a moment.
+  top3 jsonb
+);
+
+alter table money_weekly_resets enable row level security;
+-- Public read — Leaderboard.jsx's "last week's champions" podium needs
+-- this, and there's nothing sensitive in it (the same usernames/scores
+-- are already public via profiles/the leaderboard itself). Still only
+-- service_role can WRITE (no insert/update policy for any client role).
+create policy "money weekly resets are publicly readable"
+  on money_weekly_resets for select
+  using (true);
+grant select on money_weekly_resets to anon, authenticated;
+grant all on money_weekly_resets to service_role;

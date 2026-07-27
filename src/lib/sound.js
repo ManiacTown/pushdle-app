@@ -135,6 +135,16 @@ export function playPoke() {
   tone({ freq: 240, freqEnd: 180, duration: 0.05, type: 'triangle', gain: 0.07 });
 }
 
+// The money bag getting poked once BANKED (see pokeMoneyBag in
+// MoneyMode.jsx) — same soft, brief "poke" family as playPoke above (same
+// duration/gain/triangle wave), not the sharper sampled coin-collect
+// sound, which read as too sharp/clinky for an idle, already-resolved
+// moment. Just a gentle upward drift instead of playPoke's downward one,
+// enough to read as calm-and-content rather than dull-and-broken.
+export function playBankPoke() {
+  tone({ freq: 320, freqEnd: 380, duration: 0.06, type: 'triangle', gain: 0.07 });
+}
+
 // A small two-note sting for a new badge — the only cue with more than one
 // note, since this is the one moment that's actually meant to feel like a
 // little reward rather than just tactile feedback.
@@ -180,6 +190,24 @@ export function playCoinCollect() {
 // launchCoinToWallet/MoneyMode.jsx).
 export function playCoinBank() {
   playFile('/coin_bank.mp3');
+}
+
+// Pressing the Cash Out button itself (see cashOut/MoneyMode.jsx) — a
+// quick, rising confirm blip, deliberately distinct from playPush's
+// falling thud (this is a deposit action, not a push) and from
+// playCoinBank above (that one's reserved for the coin actually landing a
+// couple seconds later, not the click that sets it in motion).
+export function playBankPress() {
+  tone({ freq: 300, freqEnd: 460, duration: 0.08, type: 'triangle', gain: 0.12 });
+}
+
+// The money-variant combo bar (see MoneyMode.jsx) filling up and
+// resetting — a bright two-note "ding," the one other multi-note cue
+// besides playBadge, since filling the bar is meant to feel like a small
+// reward beat too, not just another tick.
+export function playComboFull() {
+  tone({ freq: 720, duration: 0.09, type: 'sine', gain: 0.11 });
+  tone({ freq: 1080, duration: 0.14, type: 'sine', gain: 0.1, delay: 0.07 });
 }
 
 export function playReveal() {

@@ -4,9 +4,21 @@ import { useChrome } from '../lib/ChromeContext.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { useParticles } from '../lib/useParticles.js';
 import { pacificDateString, msUntilNextPacificMidnight } from '../lib/pacificDate.js';
-import { MONEY_SUCCESS_CHANCE, formatCents } from '../lib/money.js';
-import { playPush, playSuccess, playBust, playReveal, playCoinCollect, playCoinBank } from '../lib/sound.js';
+import { MONEY_SUCCESS_CHANCE, MONEY_BONUS_EVERY, formatCents } from '../lib/money.js';
+import {
+  playPush,
+  playSuccess,
+  playBust,
+  playReveal,
+  playCoinCollect,
+  playCoinBank,
+  playPoke,
+  playBankPoke,
+  playBankPress,
+  playComboFull,
+} from '../lib/sound.js';
 import { modeSlotStyle } from '../lib/modeTransition.js';
+import { getMoneyQuote, getMoneyBustQuote, getMoneyBankQuote } from '../lib/quotes.js';
 
 // TEMP: only reachable via Home.jsx's isAdmin-gated mode-switch button —
 // see that gate's comment for the full removal plan once this is ready
@@ -33,10 +45,20 @@ function formatCountdown(ms) {
 
 const DEFAULT_RUN = { status: 'loading', pushes: 0, earningsCents: 0 };
 
-export default function MoneyMode({ forceBustSignal, modeTransition }) {
-  const { user, stats, setStats } = useAuth();
+// How long Home.jsx should wait after onMoneyResolved fires before it
+// actually reveals a money-badge toast — matches this component's own
+// fixed reveal-sequence length (runRevealSequence below ends at 7900ms,
+// see setRevealing(false) there) plus the same 800ms chrome-uncollapse CSS
+// transition classic mode's own 8000ms toast delay already accounts for
+// (see Home.jsx's recordBustAndCheckBadges). Every money run — bust or
+// cash-out — runs this exact same sequence, so unlike classic there's no
+// shorter streak-0-style case to special-case here.
+export const MONEY_BADGE_REVEAL_DELAY_MS = 8700;
+
+export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition, onMoneyResolved }) {
+  const { user, stats, setStats, refreshMoneyStats } = useAuth();
   const { setCollapsed } = useChrome();
-  const { particles, rings, spawnEffect, popCoin, spawnDebris } = useParticles();
+  const { particles, rings, spawnEffect, popCoin, spawnDebris, spawnSpark } = useParticles();
   const [run, setRun] = useState(DEFAULT_RUN);
   const [rolling, setRolling] = useState(false);
   const [tick, setTick] = useState(0);
@@ -85,9 +107,45 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
   // happens almost immediately — well before the ~7s reveal sequence even
   // gets going) — see the render condition below and cashOut().
   const [cashOutLingering, setCashOutLingering] = useState(false);
+  // The bag's own "poke" flinch once a run is resolved — mirrors
+  // Home.jsx's pokeBustedButton (same .push-wrap--poke bounce class,
+  // reused as-is since it's plain transform, not push-specific) so the
+  // bag never feels dead after busting or banking. See pokeMoneyBag.
+  const [bagPoking, setBagPoking] = useState(false);
+  // Combo bar below the bag — fills one notch per push, 0-MONEY_BONUS_EVERY
+  // (the top value is a brief "full" hold before it resets to 0 for the
+  // next cycle) — deliberately the SAME constant the server's actual +$3
+  // bonus push uses (see money.js/schema.sql's resolve_money_push), not a
+  // separately-chosen bar size, so the bar always telegraphs the real
+  // bonus cadence rather than an arbitrary one that could drift from it.
+  // See push()'s success branch and the mount-load effect below for how
+  // this stays in sync with run.pushes.
+  const [comboFill, setComboFill] = useState(0);
+  // The corner money-icon's one-shot "bounce up and fade away" on hitting
+  // a full bar (see .money-combo-icon--pop) — cleared via a timer, at
+  // which point removing the class lets the icon's own base transition
+  // bring it back to its resting spot (see the CSS comment on why this
+  // needs no separate "show again" step).
+  const [comboIconPop, setComboIconPop] = useState(false);
+  // The "+$3" floater — reuses .money-wallet-floater verbatim (same class,
+  // same rise-and-fade animation) since the ask was specifically for it to
+  // look exactly like the real wallet gain floater, not a bespoke effect.
+  const [comboBonusText, setComboBonusText] = useState(false);
+  // Quip subtext — mirrors Home.jsx's quote/bustQuote pattern (see
+  // quotes.js's money-variant pools). moneyQuote cycles every 3 pushes
+  // while playing (quoteBucketRef tracks which 3-push bucket it was last
+  // rolled for, same technique as Home.jsx's quoteBucketRef);
+  // moneyBustQuip/moneyBankQuip are each picked ONCE, right when that
+  // outcome happens, and held — not re-rolled by poking.
+  const [moneyQuote, setMoneyQuote] = useState(null);
+  const [moneyBustQuip, setMoneyBustQuip] = useState(null);
+  const [moneyBankQuip, setMoneyBankQuip] = useState(null);
+  const quoteBucketRef = useRef(-1);
   const amountRef = useRef(null);
   const walletPanelRef = useRef(null);
   const cashOutBtnRef = useRef(null);
+  const bagBtnRef = useRef(null);
+  const lastPokeAtRef = useRef(0);
   const sparkleId = useRef(0);
   const timers = useRef([]);
   // A separate bucket from `timers` above, specifically for self-contained
@@ -97,15 +155,46 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
   // a double-click starting overlapping reveal sequences, not meant to
   // touch unrelated click feedback that was just queued a moment earlier).
   const clickFxTimers = useRef([]);
+  // True from a successful cash-out response until the coin actually lands
+  // (see launchCoinToWallet) — broader than the `flyingCoin` state it
+  // parallels, covering the ~5.7s wait before the coin even launches too.
+  // Needed because refreshMoneyStats (called right when the cash-out
+  // response comes back, so onMoneyResolved's badge-diff timing lines up
+  // with the reveal sequence's own start) updates `stats.moneyWalletCents`
+  // immediately — this stops that from also jumping displayedWalletCents
+  // ahead of the coin-landing animation, same reasoning the `flyingCoin`
+  // guard below already documents.
+  const suppressWalletSyncRef = useRef(false);
 
   useEffect(() => {
     return () => clickFxTimers.current.forEach(clearTimeout);
   }, []);
 
   useEffect(() => {
-    if (flyingCoin) return; // hold the pre-cashout value until it actually lands
+    // Hold the pre-cashout value until the coin actually lands — see
+    // suppressWalletSyncRef's own comment for why this is broader than
+    // just `flyingCoin` now.
+    if (flyingCoin || suppressWalletSyncRef.current) return;
     setDisplayedWalletCents(stats?.moneyWalletCents ?? 0);
   }, [stats?.moneyWalletCents, flyingCoin]);
+
+  // Mid-run quip cycling — identical mechanics to Home.jsx's own quote
+  // effect (same 3-push bucket size, same "only re-roll when the bucket
+  // actually changes" guard so a quip sticks around for its full window
+  // instead of re-randomizing on every render), just against run.pushes
+  // instead of state.streak.
+  useEffect(() => {
+    if (run.status !== 'playing' || run.pushes < 3) {
+      setMoneyQuote(null);
+      quoteBucketRef.current = -1;
+      return;
+    }
+    const bucket = Math.floor(run.pushes / 3);
+    if (bucket !== quoteBucketRef.current) {
+      quoteBucketRef.current = bucket;
+      setMoneyQuote(getMoneyQuote());
+    }
+  }, [run.pushes, run.status]);
 
   // Header + nav bar collapse (see ChromeContext) whenever a run is in
   // progress OR the reveal is still choreographing itself — same rule as
@@ -191,6 +280,14 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
       return;
     }
     let cancelled = false;
+    loadTodayRun(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  function loadTodayRun(isCancelled) {
     supabase
       .from('money_runs')
       .select('pushes, earnings_cents, status')
@@ -198,7 +295,7 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
       .eq('date', pacificDateString())
       .maybeSingle()
       .then(({ data }) => {
-        if (cancelled) return;
+        if (isCancelled && isCancelled()) return;
         const next = data
           ? { status: data.status, pushes: data.pushes, earningsCents: data.earnings_cents }
           : { status: 'playing', pushes: 0, earningsCents: 0 };
@@ -210,18 +307,71 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
           setLabelSlid(true);
           setShowAmount(true);
           setShowWalletPanel(true);
+          // Picked once here too, not just at the moment of a live bust/
+          // cash-out — otherwise refreshing the page (or switching modes
+          // and back) mid-idle would fall back to the plain static text
+          // instead of a quip.
+          if (next.status === 'dead') setMoneyBustQuip(getMoneyBustQuote());
+          else setMoneyBankQuip(getMoneyBankQuote());
         } else if (next.status === 'playing' && next.pushes > 0) {
           // Mounting straight into a run already mid-play (e.g. navigated
           // away after pushing once, then back) — the wallet panel should
           // already be in its "exited" state here too, not defaulting back
-          // to visible just because this is a fresh mount.
+          // to visible just because this is a fresh mount. Same idea for
+          // the combo bar's fill level — %MONEY_BONUS_EVERY is always the
+          // correct resting value (a push count that's an exact multiple
+          // means a cycle just completed and reset, never "currently full").
           setShowWalletPanel(false);
+          setComboFill(next.pushes % MONEY_BONUS_EVERY);
         }
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [user]);
+  }
+
+  // Admin dev-tool trigger (see resetSignal prop) — the server-side row was
+  // just wiped (see Home.jsx's adminResetMoneyDay), so re-run the same
+  // "load today's run" fetch a fresh mount would do, landing back on a
+  // clean 'playing'/0-pushes state. Deliberately a signal prop rather than
+  // a `key`-forced remount (which this used to be) — a full remount at this
+  // exact spot (conditionally rendered by uiMode, right where a mode switch
+  // ALSO swaps element types) turned out to be exactly the combination that
+  // could leave a stale MoneyMode instance behind after later switching
+  // back to classic (confirmed via repeated live reproduction — a classic
+  // bust earlier in the session, then this key-forced remount, then
+  // switching away, would occasionally fail to unmount the old instance,
+  // and it'd keep sitting there invisibly, still taking up layout space).
+  // Explicitly resets every other piece of local session state too, since
+  // a signal-prop refresh doesn't get that "everything back to its useState
+  // default" reset a real remount gave for free.
+  const resetSignalRef = useRef(resetSignal);
+  useEffect(() => {
+    if (resetSignal === resetSignalRef.current) return; // skip the initial mount value
+    resetSignalRef.current = resetSignal;
+    clearTimers();
+    clickFxTimers.current.forEach(clearTimeout);
+    clickFxTimers.current = [];
+    setRolling(false);
+    setShaking(false);
+    setShakeAmount(6);
+    setBagAnim('');
+    resetRevealVisuals();
+    setFlyingCoin(null);
+    setFloaterAmount(null);
+    setShowWalletPanel(true);
+    setImpactSparkles([]);
+    setBankBtnAnim(false);
+    setCashOutLingering(false);
+    setBagPoking(false);
+    setComboFill(0);
+    setComboIconPop(false);
+    setComboBonusText(false);
+    setMoneyQuote(null);
+    setMoneyBustQuip(null);
+    setMoneyBankQuip(null);
+    suppressWalletSyncRef.current = false;
+    setRun(DEFAULT_RUN);
+    loadTodayRun();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetSignal]);
 
   // Shared by a real push-bust and the admin Force Bust trigger below —
   // same bust-impact trio Home.jsx's triggerBust uses: screen flash,
@@ -239,6 +389,7 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
     timers.current.push(setTimeout(() => setShaking(false), 500));
     spawnEffect('var(--neon-red)', 24);
     spawnDebris(bustIntensity);
+    setMoneyBustQuip(getMoneyBustQuote());
     runRevealSequence();
   }
 
@@ -258,8 +409,33 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
         playSuccess(data.pushes);
         playCoinCollect();
         timers.current.push(setTimeout(() => setBagAnim(''), 450));
+        // Advances the combo bar a notch per push; hitting a full bar
+        // holds briefly (with its own cue, the corner icon's bounce-away,
+        // and a "+$3" floater — matching the real bonus this telegraphs)
+        // before resetting for the next cycle — see .money-combo-fill in
+        // global.css for the width transition this drives.
+        setComboFill((f) => {
+          const next = f + 1;
+          if (next >= MONEY_BONUS_EVERY) {
+            playComboFull();
+            setComboIconPop(true);
+            setComboBonusText(true);
+            clickFxTimers.current.push(setTimeout(() => setComboIconPop(false), 500));
+            clickFxTimers.current.push(setTimeout(() => setComboBonusText(false), 1200));
+            clickFxTimers.current.push(setTimeout(() => setComboFill(0), 350));
+            return MONEY_BONUS_EVERY;
+          }
+          return next;
+        });
       } else {
         triggerMoneyBust(data.pushes);
+        // A bust can flip money_busted_over100 and resets money_bank_streak
+        // server-side (see resolve_money_push) — refresh so those show up
+        // in stats immediately instead of only after a reload, and report
+        // the fresh slice up so Home.jsx can check for a newly-earned
+        // badge. Fired right away, not delayed — this is just the data
+        // fetch/diff; the toast's own reveal timing lives in Home.jsx.
+        refreshMoneyStats().then((fresh) => fresh && onMoneyResolved?.(fresh));
       }
     } catch (err) {
       console.error('money push failed:', err);
@@ -295,13 +471,15 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
   async function cashOut() {
     if (!user || rolling || run.status !== 'playing' || run.pushes === 0) return;
     setRolling(true);
-    // Immediate click feedback — no sound here anymore (see launchCoinToWallet
-    // for the actual "money hits the bank" cue, played once the coin visually
-    // lands, not at the click). Sparkles trace the button's own outline
+    // Immediate click feedback — playBankPress is its own dedicated "press"
+    // cue, distinct from playCoinBank (that one's reserved for the coin
+    // actually landing a couple seconds later, in launchCoinToWallet, not
+    // this click). Sparkles trace the button's own outline
     // (spawnBankBorderSparkles) rather than radiating from its center —
     // reads as the border itself lighting up, not a burst blowing past it.
     // The button also gets a quick expand-then-settle bounce
     // (bankBtnAnim/.btn-cash-out--pop) timed to roughly the same ~450ms.
+    playBankPress();
     setBankBtnAnim(true);
     clickFxTimers.current.push(setTimeout(() => setBankBtnAnim(false), 450));
     const btn = cashOutBtnRef.current;
@@ -318,11 +496,24 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
       const { data, error } = await supabase.functions.invoke('money-cashout');
       if (error || !data) throw error ?? new Error('no response');
       setRun({ status: data.status, pushes: run.pushes, earningsCents: data.earningsCents });
-      // Deliberately NOT updating stats/displayedWalletCents here — that
-      // happens once the coin visually lands (see launchCoinToWallet), so
-      // the wallet panel keeps showing the pre-cashout balance for the
-      // whole reveal instead of jumping ahead of the animation.
+      // Deliberately NOT updating displayedWalletCents here — that happens
+      // once the coin visually lands (see launchCoinToWallet), so the
+      // wallet panel keeps showing the pre-cashout balance for the whole
+      // reveal instead of jumping ahead of the animation. refreshMoneyStats
+      // below DOES update the underlying stats.moneyWalletCents right away
+      // (so onMoneyResolved's badge-diff timing lines up with the reveal
+      // sequence's own start, not 5.7s late) — suppressWalletSyncRef is
+      // what keeps that from leaking into the visible wallet panel early.
+      suppressWalletSyncRef.current = true;
+      setMoneyBankQuip(getMoneyBankQuote());
       runRevealSequence();
+      // Cash-out can move money_best_run_cents, money_weekly_cents,
+      // money_best_weekly_cents, money_best_bank_streak, and
+      // money_banked_after_one_push server-side (see
+      // resolve_money_cashout) — refresh so those (and the badge check)
+      // reflect it without a reload. Fired now, not delayed — see the
+      // comment above.
+      refreshMoneyStats().then((fresh) => fresh && onMoneyResolved?.(fresh));
       // Gives the "$X earned" text a beat to actually be read (it appears
       // at 4250ms, see runRevealSequence), AND lets the wallet panel
       // finish sliding back in first (re-appears at 5150ms, ~400ms
@@ -353,6 +544,7 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
       // never just silently vanish because an animation couldn't measure
       // itself) — apply the real update directly instead.
       setStats((prev) => ({ ...prev, moneyWalletCents: walletCents, moneyLifetimeCents: lifetimeCents }));
+      suppressWalletSyncRef.current = false;
       return;
     }
     const from = amountEl.getBoundingClientRect();
@@ -365,6 +557,7 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
     timers.current.push(
       setTimeout(() => {
         setFlyingCoin(null);
+        suppressWalletSyncRef.current = false;
         setStats((prev) => ({ ...prev, moneyWalletCents: walletCents, moneyLifetimeCents: lifetimeCents }));
         setFloaterAmount(earnedCents);
         spawnWalletImpact(landX, landY);
@@ -449,6 +642,45 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
     clickFxTimers.current.push(
       setTimeout(() => setImpactSparkles((s) => s.filter((p) => !ids.includes(p.id))), 600)
     );
+  }
+
+  // Mirrors Home.jsx's pokeBustedButton — once the run is resolved, the
+  // bag stops taking real pushes but shouldn't just go dead on click
+  // either. Reuses the exact same .push-wrap--poke flinch (plain
+  // transform, nothing push-specific about it) plus a debounce guard for
+  // the same reason pokeBustedButton has one (a double-click/fast mash
+  // firing two real click events for what reads as one action). Deliberately
+  // different per outcome, as asked: busted reuses spawnSpark (the same
+  // red/white crack-spark classic's own poke uses) + playPoke (a dull
+  // boop, fitting for prodding something broken); banked reuses
+  // spawnWalletImpact (the same green/gold burst the coin landing uses,
+  // anchored to the bag's own position via bagBtnRef) + playCoinCollect
+  // (already a cheerful, coin-flavored cue, not otherwise used once a run
+  // is over) — so poking a win feels rewarding rather than reusing the
+  // bust-flavored cue for both outcomes.
+  function pokeMoneyBag() {
+    const now = Date.now();
+    if (now - lastPokeAtRef.current < 260) return;
+    lastPokeAtRef.current = now;
+
+    setBagPoking(true);
+    clickFxTimers.current.push(setTimeout(() => setBagPoking(false), 220));
+
+    if (banked) {
+      // playBankPoke, not playCoinCollect — a relaxed, gentle tone in the
+      // same family as playPoke below (not the sharper sampled coin-collect
+      // sound, which read as too sharp/"clinky" for an idle, already-
+      // resolved moment).
+      playBankPoke();
+      const btn = bagBtnRef.current;
+      if (btn) {
+        const r = btn.getBoundingClientRect();
+        spawnWalletImpact(r.left + r.width / 2, r.top + r.height / 2);
+      }
+    } else {
+      playPoke();
+      spawnSpark();
+    }
   }
 
   if (!user) {
@@ -560,7 +792,15 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
           </div>
         </div>
 
-        <div style={{ position: 'relative', ...modeSlotStyle(modeTransition, 1) }}>
+        {/* poking (see pokeMoneyBag) reuses .push-wrap--poke on THIS
+            wrapper, not the <button> — same reasoning as Home.jsx's own
+            push-wrap: it moves the bag, the tap-aura, and the particle
+            field together as one rigid piece rather than letting them
+            visually separate for the ~220ms flinch. */}
+        <div
+          className={'money-bag-wrap' + (bagPoking ? ' push-wrap--poke' : '')}
+          style={{ position: 'relative', ...modeSlotStyle(modeTransition, 1) }}
+        >
           {/* Mirrors push-btn--idle-pulse's own condition exactly (playing,
               not mid-press/bounce) — same "still here, tap again" invite as
               classic's glowing border, just as a small glowing label since
@@ -568,8 +808,14 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
               own comment on why it's borderless). */}
           {run.status === 'playing' && !bagAnim && <div className="money-tap-aura">tap</div>}
           <button
-            onClick={push}
-            disabled={rolling || run.status !== 'playing'}
+            ref={bagBtnRef}
+            onClick={resolved ? pokeMoneyBag : push}
+            // Only truly disabled mid-network-request or before the initial
+            // load-on-mount fetch has resolved ('loading') — once resolved
+            // (busted/banked), clicks route to pokeMoneyBag instead of
+            // being swallowed, same as classic's push button staying
+            // "live" after a bust (see pokeBustedButton in Home.jsx).
+            disabled={rolling || run.status === 'loading'}
             className={
               'money-bag-btn' +
               (run.status === 'dead'
@@ -602,14 +848,62 @@ export default function MoneyMode({ forceBustSignal, modeTransition }) {
           </div>
         </div>
 
+        {/* Combo bar — MONEY_BONUS_EVERY notch-divided segments, filling
+            one per push (see push()'s success branch) and resetting with
+            its own cue once full. Always mounted whenever pushes > 0 so
+            far this run (same "always mounted, class-toggled" technique
+            as .money-wallet-panel/.money-cashout-wrap), so it can
+            transition in on the first push and back out on bust/bank
+            instead of popping. The corner icon and "+$3" floater live in
+            .money-combo-inner, NOT .money-combo-track — the track needs
+            overflow:hidden to keep the fill bar's corners clean, but that
+            would clip the icon bouncing above the bar and the floater
+            rising even further, so they're siblings of the track instead,
+            inside a wrapper that isn't clipped. */}
+        {run.pushes > 0 && (
+          <div className={'money-combo-wrap' + (run.status === 'playing' ? '' : ' money-combo-wrap--collapsed')}>
+            <div className="money-combo-inner">
+              <div className="money-combo-track">
+                <div className="money-combo-fill" style={{ width: `${(comboFill / MONEY_BONUS_EVERY) * 100}%` }} />
+                {Array.from({ length: MONEY_BONUS_EVERY - 1 }).map((_, i) => (
+                  <div key={i} className="money-combo-notch" style={{ left: `${((i + 1) / MONEY_BONUS_EVERY) * 100}%` }} />
+                ))}
+              </div>
+              <img
+                src="/money.png"
+                alt=""
+                className={'money-combo-icon' + (comboIconPop ? ' money-combo-icon--pop' : '')}
+              />
+              {/* Directly right of the corner icon (which sits at
+                  right:-4px, width:20px within this same 160px-wide
+                  .money-combo-inner — icon spans roughly x=144 to x=164)
+                  rather than the base class's own centered-above-panel
+                  position, which was built for the wallet panel's much
+                  wider box. No color override — left as the class's own
+                  default (var(--neon-green)), same "exactly how it looks
+                  for banking" green as the real wallet floater. */}
+              {comboBonusText && (
+                <div className="money-wallet-floater" style={{ left: '176px', top: '-8px' }}>+$3</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Quips — mirrors Home.jsx's quote/bustQuote fallback chain
+            exactly: a picked-once idle quip once resolved (moneyBustQuip/
+            moneyBankQuip), a cycling mid-run quip once pushes >= 3
+            (moneyQuote), falling back to the plain static line whenever
+            the relevant quip hasn't been rolled yet (e.g. the instant a
+            run resolves, before that render's setMoneyBustQuip/
+            setMoneyBankQuip call has landed). */}
         <div className="mono" style={{ marginTop: 16, fontSize: 11, color: 'var(--text-dim)', textAlign: 'center', ...modeSlotStyle(modeTransition, 2) }}>
           {run.status === 'dead'
-            ? 'Cashed-out money is always safe.'
+            ? moneyBustQuip ?? 'Cashed-out money is always safe.'
             : run.status === 'cashed_out'
-            ? 'Nice take.'
+            ? moneyBankQuip ?? 'Nice take.'
             : run.pushes === 0
             ? `Tap to take your first push. ${Math.round(MONEY_SUCCESS_CHANCE * 100)}% survive after that.`
-            : 'Cash out any time.'}
+            : moneyQuote ?? 'Cash out any time.'}
         </div>
 
         {resolved && (

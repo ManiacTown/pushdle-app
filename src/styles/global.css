@@ -950,6 +950,86 @@ input:focus{
   pointer-events: none;
 }
 
+/* Combo bar below the bag (see MoneyMode.jsx) — same "always mounted,
+   class-toggled" collapse technique as .money-wallet-panel/
+   .money-cashout-wrap above, so it can transition in on the first push
+   and back out on bust/bank instead of popping. No overflow:hidden here
+   (unlike those two) — the corner icon bounces above the bar and the
+   "+$3" floater rises well above that, and clipping those away every
+   single time they play would defeat the whole effect. The brief mid-
+   collapse-transition moment where content isn't perfectly contained by
+   the shrinking box is a fair trade for that. */
+.money-combo-wrap{
+  max-height: 40px;
+  opacity: 1;
+  margin-top: 14px;
+  transition: opacity 0.35s ease, max-height 0.35s ease, transform 0.35s ease, margin-top 0.35s ease;
+}
+.money-combo-wrap--collapsed{
+  opacity: 0;
+  max-height: 0;
+  transform: translateY(-6px);
+  margin-top: 0;
+  pointer-events: none;
+}
+.money-combo-inner{
+  position: relative;
+  width: 160px;
+  margin: 0 auto;
+}
+.money-combo-track{
+  position: relative;
+  width: 160px;
+  height: 10px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,212,94,0.3);
+  overflow: hidden;
+}
+.money-combo-fill{
+  height: 100%;
+  background: linear-gradient(90deg, #ffd45e, #39ff8f);
+  transition: width 0.25s ease;
+}
+/* The dividers splitting the track into MONEY_BONUS_EVERY segments — sit
+   on top of the fill (later in the DOM) so they stay visible as the fill
+   grows past them, reading as notches rather than getting erased by the
+   fill color. */
+.money-combo-notch{
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(0,0,0,0.45);
+}
+/* The bonus icon sitting at the bar's top-right corner (see
+   MoneyMode.jsx) — visible/resting by default; --pop plays once on a full
+   bar (bounce up, shrink, fade) and holds that end frame via
+   animation-fill-mode until MoneyMode removes the class ~500ms later.
+   Removing it isn't a separate "show again" step — the base class's own
+   transition (below) picks up right where the animation left off and
+   eases back to the resting opacity/transform, which is what actually
+   produces the "transitions and appears again" effect that was asked
+   for, not a second keyframe. */
+.money-combo-icon{
+  position: absolute;
+  top: -18px;
+  right: -4px;
+  width: 20px;
+  height: 20px;
+  display: block;
+  opacity: 0.9;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.money-combo-icon--pop{
+  animation: comboIconBouncePop 0.5s ease-out forwards;
+}
+@keyframes comboIconBouncePop{
+  0%{ transform: translateY(0) scale(1); opacity: 1; }
+  35%{ transform: translateY(-14px) scale(1.15); opacity: 1; }
+  100%{ transform: translateY(-26px) scale(0.55); opacity: 0; }
+}
+
 /* Small green/gold burst right where the coin lands on the wallet (see
    spawnWalletImpact in MoneyMode.jsx) — position:fixed with coordinates
    set inline in JS, same technique as .money-fly-coin just for a radial
@@ -1230,6 +1310,15 @@ input:focus{
   0%{ opacity: 0; transform: translateX(60px); }
   100%{ opacity: 1; transform: translateX(0); }
 }
+/* Reverse of badgeSlideIn, for dismissing a toast that's still on screen
+   when a fresh run starts (see Home.jsx's dismissBadgeToast) instead of
+   just clearing the state and having it vanish with no transition. The
+   .leaving class below is applied for exactly as long as this animation
+   runs, then the toast unmounts for real. */
+@keyframes badgeSlideOut{
+  0%{ opacity: 1; transform: translateX(0); }
+  100%{ opacity: 0; transform: translateX(60px); }
+}
 .badge-toast-banner{
   font-family: 'JetBrains Mono', monospace;
   /* Scales down with the viewport (not just the container) so it shrinks
@@ -1248,6 +1337,9 @@ input:focus{
   animation: none;
   opacity: 1;
   transform: translateX(0);
+}
+.badge-toast-stack.leaving .badge-toast-banner{
+  animation: badgeSlideOut 0.4s ease-in forwards;
 }
 /* Icon on the left (sized in JS to match the column's real height — see
    BadgeToastCard in Home.jsx — rather than a static font-size, since a
@@ -1285,6 +1377,13 @@ input:focus{
   animation: none;
   opacity: 1;
   transform: translateX(0);
+}
+/* See .badge-toast-stack.leaving above — the card's own animationDelay
+   (staggered on entrance, see BadgeToastCard) is zeroed out by the
+   component itself while leaving, so every card exits together instead of
+   replaying that stagger in reverse. */
+.badge-toast-stack.leaving .badge-toast{
+  animation: badgeSlideOut 0.4s ease-in forwards;
 }
 /* Clicking through to /profile (see Home.jsx's BadgeToastCard) — same
    hover language as .badge-card's own clickable state, so this reads as
