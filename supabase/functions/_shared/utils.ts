@@ -89,3 +89,31 @@ export function pacificDateString(date: Date = new Date()): string {
     day: '2-digit',
   }).format(date);
 }
+
+// Mirrors every `field` src/lib/game.js's BADGES array reads (see
+// maxStatsForAllBadges/zeroStatsForAllBadges there), converted to
+// snake_case — same "Deno can't import that file directly" limitation as
+// pacificDateString above, so this is the Deno-side twin. Add the new
+// column here whenever a badge is added with a `field` not already listed.
+//
+// Used as an ALLOWLIST (see admin/index.ts's reset_badges/claim_all_badges
+// handler): those tools may only ever write a column a real badge
+// threshold actually reads, no matter what the client sends. An allowlist
+// fails SAFE if this list goes stale (a new badge's fields just can't be
+// claimed/reset until added here — loud and easy to notice) — the denylist
+// this replaced failed OPEN instead (silently permitted writes to any
+// column not explicitly named, which is how it ended up missing several
+// money_* columns and best_streak/total_pushes entirely).
+export const ALLOWED_BADGE_FIELDS = new Set([
+  'best_streak',
+  'total_pushes',
+  'day_streak',
+  'busted_at_zero',
+  'busted_at_one',
+  'money_best_bank_streak',
+  'money_lifetime_cents',
+  'money_best_run_cents',
+  'money_banked_after_one_push',
+  'money_reached_top3_weekly',
+  'money_busted_over100',
+]);

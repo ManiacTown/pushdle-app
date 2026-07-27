@@ -5,7 +5,7 @@
 //
 // Deploy with: supabase functions deploy admin
 
-import { createServiceClient, handlePreflight, isAdmin, json, pacificDateString, requireUser } from '../_shared/utils.ts';
+import { ALLOWED_BADGE_FIELDS, createServiceClient, handlePreflight, isAdmin, json, pacificDateString, requireUser } from '../_shared/utils.ts';
 
 Deno.serve(async (req) => {
   const preflight = handlePreflight(req);
@@ -19,7 +19,8 @@ Deno.serve(async (req) => {
     return json({ error: 'forbidden' }, 403);
   }
 
-  const { action } = await req.json().catch(() => ({}));
+  const body = await req.json().catch(() => ({}));
+  const { action } = body;
   const today = pacificDateString();
 
   if (action === 'force_bust') {
@@ -115,50 +116,31 @@ Deno.serve(async (req) => {
     return json({ success: true, bestStreak: 0 });
   }
 
-  if (action === 'reset_badges') {
-    await db
-      .from('profiles')
-      .update({
-        best_streak: 0,
-        total_pushes: 0,
-        day_streak: 0,
-        last_played_date: null,
-        busted_at_zero: false,
-        busted_at_one: false,
-      })
-      .eq('id', user.id);
-    return json({
-      success: true,
-      bestStreak: 0,
-      totalPushes: 0,
-      dayStreak: 0,
-      lastPlayedDate: null,
-      bustedAtZero: false,
-      bustedAtOne: false,
-    });
-  }
+  // Generic on purpose — the client (Home.jsx's adminResetBadges/
+  // adminClaimAllBadges) derives exactly which columns to zero/max out
+  // straight from src/lib/game.js's BADGES array and sends them as
+  // `fields`, rather than this Edge Function hardcoding a threshold list
+  // that would silently go stale every time a badge is added.
+  //
+  // ALLOWED_BADGE_FIELDS (see _shared/utils.ts) is the real gate — an
+  // allowlist of exactly the columns a badge threshold actually reads, so
+  // these tools can never touch anything else (role, username, wallet
+  // balance, etc.) no matter what `fields` contains. This used to be a
+  // denylist instead, which failed open (anything NOT explicitly named was
+  // permitted) — that's how it ended up missing several money_* columns
+  // and best_streak/total_pushes, letting either tool forge arbitrary
+  // leaderboard stats. The allowlist fails safe instead: a badge added with
+  // a genuinely new field just can't be claimed/reset until that field is
+  // added to ALLOWED_BADGE_FIELDS too.
+  if (action === 'reset_badges' || action === 'claim_all_badges') {
+    const rawFields = body.fields;
+    if (!rawFields || typeof rawFields !== 'object') return json({ error: 'missing fields' }, 400);
+    const fields = Object.fromEntries(Object.entries(rawFields).filter(([k]) => ALLOWED_BADGE_FIELDS.has(k)));
+    if (Object.keys(fields).length === 0) return json({ error: 'no valid fields' }, 400);
 
-  if (action === 'claim_all_badges') {
-    await db
-      .from('profiles')
-      .update({
-        best_streak: 100,
-        total_pushes: 1000,
-        day_streak: 100,
-        last_played_date: today,
-        busted_at_zero: true,
-        busted_at_one: true,
-      })
-      .eq('id', user.id);
-    return json({
-      success: true,
-      bestStreak: 100,
-      totalPushes: 1000,
-      dayStreak: 100,
-      lastPlayedDate: today,
-      bustedAtZero: true,
-      bustedAtOne: true,
-    });
+    const { error } = await db.from('profiles').update(fields).eq('id', user.id);
+    if (error) return json({ error: error.message }, 500);
+    return json({ success: true });
   }
 
   return json({ error: 'unknown action' }, 400);
