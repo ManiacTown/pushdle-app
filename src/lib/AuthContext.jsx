@@ -29,7 +29,23 @@ export function AuthProvider({ children }) {
       setUser(data.session?.user ?? null);
     });
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+      // Fires on every auth event, including TOKEN_REFRESHED — which
+      // happens automatically roughly hourly while a tab stays open, for
+      // the SAME logged-in account. A plain setUser(session?.user) here
+      // would hand back a brand-new object every time regardless, and
+      // several effects elsewhere (Home.jsx's loadRunState, MoneyMode.jsx's
+      // run-loading effect) are deliberately keyed off `[user]` by
+      // reference — a token refresh landing mid-reveal could re-fire them
+      // and jump straight to the "already resolved" instant-restore path
+      // over a still-animating bust/cash-out. Keeping the SAME object
+      // reference when it's genuinely the same account (compared by id,
+      // not identity) means those effects only ever re-run on a real
+      // login/logout/account switch, which is what they actually want.
+      setUser((prev) => {
+        const next = session?.user ?? null;
+        if (prev && next && prev.id === next.id) return prev;
+        return next;
+      });
     });
     return () => listener.subscription.unsubscribe();
   }, []);
@@ -49,7 +65,14 @@ export function AuthProvider({ children }) {
       .select('role, selected_emoji')
       .eq('id', user.id)
       .single()
-      .then(({ data }) => {
+      .then(({ data, error }) => {
+        // Falls back to 'player'/no-flair either way (the correct
+        // fail-safe default — never silently grant admin), but this used
+        // to swallow a real fetch failure with no trace at all. Logged,
+        // not surfaced as UI here — there's no good place in a context
+        // provider to show an error banner, and every consumer already
+        // treats null/'player' as a normal, valid state.
+        if (error) console.error('role/flair fetch failed:', error);
         setRole(data?.role ?? 'player');
         setSelectedEmojiState(data?.selected_emoji ?? null);
       });
@@ -105,10 +128,26 @@ export function AuthProvider({ children }) {
     // into the server row — see schema.sql's merge_local_stats. Safe to run
     // on every login: it only ever raises values, never lowers them.
     (async () => {
-      const [localBest, localStats] = await Promise.all([storage.getBestStreak(), storage.getStats()]);
+      const [localBest, localStats, todayState] = await Promise.all([
+        storage.getBestStreak(),
+        storage.getStats(),
+        storage.getTodayState(),
+      ]);
+      // Only worth sending if there's a genuinely meaningful local run to
+      // carry over — playing (still in progress) or dead (already busted,
+      // so this guest-then-signup still shows up on today's leaderboard
+      // for that run) both count; an empty/never-played run has nothing
+      // daily_runs needs to know about (see merge_local_stats, which only
+      // ever acts on this when it's actually present and > 0 anyway;
+      // skipping it here too just avoids sending a pointless field on
+      // every login).
+      const todayRunToCarryOver =
+        (todayState.status === 'playing' || todayState.status === 'dead') && todayState.streak > 0
+          ? { todayDate: todayState.date, todayStreak: todayState.streak, todayStatus: todayState.status }
+          : {};
       try {
         const { data, error } = await supabase.functions.invoke('sync-stats', {
-          body: { bestStreak: localBest, ...localStats },
+          body: { bestStreak: localBest, ...localStats, ...todayRunToCarryOver },
         });
         if (error) throw error;
         // Merged, not replaced — this resolves independently of (and in no
@@ -189,7 +228,7 @@ export function AuthProvider({ children }) {
       .from('profiles')
       .select(
         'money_wallet_cents, money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
-          'money_weekly_cents, money_best_weekly_cents, ' +
+          'money_weekly_cents, money_best_weekly_cents, money_diamonds, owns_diamond_button, ' +
           'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100'
       )
       .eq('id', user.id)
@@ -208,6 +247,16 @@ export function AuthProvider({ children }) {
       // PublicProfile.jsx fetches separately for viewing someone else.
       moneyWeeklyCents: data?.money_weekly_cents ?? 0,
       moneyBestWeeklyCents: data?.money_best_weekly_cents ?? 0,
+      // Shop-only currency (see MoneyShop.jsx and resolve_money_push's
+      // 10%-chance-per-combo-bar-fill roll) — rides along on this same
+      // query since it's the same table/row, even though nothing outside
+      // the shop itself ever displays it.
+      moneyDiamonds: data?.money_diamonds ?? 0,
+      // The shop's diamond-button push-button skin (see MoneyShop.jsx/
+      // Home.jsx) — rides along on this same query for the same "same
+      // table/row" reason moneyDiamonds does, even though it's read in
+      // classic mode, not the shop itself.
+      ownsDiamondButton: !!data?.owns_diamond_button,
     };
     setStats((prev) => ({ ...prev, ...next }));
     return next;

@@ -16,6 +16,7 @@ import {
   playBankPoke,
   playBankPress,
   playComboFull,
+  playDiamond,
 } from '../lib/sound.js';
 import { modeSlotStyle } from '../lib/modeTransition.js';
 import { getMoneyQuote, getMoneyBustQuote, getMoneyBankQuote } from '../lib/quotes.js';
@@ -45,6 +46,16 @@ function formatCountdown(ms) {
 
 const DEFAULT_RUN = { status: 'loading', pushes: 0, earningsCents: 0 };
 
+// Shared literal width for the run/wallet panel pair (see the panel row
+// below) — a real fixed px value, not a flex-computed share, so the two
+// always render exactly the same size regardless of either one's own
+// padding/font or how many digits its dollar amount has.
+const MONEY_PANEL_WIDTH = 144;
+// Exported so Home.jsx's mode-switch/Shop button row can share the exact
+// same gap (see the header-panel row there) instead of a second, easily-
+// drifting magic number.
+export const MONEY_PANEL_GAP = 12;
+
 // How long Home.jsx should wait after onMoneyResolved fires before it
 // actually reveals a money-badge toast — matches this component's own
 // fixed reveal-sequence length (runRevealSequence below ends at 7900ms,
@@ -55,7 +66,7 @@ const DEFAULT_RUN = { status: 'loading', pushes: 0, earningsCents: 0 };
 // shorter streak-0-style case to special-case here.
 export const MONEY_BADGE_REVEAL_DELAY_MS = 8700;
 
-export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition, onMoneyResolved }) {
+export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSignal, modeTransition, onMoneyResolved }) {
   const { user, stats, setStats, refreshMoneyStats } = useAuth();
   const { setCollapsed } = useChrome();
   const { particles, rings, spawnEffect, popCoin, spawnDebris, spawnSpark } = useParticles();
@@ -114,7 +125,7 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
   const [bagPoking, setBagPoking] = useState(false);
   // Combo bar below the bag — fills one notch per push, 0-MONEY_BONUS_EVERY
   // (the top value is a brief "full" hold before it resets to 0 for the
-  // next cycle) — deliberately the SAME constant the server's actual +$3
+  // next cycle) — deliberately the SAME constant the server's actual
   // bonus push uses (see money.js/schema.sql's resolve_money_push), not a
   // separately-chosen bar size, so the bar always telegraphs the real
   // bonus cadence rather than an arbitrary one that could drift from it.
@@ -127,10 +138,33 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
   // bring it back to its resting spot (see the CSS comment on why this
   // needs no separate "show again" step).
   const [comboIconPop, setComboIconPop] = useState(false);
-  // The "+$3" floater — reuses .money-wallet-floater verbatim (same class,
-  // same rise-and-fade animation) since the ask was specifically for it to
-  // look exactly like the real wallet gain floater, not a bespoke effect.
-  const [comboBonusText, setComboBonusText] = useState(false);
+  // The combo-bar "+$X" floater — reuses .money-wallet-floater verbatim
+  // (same class, same rise-and-fade animation) since the ask was
+  // specifically for it to look exactly like the real wallet gain floater,
+  // not a bespoke effect. Holds the actual bonus amount in cents (or null
+  // when nothing's showing), not just a boolean — resolve_money_push rolls
+  // a random $1-$5 bonus now (used to be a flat $3), so this has to show
+  // whatever that push's roll actually was, read straight off the
+  // money-push response rather than assumed client-side.
+  const [comboBonusCents, setComboBonusCents] = useState(null);
+  // The combo-bar diamond-earned floater — same "+X" rise-and-fade slot as
+  // comboBonusCents just above, but a plain boolean rather than an amount
+  // since a diamond roll is always exactly +1 (see resolve_money_push's
+  // mutually-exclusive money-vs-diamond branch: a full bar sets one of
+  // these two, never both).
+  const [comboDiamondEarned, setComboDiamondEarned] = useState(false);
+  // Whether the CURRENT (still-filling) cycle will pay out a diamond once
+  // it fills — this is what actually drives the corner icon's src (see
+  // the combo bar JSX below), continuously for the whole cycle, not just
+  // at the pop moment. Seeded from money_runs.next_bonus_is_diamond on
+  // load/resume (loadTodayRun) and kept in sync off every push response's
+  // nextDiamond field. On a FILL push specifically, the update is
+  // deliberately deferred to the same timer that clears comboIconPop (see
+  // push()'s success branch) — the server has already re-rolled the
+  // NEXT cycle's value by the time that response lands, but the icon
+  // popping away right now needs to keep showing what THIS cycle just
+  // paid out until it's actually gone, not jump ahead mid-animation.
+  const [nextIsDiamond, setNextIsDiamond] = useState(false);
   // Quip subtext — mirrors Home.jsx's quote/bustQuote pattern (see
   // quotes.js's money-variant pools). moneyQuote cycles every 3 pushes
   // while playing (quoteBucketRef tracks which 3-push bucket it was last
@@ -290,7 +324,7 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
   function loadTodayRun(isCancelled) {
     supabase
       .from('money_runs')
-      .select('pushes, earnings_cents, status')
+      .select('pushes, earnings_cents, status, next_bonus_is_diamond')
       .eq('user_id', user.id)
       .eq('date', pacificDateString())
       .maybeSingle()
@@ -300,6 +334,13 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
           ? { status: data.status, pushes: data.pushes, earningsCents: data.earnings_cents }
           : { status: 'playing', pushes: 0, earningsCents: 0 };
         setRun(next);
+        // Seeds the corner icon correctly on a fresh mount/resume — a row
+        // that doesn't exist yet hasn't rolled a first cycle (no pushes
+        // have happened to create it), but the combo bar itself is hidden
+        // until pushes > 0 anyway (see the render below), so `false` here
+        // is never actually shown before the first push's own response
+        // provides the real value.
+        setNextIsDiamond(data ? data.next_bonus_is_diamond : false);
         if (next.status === 'dead' || next.status === 'cashed_out') {
           setInstant(true);
           setShowLabel(true);
@@ -363,13 +404,25 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
     setBagPoking(false);
     setComboFill(0);
     setComboIconPop(false);
-    setComboBonusText(false);
+    setComboBonusCents(null);
+    setComboDiamondEarned(false);
+    setNextIsDiamond(false);
     setMoneyQuote(null);
     setMoneyBustQuip(null);
     setMoneyBankQuip(null);
     suppressWalletSyncRef.current = false;
     setRun(DEFAULT_RUN);
-    loadTodayRun();
+    // Same cancellation-guard pattern as the mount effect above, for the
+    // same reason — without it, two rapid "Reset money timer" clicks fire
+    // two independent loadTodayRun() queries, and whichever one's network
+    // response happens to land LAST wins, even if it's the STALER of the
+    // two (i.e. the one triggered by the FIRST click), silently clobbering
+    // the actually-latest reset's data.
+    let cancelled = false;
+    loadTodayRun(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetSignal]);
 
@@ -411,22 +464,58 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
         timers.current.push(setTimeout(() => setBagAnim(''), 450));
         // Advances the combo bar a notch per push; hitting a full bar
         // holds briefly (with its own cue, the corner icon's bounce-away,
-        // and a "+$3" floater — matching the real bonus this telegraphs)
-        // before resetting for the next cycle — see .money-combo-fill in
-        // global.css for the width transition this drives.
+        // and a "+$X"/"+1 diamond" floater showing whatever this push
+        // actually won) before resetting for the next cycle — see
+        // .money-combo-fill in global.css for the width transition this
+        // drives. Gated on the server's own bonusCents/diamondEarned (not a
+        // locally-recomputed "is this the 5th push" check) since that's the
+        // authoritative signal for whether — and what — a reward landed.
+        // The two are mutually exclusive (see resolve_money_push's 10%
+        // roll), so at most one of the two floaters ever shows per fill.
+        const gotBonus = data.bonusCents > 0;
+        const gotDiamond = data.diamondEarned;
         setComboFill((f) => {
-          const next = f + 1;
-          if (next >= MONEY_BONUS_EVERY) {
-            playComboFull();
+          if (gotBonus || gotDiamond) {
+            if (gotDiamond) {
+              playDiamond();
+              setComboDiamondEarned(true);
+            } else {
+              playComboFull();
+              setComboBonusCents(data.bonusCents);
+            }
             setComboIconPop(true);
-            setComboBonusText(true);
-            clickFxTimers.current.push(setTimeout(() => setComboIconPop(false), 500));
-            clickFxTimers.current.push(setTimeout(() => setComboBonusText(false), 1200));
+            // The server has ALREADY re-rolled next_bonus_is_diamond for
+            // the cycle that's starting now (data.nextDiamond) by the time
+            // this response lands — but flipping the corner icon's src to
+            // that new value right this instant would make it change mid-
+            // pop, showing the wrong icon rising away. Deferred to the
+            // same 500ms mark comboIconPop itself clears, so the icon
+            // finishes popping away as what THIS cycle just paid out, then
+            // fades back in as whatever's coming next.
+            clickFxTimers.current.push(setTimeout(() => {
+              setComboIconPop(false);
+              setNextIsDiamond(data.nextDiamond);
+            }, 500));
+            clickFxTimers.current.push(setTimeout(() => {
+              setComboBonusCents(null);
+              setComboDiamondEarned(false);
+            }, 1200));
             clickFxTimers.current.push(setTimeout(() => setComboFill(0), 350));
             return MONEY_BONUS_EVERY;
           }
-          return next;
+          return f + 1;
         });
+        // Non-fill push — next_bonus_is_diamond didn't change server-side,
+        // but keep local state in lockstep with the server's own value
+        // regardless (cheap, and avoids ever silently drifting).
+        if (!gotBonus && !gotDiamond) setNextIsDiamond(data.nextDiamond);
+        // Diamonds are credited server-side inside resolve_money_push
+        // itself (unlike the money bonus, which just adds to earningsCents
+        // and rides along in `data` above), regardless of how this run
+        // later ends — refresh so stats.moneyDiamonds reflects it
+        // immediately rather than only after the next bust/cash-out's own
+        // refreshMoneyStats call.
+        if (gotDiamond) refreshMoneyStats();
       } else {
         triggerMoneyBust(data.pushes);
         // A bust can flip money_busted_over100 and resets money_bank_streak
@@ -467,6 +556,30 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forceBustSignal]);
+
+  // Admin dev-tool trigger (see forceDiamondSignal prop) — Home.jsx has
+  // already told the server to force money_runs.next_bonus_is_diamond to
+  // true (see adminForceMoneyDiamond there) by the time this fires; this
+  // effect is just the client picking that up so the corner icon reflects
+  // it right away, without waiting on the next push. A light direct
+  // select, not a full loadTodayRun — that would also reset comboFill/
+  // reveal state off the CURRENT row, which is exactly the in-progress
+  // state this should leave alone.
+  const forceDiamondSignalRef = useRef(forceDiamondSignal);
+  useEffect(() => {
+    if (forceDiamondSignal === forceDiamondSignalRef.current) return; // skip the initial mount value
+    forceDiamondSignalRef.current = forceDiamondSignal;
+    if (!user) return;
+    supabase
+      .from('money_runs')
+      .select('next_bonus_is_diamond')
+      .eq('user_id', user.id)
+      .eq('date', pacificDateString())
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) setNextIsDiamond(data.next_bonus_is_diamond);
+      });
+  }, [forceDiamondSignal, user]);
 
   async function cashOut() {
     if (!user || rolling || run.status !== 'playing' || run.pushes === 0) return;
@@ -712,12 +825,25 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
             `gap` to 0 in lockstep with the wallet panel's own collapse —
             with a real flex sibling at max-width:0 AND gap:0, the row's
             total content width shrinks to exactly the run panel's width,
-            so justifyContent:center lands it dead center either way. */}
+            so justifyContent:center lands it dead center either way.
+            A fixed, EQUAL literal `width` on both panels (below) is what
+            makes them split evenly around that center — without it, each
+            panel's width came from its own content (bigger font/padding
+            on the run panel, a shorter dollar string some days), so the
+            pair as a whole was still centered but visibly lopsided, one
+            side bulkier than the other. (Tried flex-grow with a shared
+            flex-basis:0 first — in practice Chromium still let each
+            panel's own padding skew the split, so a literal matching
+            width for both, not a computed share, is what actually holds
+            here.) The row's own width is fixed to exactly panelWidth*2 +
+            gap so there's no leftover space for justifyContent to have to
+            account for. */}
         <div
           style={{
             display: 'flex',
             justifyContent: 'center',
-            gap: showWalletPanel ? 12 : 0,
+            width: MONEY_PANEL_WIDTH * 2 + MONEY_PANEL_GAP,
+            gap: showWalletPanel ? MONEY_PANEL_GAP : 0,
             transition: 'gap 0.4s ease',
             marginBottom: 36,
             ...modeSlotStyle(modeTransition, 0),
@@ -742,6 +868,8 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
               display: 'flex',
               flexDirection: 'column',
               justifyContent: 'center',
+              width: MONEY_PANEL_WIDTH,
+              flexShrink: 0,
             }}
           >
             <div className="mono hover-pop" style={{ fontWeight: 700, fontSize: 42, color: '#ffd45e' }}>
@@ -761,9 +889,15 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
               for the coin-flight math (see launchCoinToWallet) — an
               unmount/remount would lose that between runs. A real flex
               sibling again (see the row's own comment above) — its
-              max-width:0 collapse combined with the row's gap:0 is what
-              lets the run panel re-center alone. */}
-          <div className={'money-wallet-panel' + (showWalletPanel ? '' : ' money-wallet-panel--collapsed')}>
+              width:0 collapse combined with the row's gap:0 is what lets
+              the run panel re-center alone. The literal width itself
+              comes from MONEY_PANEL_WIDTH via this custom property (see
+              global.css) rather than being duplicated as a raw number
+              there, so it can only ever match the run panel's own width. */}
+          <div
+            className={'money-wallet-panel' + (showWalletPanel ? '' : ' money-wallet-panel--collapsed')}
+            style={{ '--wallet-panel-width': `${MONEY_PANEL_WIDTH}px` }}
+          >
             <div
               ref={walletPanelRef}
               className="spotlight"
@@ -854,7 +988,7 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
             far this run (same "always mounted, class-toggled" technique
             as .money-wallet-panel/.money-cashout-wrap), so it can
             transition in on the first push and back out on bust/bank
-            instead of popping. The corner icon and "+$3" floater live in
+            instead of popping. The corner icon and "+$X" floater live in
             .money-combo-inner, NOT .money-combo-track — the track needs
             overflow:hidden to keep the fill bar's corners clean, but that
             would clip the icon bouncing above the bar and the floater
@@ -869,8 +1003,19 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
                   <div key={i} className="money-combo-notch" style={{ left: `${((i + 1) / MONEY_BONUS_EVERY) * 100}%` }} />
                 ))}
               </div>
+              {/* Shows whichever reward the CURRENT cycle will pay out
+                  (nextIsDiamond) for the bar's entire fill, not just at
+                  the moment it fills — the roll itself already happened
+                  when this cycle started (see money_runs.
+                  next_bonus_is_diamond), so there's no reason to hide it
+                  from the player until the last push. Still "bounces away
+                  and fades back in" via money-combo-icon--pop exactly like
+                  before; nextIsDiamond just doesn't switch to the NEXT
+                  cycle's value until that pop's own 500ms timer (see
+                  push()'s success branch), so it pops away as whatever was
+                  just earned and reappears as whatever's coming next. */}
               <img
-                src="/money.png"
+                src={nextIsDiamond ? '/diamond.png' : '/money.png'}
                 alt=""
                 className={'money-combo-icon' + (comboIconPop ? ' money-combo-icon--pop' : '')}
               />
@@ -882,8 +1027,23 @@ export default function MoneyMode({ forceBustSignal, resetSignal, modeTransition
                   wider box. No color override — left as the class's own
                   default (var(--neon-green)), same "exactly how it looks
                   for banking" green as the real wallet floater. */}
-              {comboBonusText && (
-                <div className="money-wallet-floater" style={{ left: '176px', top: '-8px' }}>+$3</div>
+              {comboBonusCents != null && (
+                <div className="money-wallet-floater" style={{ left: '176px', top: '-8px' }}>
+                  +{formatCents(comboBonusCents)}
+                </div>
+              )}
+              {/* Same slot/animation as the money floater above, mutually
+                  exclusive with it (see push()'s success branch) — diamond
+                  blue instead of green, plus the actual diamond icon since
+                  "+1" alone wouldn't read as a diamond specifically. */}
+              {comboDiamondEarned && (
+                <div
+                  className="money-wallet-floater"
+                  style={{ left: '176px', top: '-8px', color: '#2bc8f7', display: 'flex', alignItems: 'center', gap: 4 }}
+                >
+                  <img src="/diamond.png" alt="" width={14} height={14} style={{ display: 'block' }} />
+                  +1
+                </div>
               )}
             </div>
           </div>

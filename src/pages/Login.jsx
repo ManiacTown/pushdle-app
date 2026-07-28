@@ -131,33 +131,49 @@ export default function Login() {
       </p>
       <form onSubmit={handleSubmit}>
         {mode === 'signUp' && (
-          <input
-            placeholder="Username"
-            value={username}
-            onChange={(e) => setUsername(sanitizeUsername(e.target.value))}
-            maxLength={USERNAME_MAX_LENGTH}
-            style={{ marginBottom: 12 }}
-            required
-          />
+          <>
+            <label className="sr-only" htmlFor="login-username">Username</label>
+            <input
+              id="login-username"
+              placeholder="Username"
+              value={username}
+              onChange={(e) => setUsername(sanitizeUsername(e.target.value))}
+              maxLength={USERNAME_MAX_LENGTH}
+              autoComplete="username"
+              style={{ marginBottom: 12 }}
+              required
+            />
+          </>
         )}
+        <label className="sr-only" htmlFor="login-email">Email</label>
         <input
+          id="login-email"
           type="email"
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
+          autoComplete="email"
           style={{ marginBottom: mode === 'forgot' ? 16 : 12 }}
           required
         />
         {mode !== 'forgot' && (
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={{ marginBottom: 16 }}
-            required
-            minLength={6}
-          />
+          <>
+            <label className="sr-only" htmlFor="login-password">Password</label>
+            <input
+              id="login-password"
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              // signUp needs "new-password" (tells a password manager this
+              // is a fresh credential to offer generating/saving, not one
+              // to autofill) — signIn needs "current-password" instead.
+              autoComplete={mode === 'signUp' ? 'new-password' : 'current-password'}
+              style={{ marginBottom: 16 }}
+              required
+              minLength={6}
+            />
+          </>
         )}
         {mode === 'signIn' && (
           <button

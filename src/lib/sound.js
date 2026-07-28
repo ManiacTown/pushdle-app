@@ -210,6 +210,19 @@ export function playComboFull() {
   tone({ freq: 1080, duration: 0.14, type: 'sine', gain: 0.1, delay: 0.07 });
 }
 
+// A full combo bar rolling a diamond instead of the usual money bonus (see
+// MoneyMode.jsx's push success branch and resolve_money_push's 10% roll)
+// — a brighter, three-note ascending twinkle rather than playComboFull's
+// two-note ding, since this is the rarer of the two possible payouts and
+// should read as the bigger moment. Sine throughout (no triangle/sawtooth
+// warmth) for a clean, glassy tone matching the diamond's own "crystal"
+// look rather than something rounder.
+export function playDiamond() {
+  tone({ freq: 1200, duration: 0.09, type: 'sine', gain: 0.1 });
+  tone({ freq: 1500, duration: 0.09, type: 'sine', gain: 0.11, delay: 0.06 });
+  tone({ freq: 1900, duration: 0.16, type: 'sine', gain: 0.13, delay: 0.12 });
+}
+
 export function playReveal() {
   if (muted) return;
   const audioCtx = getCtx();

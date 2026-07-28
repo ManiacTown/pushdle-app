@@ -51,55 +51,92 @@ export default async function handler(req, res) {
   const weekStart = pacificWeekStartString();
 
   try {
-    // Whichever of the two scheduled calls lands first claims this week's
-    // reset by successfully inserting; the other gets a 409 (unique
-    // violation on week_start) and no-ops here instead of double-granting
-    // Golden Goose or double-resetting everyone's weekly total.
-    const insertRes = await fetch(`${url}/rest/v1/money_weekly_resets`, {
-      method: 'POST',
-      headers: serviceHeaders(serviceKey, { Prefer: 'return=minimal' }),
-      body: JSON.stringify({ week_start: weekStart }),
-    });
-    if (insertRes.status === 409) {
-      return res.status(200).json({ status: 'already ran this week', weekStart });
-    }
-    if (!insertRes.ok) {
-      const text = await insertRes.text();
-      throw new Error(`money_weekly_resets insert -> ${insertRes.status}: ${text}`);
+    // completed_at (not merely "does a row for this week_start exist") is
+    // the real idempotency signal — see that column's own comment in
+    // schema.sql. A row with completed_at still null means an EARLIER
+    // attempt claimed this week but didn't finish (some step failed
+    // partway through); this run should RESUME it, not treat the row's
+    // mere existence as "already done" and skip the rest forever.
+    const existing = await api(url, serviceKey, `/rest/v1/money_weekly_resets?week_start=eq.${weekStart}&select=top3,completed_at`);
+    let top3Snapshot = null;
+    if (existing.length > 0) {
+      if (existing[0].completed_at) {
+        return res.status(200).json({ status: 'already ran this week', weekStart });
+      }
+      // Row exists, unfinished. If top3 is ALSO already set, a previous
+      // attempt got at least that far before failing — reuse it rather
+      // than re-deriving from profiles.money_weekly_cents below, which
+      // may already have been zeroed by that same earlier attempt (if IT
+      // got as far as the reset step before whatever failed) and would
+      // otherwise silently snapshot an empty/wrong top3 on this retry.
+      top3Snapshot = existing[0].top3 ?? null;
+    } else {
+      // Claim it. A 409 here means the OTHER DST cron slot (or a manual
+      // retry) is claiming the exact same week concurrently — treat that
+      // the same as "found an unfinished row" above and fall through to
+      // resume/redo, rather than erroring out. Every step below is safe
+      // to run more than once (badge grants are a plain boolean OR, the
+      // snapshot/reset PATCHes just overwrite with the same-shape data),
+      // so two processes momentarily racing here can't corrupt anything —
+      // only the final completed_at write actually has to win exactly once,
+      // and a plain overwrite handles that fine either way.
+      const insertRes = await fetch(`${url}/rest/v1/money_weekly_resets`, {
+        method: 'POST',
+        headers: serviceHeaders(serviceKey, { Prefer: 'return=minimal' }),
+        body: JSON.stringify({ week_start: weekStart }),
+      });
+      if (!insertRes.ok && insertRes.status !== 409) {
+        const text = await insertRes.text();
+        throw new Error(`money_weekly_resets insert -> ${insertRes.status}: ${text}`);
+      }
     }
 
-    const top3 = await api(
-      url,
-      serviceKey,
-      '/rest/v1/profiles?money_weekly_cents=gt.0&order=money_weekly_cents.desc&limit=3&select=id,username,selected_emoji,money_weekly_cents'
-    );
-    for (const { id } of top3) {
-      await api(url, serviceKey, `/rest/v1/profiles?id=eq.${id}`, {
+    if (!top3Snapshot) {
+      const top3 = await api(
+        url,
+        serviceKey,
+        '/rest/v1/profiles?money_weekly_cents=gt.0&order=money_weekly_cents.desc&limit=3&select=id,username,selected_emoji,money_weekly_cents'
+      );
+      for (const { id } of top3) {
+        await api(url, serviceKey, `/rest/v1/profiles?id=eq.${id}`, {
+          method: 'PATCH',
+          headers: { Prefer: 'return=minimal' },
+          body: JSON.stringify({ money_reached_top3_weekly: true }),
+        });
+      }
+
+      // Snapshotted now (username/emoji as of THIS moment), not looked up
+      // live later — see top3's own column comment in schema.sql for why.
+      top3Snapshot = top3.map((r) => ({
+        userId: r.id,
+        username: r.username,
+        emoji: r.selected_emoji,
+        scoreCents: r.money_weekly_cents,
+      }));
+      await api(url, serviceKey, `/rest/v1/money_weekly_resets?week_start=eq.${weekStart}`, {
         method: 'PATCH',
         headers: { Prefer: 'return=minimal' },
-        body: JSON.stringify({ money_reached_top3_weekly: true }),
+        body: JSON.stringify({ top3: top3Snapshot }),
       });
     }
 
-    // Snapshotted now (username/emoji as of THIS moment), not looked up
-    // live later — see top3's own column comment in schema.sql for why.
-    const top3Snapshot = top3.map((r) => ({
-      userId: r.id,
-      username: r.username,
-      emoji: r.selected_emoji,
-      scoreCents: r.money_weekly_cents,
-    }));
-    await api(url, serviceKey, `/rest/v1/money_weekly_resets?week_start=eq.${weekStart}`, {
-      method: 'PATCH',
-      headers: { Prefer: 'return=minimal' },
-      body: JSON.stringify({ top3: top3Snapshot }),
-    });
-
-    // Only touches rows that actually have something to reset.
+    // Only touches rows that actually have something to reset — a no-op,
+    // not an error, if a previous attempt already got this far.
     await api(url, serviceKey, '/rest/v1/profiles?money_weekly_cents=gt.0', {
       method: 'PATCH',
       headers: { Prefer: 'return=minimal' },
       body: JSON.stringify({ money_weekly_cents: 0 }),
+    });
+
+    // The real "this week is done" signal (see completed_at's own comment
+    // in schema.sql) — written last, only once everything above has
+    // actually succeeded. Anything that throws before this point leaves
+    // completed_at null, so the next run (the other DST cron slot, or a
+    // manual retry) resumes instead of skipping the rest forever.
+    await api(url, serviceKey, `/rest/v1/money_weekly_resets?week_start=eq.${weekStart}`, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ completed_at: new Date().toISOString() }),
     });
 
     return res.status(200).json({ status: 'reset complete', weekStart, top3: top3Snapshot });

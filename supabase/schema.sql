@@ -90,6 +90,24 @@ create table if not exists profiles (
   -- — only resolve_money_push/resolve_money_cashout write them.
   money_wallet_cents    int not null default 0 check (money_wallet_cents >= 0),
   money_lifetime_cents  int not null default 0 check (money_lifetime_cents >= 0),
+  -- The shop's own currency — deliberately NOT cents/dollars (see
+  -- MoneyShop.jsx). A 10% chance per combo-bar fill (see
+  -- resolve_money_push) replaces that push's usual $1-$5 bonus with one
+  -- diamond instead of adding to it, so this is a separate, rarer reward
+  -- track from the wallet, not a cents-to-diamonds conversion of any kind.
+  -- Only ever shown inside the shop itself — nowhere else in the money UI
+  -- surfaces it, same "wallet vs lifetime" separation-of-concerns reasoning
+  -- as the two columns above, just for a currency that only means anything
+  -- in one specific place.
+  money_diamonds        int not null default 0 check (money_diamonds >= 0),
+  -- The shop's first real purchase (see MoneyShop.jsx/purchase_diamond_button
+  -- below) — 10 diamonds, permanent, applies to CLASSIC mode's push button
+  -- (see Home.jsx), not money mode's own bag button. A plain boolean, not
+  -- an "equipped skin" enum/table — there's exactly one purchasable skin
+  -- right now, so an owned/not-owned flag is the whole model; a real skin
+  -- system (multiple items, equip/unequip) can replace this if a second
+  -- skin ever gets added.
+  owns_diamond_button    boolean not null default false,
 
   -- Money-badge tracking (see game.js's money-* BADGES) — all written
   -- exclusively by resolve_money_push/resolve_money_cashout below, same
@@ -349,7 +367,10 @@ create or replace function public.merge_local_stats(
   p_day_streak int,
   p_last_played_date date,
   p_busted_zero boolean,
-  p_busted_one boolean
+  p_busted_one boolean,
+  p_today_date date default null,
+  p_today_streak int default null,
+  p_today_status text default null
 )
 returns table(
   out_best_streak int, out_total_pushes int, out_day_streak int,
@@ -362,6 +383,38 @@ declare
   v_day int;
 begin
   select stats_migrated into v_already_migrated from profiles where id = p_user_id for update;
+
+  -- Carries a guest's LOCAL run for TODAY into a real daily_runs row —
+  -- either still in progress ('playing', so logging in mid-run doesn't
+  -- reset it to 0 — see Home.jsx's loadRunState, which otherwise finds no
+  -- row at all for a brand-new account/day and starts fresh) or already
+  -- busted ('dead', so a guest who finishes a run and THEN signs up still
+  -- shows up on today's leaderboard for that run instead of it just
+  -- vanishing — their best_streak/total_pushes below are preserved
+  -- either way, this is specifically about today's own leaderboard entry).
+  -- Deliberately NOT gated behind v_already_migrated below like the
+  -- lifetime-stats merge is — the unique(user_id, date) constraint plus
+  -- "on conflict do nothing" already caps this to "only ever takes effect
+  -- the first time today specifically has no row yet," which is the
+  -- condition that actually matters, on every login that day, not just
+  -- the account's very first login ever. The explicit status allowlist
+  -- guards against an invalid value here from ever reaching the insert —
+  -- daily_runs.status has its own CHECK constraint, and failing that
+  -- would blow up this whole function call (including the legitimate
+  -- stats merge below) instead of just skipping this one optional part.
+  -- Streak clamped to 10 — a deliberately tight ceiling on how much of an
+  -- unverified local claim this carries over at all (every push in a
+  -- carried-over run skipped the server's own roll entirely), not a
+  -- "highest plausible streak" bound the way v_total/v_best's 100000 is.
+  -- A guest who genuinely got further than that before signing up keeps
+  -- the real number in best_streak (merged separately below, uncapped by
+  -- this), just not reflected in today's own leaderboard entry above 10.
+  if p_today_date is not null and p_today_streak is not null and p_today_streak > 0
+     and p_today_status in ('playing', 'dead') then
+    insert into daily_runs (user_id, date, streak, status)
+    values (p_user_id, p_today_date, least(p_today_streak, 200), p_today_status)
+    on conflict (user_id, date) do nothing;
+  end if;
 
   if v_already_migrated then
     return query select best_streak, total_pushes, day_streak, last_played_date, busted_at_zero, busted_at_one
@@ -419,6 +472,16 @@ create table if not exists money_runs (
   -- fact is what makes "bust only loses this run's earnings, past
   -- cash-outs are always safe" automatic rather than something to enforce.
   earnings_cents  int not null default 0,
+  -- Whether the CURRENT (not-yet-full) combo bar will pay out a diamond
+  -- once it fills — rolled once per cycle rather than at the moment the
+  -- bar actually fills, specifically so the client can show the correct
+  -- corner icon (diamond vs money) for the whole cycle instead of only
+  -- revealing it at the last push (see MoneyMode.jsx). The DEFAULT here
+  -- rolls the very first cycle's outcome at row creation; resolve_money_push
+  -- re-rolls it immediately after applying each fill, for the cycle that's
+  -- starting next. Admin's "force diamond next" dev tool (see admin/
+  -- index.ts) just sets this directly, bypassing the roll.
+  next_bonus_is_diamond boolean not null default (random() < 0.10),
   status          text not null default 'playing' check (status in ('playing', 'dead', 'cashed_out')),
   created_at      timestamptz not null default now(),
 
@@ -457,31 +520,48 @@ grant all on money_runs to service_role;
 -- 1.0, not classic's 0.999) — a deliberately softer ante for this mode.
 create or replace function public.resolve_money_push(p_user_id uuid, p_date date)
 returns table(
-  out_pushes int, out_earnings_cents int, out_status text, out_success boolean
+  out_pushes int, out_earnings_cents int, out_status text, out_success boolean, out_bonus_cents int,
+  out_diamond_earned boolean, out_next_diamond boolean
 ) as $$
 declare
   v_id bigint;
   v_pushes int;
   v_earnings int;
+  -- This CYCLE's pre-rolled outcome (see money_runs.next_bonus_is_diamond)
+  -- — read once at the top, consumed (not re-rolled) on the fill that
+  -- actually uses it, then immediately re-rolled for the cycle that's
+  -- starting next, all before this function returns. The client shows
+  -- out_next_diamond continuously for the whole cycle (see
+  -- MoneyMode.jsx), not just at the moment the bar fills, which is the
+  -- whole reason this is decided up front rather than at fill time.
+  v_next_diamond boolean;
   v_status text;
   v_chance numeric;
   v_success boolean;
-  v_bonus int;
+  -- Both default to 0/false (not just "unset") so every return path below
+  -- — the already-resolved early-out and the bust branch included —
+  -- reports real, non-null values without each of them needing their own
+  -- explicit reset. Only the success-with-a-full-bar branch below ever
+  -- overwrites either.
+  v_bonus int := 0;
+  v_diamond boolean := false;
 begin
-  select id, pushes, earnings_cents, status into v_id, v_pushes, v_earnings, v_status
+  select id, pushes, earnings_cents, next_bonus_is_diamond, status
+    into v_id, v_pushes, v_earnings, v_next_diamond, v_status
     from money_runs
     where user_id = p_user_id and date = p_date
     for update;
 
   if not found then
     insert into money_runs (user_id, date) values (p_user_id, p_date)
-      returning id, pushes, earnings_cents, status into v_id, v_pushes, v_earnings, v_status;
+      returning id, pushes, earnings_cents, next_bonus_is_diamond, status
+      into v_id, v_pushes, v_earnings, v_next_diamond, v_status;
   end if;
 
   -- Idempotent safety net, same as resolve_push's dead-guard — just two
   -- terminal states here instead of one.
   if v_status <> 'playing' then
-    return query select v_pushes, v_earnings, v_status, false;
+    return query select v_pushes, v_earnings, v_status, false, v_bonus, v_diamond, v_next_diamond;
     return;
   end if;
 
@@ -490,10 +570,33 @@ begin
 
   if v_success then
     v_pushes := v_pushes + 1;
-    -- $1 base, +$3 bonus on every 5th successful push (in cents).
-    v_bonus := case when v_pushes % 5 = 0 then 300 else 0 end;
+    -- $1 base always. Every 5th successful push (a full combo bar) is
+    -- EITHER a random $1-$5 bonus (in cents, always a whole dollar — see
+    -- money.js's formatCents comment) OR, 10% of the time, one diamond
+    -- INSTEAD of that bonus — not on top of it, so a full bar always pays
+    -- out exactly one of the two, never both. Which one is decided by
+    -- v_next_diamond, NOT a fresh roll here (see its declaration above) —
+    -- floor(random()*5) is uniform over {0,1,2,3,4}; +1 shifts that to
+    -- {1..5}, ×100 turns it into cents, same roll as before, just only
+    -- reached on the 90% branch. A diamond is credited straight to
+    -- profiles.money_diamonds right here, unlike earnings_cents — the
+    -- player keeps it regardless of how this run ends, bust or bank.
+    if v_pushes % 5 = 0 then
+      v_diamond := v_next_diamond;
+      if v_diamond then
+        update profiles set money_diamonds = money_diamonds + 1 where id = p_user_id;
+      else
+        v_bonus := (1 + floor(random() * 5))::int * 100;
+      end if;
+      -- Immediately re-roll for the cycle that's starting right now, so
+      -- out_next_diamond below already reflects it — the corner icon can
+      -- swap the instant this push's response lands rather than waiting
+      -- on some later push.
+      v_next_diamond := random() < 0.10;
+    end if;
     v_earnings := v_earnings + 100 + v_bonus;
-    update money_runs set pushes = v_pushes, earnings_cents = v_earnings where id = v_id;
+    update money_runs set pushes = v_pushes, earnings_cents = v_earnings,
+      next_bonus_is_diamond = v_next_diamond where id = v_id;
   else
     update money_runs set status = 'dead' where id = v_id returning status into v_status;
     -- money_busted_over100 (see game.js's "Too Greedy" badge) — v_earnings
@@ -506,7 +609,7 @@ begin
     where id = p_user_id;
   end if;
 
-  return query select v_pushes, v_earnings, v_status, v_success;
+  return query select v_pushes, v_earnings, v_status, v_success, v_bonus, v_diamond, v_next_diamond;
 end;
 $$ language plpgsql security definer set search_path = public;
 
@@ -589,6 +692,39 @@ $$ language plpgsql security definer set search_path = public;
 revoke execute on function public.resolve_money_cashout from public, anon, authenticated;
 grant execute on function public.resolve_money_cashout to service_role;
 
+-- The shop's first real purchase (see MoneyShop.jsx/buy-diamond-button Edge
+-- Function) — locks the profile row (same technique resolve_money_cashout's
+-- streak read uses) so two rapid clicks can't both pass the balance check
+-- before either write lands and double-spend the same 10 diamonds. Already-
+-- owned and insufficient-balance are both just a clean out_success=false,
+-- not an error — the client already knows the current balance/owned state
+-- from `stats` and shouldn't normally even be able to trigger either, but
+-- this is the real enforcement point regardless of what the client thinks.
+create or replace function public.purchase_diamond_button(p_user_id uuid)
+returns table(out_success boolean, out_diamonds int, out_owns_diamond_button boolean) as $$
+declare
+  v_diamonds int;
+  v_owns boolean;
+begin
+  select money_diamonds, owns_diamond_button into v_diamonds, v_owns
+    from profiles where id = p_user_id for update;
+
+  if v_owns or v_diamonds < 10 then
+    return query select false, v_diamonds, v_owns;
+    return;
+  end if;
+
+  update profiles set money_diamonds = money_diamonds - 10, owns_diamond_button = true
+    where id = p_user_id
+    returning money_diamonds, owns_diamond_button into v_diamonds, v_owns;
+
+  return query select true, v_diamonds, v_owns;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+revoke execute on function public.purchase_diamond_button from public, anon, authenticated;
+grant execute on function public.purchase_diamond_button to service_role;
+
 -- ---- Weekly money leaderboard reset (see api/weekly-money-reset.js) ----
 --
 -- Idempotency guard for the weekly cron, same shape/purpose as
@@ -601,6 +737,9 @@ grant execute on function public.resolve_money_cashout to service_role;
 -- double-granting money_reached_top3_weekly.
 create table if not exists money_weekly_resets (
   week_start date primary key,
+  -- Set the moment this row is first claimed (a cron run starting work on
+  -- this week), NOT when the reset actually finishes — see completed_at
+  -- below for that. Kept mainly for observability (when did we start).
   ran_at timestamptz not null default now(),
   -- Snapshot of that week's top 3 by money_weekly_cents, written by
   -- api/weekly-money-reset.js right after granting money_reached_top3_weekly
@@ -612,7 +751,21 @@ create table if not exists money_weekly_resets (
   -- if they've since renamed or changed flair — same reasoning
   -- buildShareText-style snapshots elsewhere in this app favor a frozen
   -- copy over a live join for anything meant to commemorate a moment.
-  top3 jsonb
+  top3 jsonb,
+  -- Null until every step (badge grants, top3 snapshot, AND the
+  -- money_weekly_cents reset) has actually succeeded — see
+  -- api/weekly-money-reset.js. This, not merely "does a row exist for this
+  -- week_start," is what the handler checks before deciding a week is
+  -- genuinely done. Splitting "claimed" (the row existing, ran_at) from
+  -- "completed" (this) is what makes a partial failure resumable instead
+  -- of permanently skipping the rest of that week's reset: the OLD
+  -- behavior treated the row's mere existence as "already ran," so a
+  -- failure between claiming and finishing (e.g. one of the several PATCH
+  -- calls transiently 5xx'ing) left money_weekly_cents never reset and/or
+  -- fewer than 3 Golden Goose grants, forever, with the next scheduled run
+  -- (or a manual retry) short-circuiting on the 409/existing row instead
+  -- of resuming.
+  completed_at timestamptz
 );
 
 alter table money_weekly_resets enable row level security;

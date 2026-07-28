@@ -107,6 +107,28 @@ Deno.serve(async (req) => {
     return json({ success: true });
   }
 
+  // Money-variant dev tool — forces the CURRENT (still-filling) combo
+  // bar's cycle to pay out a diamond once it fills, bypassing
+  // next_bonus_is_diamond's normal 10% roll (see resolve_money_push and
+  // money_runs' own comment on that column). Upserts rather than
+  // requiring an existing 'playing' row like force_bust_money does — an
+  // admin should be able to set this up BEFORE their first push of the
+  // day, not just mid-run.
+  if (action === 'force_money_diamond_next') {
+    const { data: run } = await db
+      .from('money_runs')
+      .select('id, status')
+      .eq('user_id', user.id)
+      .eq('date', today)
+      .maybeSingle();
+    if (run) {
+      await db.from('money_runs').update({ next_bonus_is_diamond: true }).eq('id', run.id);
+    } else {
+      await db.from('money_runs').insert({ user_id: user.id, date: today, next_bonus_is_diamond: true });
+    }
+    return json({ success: true });
+  }
+
   // Dev tools below mirror what the client already does to its own
   // localStorage for guests (see Home.jsx) — these exist so the same
   // buttons work for a logged-in admin now that those stats live server-side.

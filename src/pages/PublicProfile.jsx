@@ -2,11 +2,14 @@ import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient.js';
 import { pacificDateString } from '../lib/pacificDate.js';
-import { BADGES, BADGE_CATEGORIES, BADGE_EMOJI, RARITY_META, earnedBadges } from '../lib/game.js';
+import { BADGE_CATEGORIES, earnedBadges } from '../lib/game.js';
 import { formatCents } from '../lib/money.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
 import { useAuth } from '../lib/AuthContext.jsx';
+import StatTilesPanel from '../components/StatTilesPanel.jsx';
+import AchievementTabToggle from '../components/AchievementTabToggle.jsx';
+import BadgeGrid from '../components/BadgeGrid.jsx';
 
 // Read-only counterpart to Profile.jsx — same stats/badge-grid look, but
 // for viewing *someone else's* profile from the leaderboard (see the
@@ -34,6 +37,11 @@ export default function PublicProfile() {
   const [achievementTab, setAchievementTab] = useState('streak');
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // Distinct from notFound — a genuinely missing/deleted account (query
+  // succeeded, just no matching row) reads completely differently to a
+  // player than "the site couldn't reach the database right now," which
+  // used to render as the exact same "Player not found" message.
+  const [fetchFailed, setFetchFailed] = useState(false);
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
@@ -44,6 +52,7 @@ export default function PublicProfile() {
     let cancelled = false;
     setLoading(true);
     setNotFound(false);
+    setFetchFailed(false);
     (async () => {
       const { data, error } = await supabase
         .from('profiles')
@@ -51,7 +60,13 @@ export default function PublicProfile() {
         .eq('id', userId)
         .maybeSingle();
       if (cancelled) return;
-      if (error || !data) {
+      if (error) {
+        console.error('public profile fetch failed:', error);
+        setFetchFailed(true);
+        setLoading(false);
+        return;
+      }
+      if (!data) {
         setNotFound(true);
         setLoading(false);
         return;
@@ -114,6 +129,22 @@ export default function PublicProfile() {
     );
   }
 
+  if (fetchFailed) {
+    return (
+      <div className="panel spotlight" onMouseMove={spotlightMove}>
+        <h2 className="gradient-title" style={{ fontSize: 20, marginBottom: 8 }}>
+          Couldn't load this profile
+        </h2>
+        <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 14 }}>
+          Something went wrong fetching this player. Try refreshing the page.
+        </div>
+        <Link to="/leaderboard" onClick={playNav} className="mono" style={{ fontSize: 11, color: 'var(--neon-cyan)' }}>
+          ← Back to leaderboard
+        </Link>
+      </div>
+    );
+  }
+
   if (notFound || !profile) {
     return (
       <div className="panel spotlight" onMouseMove={spotlightMove}>
@@ -136,7 +167,9 @@ export default function PublicProfile() {
   // non-admin viewer (never fetched at all, see the isAdmin gate above),
   // so every money-* field below is simply undefined for them — the same
   // "not earned" result earnedBadges already gives any missing field.
-  const earned = earnedBadges({
+  // Reused as-is for BadgeGrid's own progress-hint calc below, not just
+  // earnedBadges() — same fields either way.
+  const statsForBadges = {
     bestStreak: profile.best_streak,
     totalPushes: profile.total_pushes,
     dayStreak: profile.day_streak,
@@ -148,7 +181,8 @@ export default function PublicProfile() {
     moneyReachedTop3Weekly: moneyStats?.money_reached_top3_weekly,
     moneyBankedAfterOnePush: moneyStats?.money_banked_after_one_push,
     moneyBustedOver100: moneyStats?.money_busted_over100,
-  });
+  };
+  const earned = earnedBadges(statsForBadges);
   const earnedIds = new Set(earned.map((b) => b.id));
 
   // Split by achievementTab (see the toggle below) rather than one fixed
@@ -206,102 +240,19 @@ export default function PublicProfile() {
         </Link>
       </div>
 
-      <div className="panel spotlight" onMouseMove={spotlightMove} style={{ marginBottom: 20 }}>
-        <h3 style={{ fontSize: 15, marginBottom: 14 }}>Stats</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(70px, 1fr))', gap: 10 }}>
-          {statTiles.map((s) => (
-            <div
-              key={s.label}
-              style={{
-                textAlign: 'center',
-                background: '#06060a',
-                border: '1px solid var(--line)',
-                borderRadius: 10,
-                padding: '10px 6px',
-              }}
-            >
-              <div className="mono" style={{ fontWeight: 700, fontSize: 20, color: 'var(--neon-green)' }}>
-                {s.value}
-              </div>
-              <div className="mono" style={{ fontSize: 8, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginTop: 4 }}>
-                {s.label}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      <StatTilesPanel tiles={statTiles} />
 
       {/* TEMP admin gate, same as Profile.jsx's own achievement-tab toggle
           and Leaderboard.jsx's money tab — a real viewer seeing this at
           all would leak that money mode exists before it's ready. */}
-      {isAdmin && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-          <button
-            className="btn-ghost"
-            style={achievementTab === 'streak' ? { borderColor: 'var(--neon-cyan)', color: 'var(--neon-cyan)' } : undefined}
-            onClick={() => setAchievementTab('streak')}
-          >
-            Normal Mode
-          </button>
-          <button
-            className="btn-ghost"
-            style={achievementTab === 'money' ? { borderColor: '#ffd45e', color: '#ffd45e' } : undefined}
-            onClick={() => setAchievementTab('money')}
-          >
-            💰 Money Mode
-          </button>
-        </div>
-      )}
+      {isAdmin && <AchievementTabToggle tab={achievementTab} onChange={setAchievementTab} />}
 
-      {/* alignItems:'start' — see the same rule in Profile.jsx; keeps each
-          category panel sized to its own badge count instead of stretched
-          to match the tallest one sharing its grid row. */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
-        {BADGE_CATEGORIES.filter((cat) => cat.id.startsWith('money-') === (achievementTab === 'money')).map((cat) => (
-          <div key={cat.id} className="panel spotlight" onMouseMove={spotlightMove}>
-            <h3 style={{ fontSize: 14, marginBottom: 12 }}>{cat.label}</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {BADGES.filter((b) => b.category === cat.id).map((b) => {
-                const has = earnedIds.has(b.id);
-                const rarity = RARITY_META[b.rarity];
-                const emoji = BADGE_EMOJI[b.id];
-                const selected = has && !!emoji && profile.selected_emoji === emoji;
-                return (
-                  <div
-                    key={b.id}
-                    className="badge-card"
-                    style={{
-                      border: selected
-                        ? '1px solid rgba(255,212,94,0.7)'
-                        : has
-                        ? '1px solid rgba(139,92,246,0.6)'
-                        : '1px solid rgba(255,255,255,0.16)',
-                      borderRadius: 10,
-                      padding: '14px 8px 14px',
-                      textAlign: 'center',
-                      background: selected ? 'rgba(255,212,94,0.1)' : has ? 'rgba(139,92,246,0.08)' : 'rgba(255,255,255,0.02)',
-                      boxShadow: selected ? '0 0 14px rgba(255,212,94,0.3)' : has ? '0 0 14px rgba(139,92,246,0.22)' : 'none',
-                      cursor: 'default',
-                      '--rarity-color': rarity.color,
-                    }}
-                  >
-                    <div className="badge-rarity-corner">
-                      <div className="badge-rarity">{rarity.label}</div>
-                    </div>
-                    <div style={{ fontSize: 12, fontWeight: 700, opacity: has ? 1 : 0.45 }}>
-                      {b.label}
-                      {emoji && <span style={{ marginLeft: 6, opacity: has ? 1 : 0.35 }}>{emoji}</span>}
-                    </div>
-                    <div className="mono badge-card-hint" style={{ fontSize: 9 }}>
-                      {b.hint}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
+      <BadgeGrid
+        categories={BADGE_CATEGORIES.filter((cat) => cat.id.startsWith('money-') === (achievementTab === 'money'))}
+        earnedIds={earnedIds}
+        currentEmoji={profile.selected_emoji}
+        stats={statsForBadges}
+      />
     </div>
   );
 }

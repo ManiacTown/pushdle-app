@@ -4,10 +4,13 @@ import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { pacificDateString } from '../lib/pacificDate.js';
 import * as storage from '../lib/storage.js';
-import { BADGES, BADGE_CATEGORIES, BADGE_EMOJI, RARITY_META, earnedBadges } from '../lib/game.js';
+import { BADGES, BADGE_CATEGORIES, BADGE_EMOJI, earnedBadges } from '../lib/game.js';
 import { formatCents } from '../lib/money.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { playBadgeSelect } from '../lib/sound.js';
+import StatTilesPanel from '../components/StatTilesPanel.jsx';
+import AchievementTabToggle from '../components/AchievementTabToggle.jsx';
+import BadgeGrid from '../components/BadgeGrid.jsx';
 
 // Username's own natural (unshrunk) size and the floor it can shrink to
 // before the streak badge and Log out button start crowding it — see the
@@ -51,6 +54,9 @@ export default function Profile() {
   // to support too.
   const [todayStreak, setTodayStreak] = useState(0);
   const [todayMoneyRun, setTodayMoneyRun] = useState(null);
+  // Distinct from "0 today" — a failed fetch used to render identically to
+  // an honest 0, no way to tell "you haven't played" from "this broke".
+  const [todayFetchError, setTodayFetchError] = useState(false);
   const [usernameFontSize, setUsernameFontSize] = useState(USERNAME_BASE_FONT_SIZE);
   const headerRowRef = useRef(null);
   const nameRef = useRef(null);
@@ -90,6 +96,7 @@ export default function Profile() {
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
+    setTodayFetchError(false);
     const today = pacificDateString();
     supabase
       .from('daily_runs')
@@ -97,8 +104,14 @@ export default function Profile() {
       .eq('user_id', user.id)
       .eq('date', today)
       .maybeSingle()
-      .then(({ data }) => {
-        if (!cancelled) setTodayStreak(data?.streak ?? 0);
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          console.error('today streak fetch failed:', error);
+          setTodayFetchError(true);
+          return;
+        }
+        setTodayStreak(data?.streak ?? 0);
       });
     if (isAdmin) {
       supabase
@@ -107,8 +120,14 @@ export default function Profile() {
         .eq('user_id', user.id)
         .eq('date', today)
         .maybeSingle()
-        .then(({ data }) => {
-          if (!cancelled) setTodayMoneyRun(data ?? null);
+        .then(({ data, error }) => {
+          if (cancelled) return;
+          if (error) {
+            console.error('today money run fetch failed:', error);
+            setTodayFetchError(true);
+            return;
+          }
+          setTodayMoneyRun(data ?? null);
         });
     }
     return () => {
@@ -130,8 +149,10 @@ export default function Profile() {
   // AND money alike, is what keeps "streak badges are classic-mode only"
   // true by construction rather than by coincidence — a wholesale spread
   // would still work today (no streak check reads a money field) but
-  // wouldn't guard against a future badge accidentally doing so.
-  const earned = earnedBadges({
+  // wouldn't guard against a future badge accidentally doing so. Reused
+  // as-is for BadgeGrid's own progress-hint calc below, not just
+  // earnedBadges() — same fields either way.
+  const statsForBadges = {
     bestStreak,
     totalPushes: stats.totalPushes,
     dayStreak: stats.dayStreak,
@@ -143,7 +164,8 @@ export default function Profile() {
     moneyReachedTop3Weekly: stats.moneyReachedTop3Weekly,
     moneyBankedAfterOnePush: stats.moneyBankedAfterOnePush,
     moneyBustedOver100: stats.moneyBustedOver100,
-  });
+  };
+  const earned = earnedBadges(statsForBadges);
   const earnedIds = new Set(earned.map((b) => b.id));
   // Guests never appear on the real leaderboard (see lib/storage.js's note),
   // so their flair is purely a local preview — logged-in players' flair is
@@ -312,38 +334,18 @@ export default function Profile() {
         )}
       </div>
 
-      <div className="panel spotlight" onMouseMove={spotlightMove} style={{ marginBottom: 20 }}>
-        <h3 style={{ fontSize: 15, marginBottom: 14 }}>Stats</h3>
-        {statsLoading && (
-          <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 10 }}>
-            Loading…
-          </div>
-        )}
-        {/* auto-fit, not a fixed 3 columns — the money tab has 5 tiles now
-            (was a fixed 3-tile streak-only panel), same flexible sizing
-            PublicProfile.jsx's identical panel already uses. */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(70px, 1fr))', gap: 10 }}>
-          {statTiles.map((s) => (
-            <div
-              key={s.label}
-              style={{
-                textAlign: 'center',
-                background: '#06060a',
-                border: '1px solid var(--line)',
-                borderRadius: 10,
-                padding: '10px 6px',
-              }}
-            >
-              <div className="mono" style={{ fontWeight: 700, fontSize: 20, color: 'var(--neon-green)' }}>
-                {s.value}
-              </div>
-              <div className="mono" style={{ fontSize: 8, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginTop: 4 }}>
-                {s.label}
-              </div>
-            </div>
-          ))}
+      <StatTilesPanel tiles={statTiles} loading={statsLoading} />
+      {/* Distinct from statsLoading — this is "the fetch actually failed,"
+          not "still in flight." The tiles above still render (falling back
+          to whatever stats/authStats already held), just possibly stale. */}
+      {todayFetchError && (
+        <div
+          className="mono"
+          style={{ fontSize: 11, color: 'var(--neon-red)', marginTop: -12, marginBottom: 20, padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(255,90,90,0.35)', background: 'rgba(255,90,90,0.06)' }}
+        >
+          Couldn't load today's stats — the numbers above may be out of date. Try refreshing the page.
         </div>
-      </div>
+      )}
 
       <div className="panel spotlight" onMouseMove={spotlightMove} style={{ marginBottom: 20 }}>
         <h3 style={{ fontSize: 15, marginBottom: 14 }}>Flair</h3>
@@ -405,111 +407,22 @@ export default function Profile() {
       {/* TEMP admin gate, same reasoning as Leaderboard.jsx's money tab —
           a real player seeing this toggle at all would leak that money
           mode exists before it's ready, so it doesn't render otherwise.
-          Reuses that exact toggle pattern (two .btn-ghost buttons, active
-          state via inline style override) — the only tab precedent in the
-          codebase. Sits right above the grid it controls ("at the
-          bottom" of the page, where the achievement content itself
-          lives), not above the Stats/Flair panels — those stay unified
-          across both categories. */}
-      {isAdmin && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-          <button
-            className="btn-ghost"
-            style={achievementTab === 'streak' ? { borderColor: 'var(--neon-cyan)', color: 'var(--neon-cyan)' } : undefined}
-            onClick={() => setAchievementTab('streak')}
-          >
-            Normal Mode
-          </button>
-          <button
-            className="btn-ghost"
-            style={achievementTab === 'money' ? { borderColor: '#ffd45e', color: '#ffd45e' } : undefined}
-            onClick={() => setAchievementTab('money')}
-          >
-            💰 Money Mode
-          </button>
-        </div>
-      )}
+          Sits right above the grid it controls ("at the bottom" of the
+          page, where the achievement content itself lives), not above the
+          Stats/Flair panels — those stay unified across both categories. */}
+      {isAdmin && <AchievementTabToggle tab={achievementTab} onChange={setAchievementTab} />}
 
-      {/* alignItems:'start' — grid items default to stretch, which forces
-          every panel in a row to match the tallest one (Streak's 7 badges
-          vs Bust's 2, sharing a row, both rendering at Streak's height).
-          This sizes each panel to just its own content instead. */}
-      <div ref={badgeGridRef} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
-        {BADGE_CATEGORIES.filter((cat) => cat.id.startsWith('money-') === (achievementTab === 'money')).map((cat) => (
-          <div key={cat.id} className="panel spotlight" onMouseMove={spotlightMove}>
-            <h3 style={{ fontSize: 14, marginBottom: 12 }}>{cat.label}</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {BADGES.filter((b) => b.category === cat.id).map((b) => {
-                const has = earnedIds.has(b.id);
-                const rarity = RARITY_META[b.rarity];
-                const emoji = BADGE_EMOJI[b.id];
-                const clickable = has && !!emoji;
-                const selected = clickable && currentEmoji === emoji;
-                const expanded = !clickable && expandedBadgeId === b.id;
-                return (
-                  <div
-                    key={b.id}
-                    className={'badge-card' + (expanded ? ' badge-card--expanded' : '')}
-                    // Clickable badges set/clear flair as before. Everything
-                    // else (not earned, or earned with no emoji to set) has
-                    // no real action to take, but still needs SOME tap
-                    // response — on a touch device there's no hover to ever
-                    // reveal .badge-card-hint otherwise, so tapping toggles
-                    // it into view manually instead.
-                    onClick={
-                      clickable
-                        ? () => handleBadgeClick(b)
-                        : () => setExpandedBadgeId((prev) => (prev === b.id ? null : b.id))
-                    }
-                    title={clickable ? (selected ? 'Click to clear this flair' : 'Click to set as your leaderboard flair') : undefined}
-                    style={{
-                      // A soft outline shows on every card, earned or not, so
-                      // there's always a clear frame for the rarity chip to
-                      // sit in — earned badges get a stronger violet accent
-                      // layered on top instead of being the only bordered ones.
-                      // The currently-selected flair badge gets a gold
-                      // accent on top of that, same treatment as newBestToday
-                      // elsewhere in the app.
-                      border: selected
-                        ? '1px solid rgba(255,212,94,0.7)'
-                        : has
-                        ? '1px solid rgba(139,92,246,0.6)'
-                        : '1px solid rgba(255,255,255,0.16)',
-                      borderRadius: 10,
-                      // Was 18px/10px (top/bottom) — that gap was sized for
-                      // clearance under the corner rarity pill, but left the
-                      // name sitting visibly below the card's true vertical
-                      // center whenever the hint text is collapsed (not
-                      // hovering, the common state). Closer to symmetric now
-                      // — still enough clearance for the pill above, but the
-                      // name reads as centered at rest instead of low.
-                      padding: '14px 8px 14px',
-                      textAlign: 'center',
-                      background: selected ? 'rgba(255,212,94,0.1)' : has ? 'rgba(139,92,246,0.08)' : 'rgba(255,255,255,0.02)',
-                      boxShadow: selected ? '0 0 14px rgba(255,212,94,0.3)' : has ? '0 0 14px rgba(139,92,246,0.22)' : 'none',
-                      // Every card is now tappable in some sense (set/clear
-                      // flair, or just reveal its hint) — pointer throughout.
-                      cursor: 'pointer',
-                      '--rarity-color': rarity.color,
-                    }}
-                  >
-                    <div className="badge-rarity-corner">
-                      <div className="badge-rarity">{rarity.label}</div>
-                    </div>
-                    <div style={{ fontSize: 12, fontWeight: 700, opacity: has ? 1 : 0.45 }}>
-                      {b.label}
-                      {emoji && <span style={{ marginLeft: 6, opacity: has ? 1 : 0.35 }}>{emoji}</span>}
-                    </div>
-                    <div className="mono badge-card-hint" style={{ fontSize: 9 }}>
-                      {b.hint}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
+      <BadgeGrid
+        gridRef={badgeGridRef}
+        categories={BADGE_CATEGORIES.filter((cat) => cat.id.startsWith('money-') === (achievementTab === 'money'))}
+        earnedIds={earnedIds}
+        currentEmoji={currentEmoji}
+        stats={statsForBadges}
+        interactive
+        onBadgeClick={handleBadgeClick}
+        expandedBadgeId={expandedBadgeId}
+        onToggleExpand={(id) => setExpandedBadgeId((prev) => (prev === id ? null : id))}
+      />
     </div>
   );
 }

@@ -76,20 +76,26 @@ export default function ResetPassword() {
         Choose a new password for your account.
       </p>
       <form onSubmit={handleSubmit}>
+        <label className="sr-only" htmlFor="reset-password">New password</label>
         <input
+          id="reset-password"
           type="password"
           placeholder="New password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
+          autoComplete="new-password"
           style={{ marginBottom: 12 }}
           required
           minLength={6}
         />
+        <label className="sr-only" htmlFor="reset-password-confirm">Confirm new password</label>
         <input
+          id="reset-password-confirm"
           type="password"
           placeholder="Confirm new password"
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
+          autoComplete="new-password"
           style={{ marginBottom: 16 }}
           required
           minLength={6}

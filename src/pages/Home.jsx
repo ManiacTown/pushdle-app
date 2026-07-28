@@ -23,7 +23,7 @@ import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { useParticles } from '../lib/useParticles.js';
 import OnboardingModal from '../components/OnboardingModal.jsx';
-import MoneyMode, { MONEY_BADGE_REVEAL_DELAY_MS } from '../components/MoneyMode.jsx';
+import MoneyMode, { MONEY_BADGE_REVEAL_DELAY_MS, MONEY_PANEL_GAP } from '../components/MoneyMode.jsx';
 import MoneyShop from '../components/MoneyShop.jsx';
 import BadgeToastStack from '../components/BadgeToast.jsx';
 
@@ -293,6 +293,12 @@ export default function Home() {
     // animation right away so it's finished (or nearly so) by the time the
     // swap below actually happens.
     dismissBadgeToast();
+    // The shop only makes sense inside money mode (see the `uiMode ===
+    // 'money' &&` guard around it below) — closing it here means it's
+    // already gone by the time MoneyMode itself unmounts, instead of
+    // leaving it open (invisible, but still mounted) behind classic mode
+    // until the next time someone reopens it.
+    if (target === 'classic') setShowMoneyShop(false);
     const direction = target === 'money' ? 'forward' : 'backward';
     setModeTransition({ direction, phase: 'exit' });
     setTimeout(() => {
@@ -316,6 +322,11 @@ export default function Home() {
   // adminForceBustMoney's old body for why this can't just be another
   // signal-prop-triggered reset.
   const [moneyForceBustSignal, setMoneyForceBustSignal] = useState(0);
+  // Bumped by the "Force diamond next" dev button to tell MoneyMode to
+  // re-read money_runs.next_bonus_is_diamond after adminForceMoneyDiamond
+  // has set it server-side — see MoneyMode.jsx's own forceDiamondSignal
+  // effect for why this is a light re-fetch rather than a full reset.
+  const [moneyForceDiamondSignal, setMoneyForceDiamondSignal] = useState(0);
   const [buttonHover, setButtonHover] = useState(false);
   const [stats, setStats] = useState(DEFAULT_STATS);
   const [earnedAtRunStart, setEarnedAtRunStart] = useState(new Set());
@@ -397,12 +408,53 @@ export default function Home() {
     const today = pacificDateString();
     let s;
     if (user) {
-      const { data } = await supabase
+      let { data } = await supabase
         .from('daily_runs')
         .select('streak, status')
         .eq('user_id', user.id)
         .eq('date', today)
         .maybeSingle();
+
+      // No server row yet — if this device has a GUEST run for today,
+      // carry it over instead of just resetting to 0: still 'playing'
+      // (the old behavior lost a run you were mid-way through), or already
+      // 'dead' (a guest who busts and THEN signs up otherwise vanishes off
+      // today's leaderboard for that run — their lifetime stats are
+      // already preserved separately either way). Uses the same
+      // sync-stats path AuthContext.jsx's own login-time merge already
+      // calls — safe to call again here even though that call is already
+      // in flight in a separate, unrelated effect with no guaranteed
+      // ordering against this one (merge_local_stats is idempotent: the
+      // lifetime-stats portion no-ops once already migrated, and the
+      // today-run seed only ever takes effect via daily_runs' own
+      // unique(user_id,date) constraint, i.e. only if this exact race —
+      // no row yet — is genuinely what's happening). Re-queries afterward
+      // rather than trusting sync-stats' own response, since that only
+      // returns the lifetime fields, not today's row.
+      if (!data) {
+        const todayState = await storage.getTodayState();
+        if ((todayState.status === 'playing' || todayState.status === 'dead') && todayState.streak > 0) {
+          const [localBest, localStats] = await Promise.all([storage.getBestStreak(), storage.getStats()]);
+          await supabase.functions
+            .invoke('sync-stats', {
+              body: {
+                bestStreak: localBest,
+                ...localStats,
+                todayDate: todayState.date,
+                todayStreak: todayState.streak,
+                todayStatus: todayState.status,
+              },
+            })
+            .catch(() => {}); // best-effort — falls through to a fresh run below either way
+          ({ data } = await supabase
+            .from('daily_runs')
+            .select('streak, status')
+            .eq('user_id', user.id)
+            .eq('date', today)
+            .maybeSingle());
+        }
+      }
+
       s = data
         ? { date: today, streak: data.streak, status: data.status, newBestToday: false }
         : { date: today, streak: 0, status: 'playing', newBestToday: false };
@@ -580,6 +632,22 @@ export default function Home() {
     root.setProperty('--pulse-duration', `${lerp(1.7, 0.7, pulseIntensity)}s`);
     root.setProperty('--bg-glow-1', `rgba(${bgPrimary.join(',')},${lerp(0.16, 0.6, bgIntensity)})`);
     root.setProperty('--bg-glow-2', `rgba(${bgAccent.join(',')},${lerp(0.08, 0.5, bgIntensity)})`);
+
+    // These live on :root, outside this component's own subtree (see the
+    // comment above) — nothing else ever resets them, so without this,
+    // navigating away mid-high-streak (Profile/Leaderboard/etc, no bust in
+    // between) left the whole site's background stuck at whatever
+    // intensity the streak was at, forever, since Home never got another
+    // chance to run this effect again and bring it back down. removeProperty
+    // (not re-setting to the resting values by hand) falls back to the
+    // exact same numbers via :root's own defaults in global.css — those
+    // were deliberately kept in sync with this effect's own bgIntensity=0/
+    // pulseIntensity=0 output, so there's only one place either is defined.
+    return () => {
+      root.removeProperty('--pulse-duration');
+      root.removeProperty('--bg-glow-1');
+      root.removeProperty('--bg-glow-2');
+    };
   }, [state.streak, state.status]);
 
   // Swaps in a new quip every 3 pushes once the streak hits 3 (see
@@ -1105,6 +1173,10 @@ export default function Home() {
   // the caller's role server-side (never trusts the client) before
   // mutating the real daily_runs row — see supabase/functions/admin.
   async function adminForceBustServer() {
+    // Defense in depth alongside the button's own disabled={... || rolling}
+    // — a rapid double-click can still fire before React re-renders that
+    // disabled state, so this is the guard that actually always applies.
+    if (rolling) return;
     const { data, error } = await supabase.functions.invoke('admin', { body: { action: 'force_bust' } });
     if (error || !data?.success) {
       console.error('force bust failed:', error ?? data);
@@ -1146,6 +1218,21 @@ export default function Home() {
     }
     dismissBadgeToast();
     setMoneyResetSignal((k) => k + 1);
+  }
+
+  // Dev tool — forces the CURRENT (still-filling) combo-bar cycle to pay
+  // out a diamond once it fills, instead of waiting on the normal 10%
+  // roll (see admin/index.ts's force_money_diamond_next). Bumps its own
+  // signal, not moneyResetSignal — that one wipes the whole in-progress
+  // run's local state, which would defeat the point of testing this
+  // mid-run.
+  async function adminForceMoneyDiamond() {
+    const { error } = await supabase.functions.invoke('admin', { body: { action: 'force_money_diamond_next' } });
+    if (error) {
+      console.error('force money diamond failed:', error);
+      return;
+    }
+    setMoneyForceDiamondSignal((k) => k + 1);
   }
 
   // Shares the classic "Force bust" button (see the onClick branch below)
@@ -1232,6 +1319,12 @@ export default function Home() {
   const crackPaths = useMemo(() => buildCrackGrowth(state.streak), [state.streak]);
   const showCracks = CRACKS_ENABLED && state.status === 'dead' && crackPaths.length > 0;
   const buttonLabel = state.status === 'dead' ? 'Busted' : rolling ? '…' : 'Push';
+  // Shop-unlocked push-button skin (see MoneyShop.jsx/purchase_diamond_button)
+  // — classic mode only, guests included (authStats is null while logged
+  // out, so this is just false for them, same as any other money-mode
+  // field). Applies automatically once owned; there's no separate
+  // equip/unequip toggle since it's the only skin that exists yet.
+  const ownsDiamondButton = !!authStats?.ownsDiamondButton;
   // Hovering stops the idle-pulse animation (rather than just adding an
   // unrelated :hover rule) so the hover feedback actually shows instead of
   // being silently overridden by the running animation — see DECISIONS.md
@@ -1282,25 +1375,66 @@ export default function Home() {
           Collapses right alongside the header (same class, same shared
           chromeCollapsed signal) — this row sits above the actual game
           content in both modes, so it should tuck away during a run same
-          as everything else above it. */}
+          as everything else above it. Also slides out/in via modeSlotStyle
+          on an actual mode switch, same slot-0 timing as the streak/run
+          panel(s) right below it, so this row rides along with the rest
+          of the page's own switch transition instead of just snapping to
+          its new label/Shop-button state. Safe to combine with the
+          collapse transition above since they're mutually exclusive in
+          practice — the buttons are hidden (0-height, unclickable) any
+          time the header's collapsed, so a switch can only ever START
+          from an already-uncollapsed state. */}
       {isAdmin && (
         <div
           className={'header-panel' + (chromeCollapsed ? ' header-panel--collapsed' : '')}
-          style={{ display: 'flex', justifyContent: 'center', gap: 8, marginBottom: 12 }}
+          style={{ display: 'flex', justifyContent: 'center', gap: MONEY_PANEL_GAP, marginBottom: 12, ...modeSlotStyle(modeTransition, 0) }}
         >
+          {/* A shared literal width on both buttons (not their own natural
+              text width) is what lines the gap between them up with the
+              gap between MoneyMode's run/wallet panels below — same fix as
+              those panels (see MONEY_PANEL_WIDTH in MoneyMode.jsx): "←
+              Back to classic" and "🛍 Shop" are very different lengths, so
+              without this the gap between them sits wherever the longer
+              label happens to push it, not at the row's true center. 140
+              comfortably fits "← Back to classic", the longer of the two.
+              The gap itself is MONEY_PANEL_GAP (imported from
+              MoneyMode.jsx), the same literal value the panels below use,
+              so the two gaps match exactly, not just their positions. */}
           <button
-            className="btn-ghost"
+            className="btn-ghost btn-money-mode"
             onClick={() => startModeSwitch(uiMode === 'classic' ? 'money' : 'classic')}
             disabled={!!modeTransition}
-            title={uiMode === 'classic' ? 'Try the money variant' : 'Back to classic'}
+            title={uiMode === 'classic' ? 'Try money mode' : 'Back to classic'}
+            style={{ width: 140, textAlign: 'center' }}
           >
-            {uiMode === 'classic' ? '💰 Money variant →' : '← Back to classic'}
+            {uiMode === 'classic' ? '💰 Money mode' : '← Back to classic'}
           </button>
           {uiMode === 'money' && (
-            <button className="btn-ghost" onClick={() => setShowMoneyShop((s) => !s)}>
-              🛍 Shop
+            <button
+              className="btn-ghost btn-shop"
+              onClick={() => setShowMoneyShop((s) => !s)}
+              style={{ width: 140, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
+            >
+              <img src="/diamond.png" alt="" width={14} height={14} style={{ display: 'block' }} />
+              Shop
             </button>
           )}
+        </div>
+      )}
+
+      {/* Slides down right under the button that opens it, pushing the
+          game content below it down rather than overlaying — same "always
+          mounted, class-toggled" technique as .header-panel/
+          .money-wallet-panel above (see global.css's .money-shop-wrap),
+          so both the open AND close directions get a real transition
+          instead of just popping in and vanishing on unmount. Mounted for
+          the whole time uiMode==='money', not just while showMoneyShop is
+          true — the class alone drives visibility/height; unmounting only
+          happens by leaving money mode entirely (see the uiMode check
+          here and startModeSwitch's own setShowMoneyShop(false)). */}
+      {uiMode === 'money' && (
+        <div className={'money-shop-wrap' + (showMoneyShop ? '' : ' money-shop-wrap--collapsed')}>
+          <MoneyShop onClose={() => setShowMoneyShop(false)} />
         </div>
       )}
 
@@ -1308,6 +1442,7 @@ export default function Home() {
         <MoneyMode
           forceBustSignal={moneyForceBustSignal}
           resetSignal={moneyResetSignal}
+          forceDiamondSignal={moneyForceDiamondSignal}
           modeTransition={modeTransition}
           onMoneyResolved={checkMoneyBadges}
         />
@@ -1350,43 +1485,72 @@ export default function Home() {
             visibly detached from the button's edge instead of looking like
             part of the same cracked surface flinching. */}
         <div className={poking ? 'push-wrap--poke' : ''} style={{ position: 'relative', ...modeSlotStyle(modeTransition, 1) }}>
-          <button
-            onClick={push}
-            onMouseEnter={() => setButtonHover(true)}
-            onMouseLeave={() => setButtonHover(false)}
-            // Not disabled once busted anymore — see pokeBustedButton, push
-            // now routes dead-state clicks there instead of the real push
-            // logic, rather than the button just doing nothing.
-            disabled={rolling}
-            className={
-              'push-btn' +
-              (state.status === 'dead' ? ' push-btn--dead' : ' push-btn--playing') +
-              (idlePulseActive ? ' push-btn--idle-pulse' : '') +
-              (bustedIdle ? ' push-btn--busted-idle' : '')
-            }
-            style={{
-              width: 190,
-              height: 190,
-              borderRadius: '50%',
-              background: 'var(--panel)',
-              color: 'var(--text)',
-              fontWeight: 700,
-              fontSize: 16,
-              letterSpacing: '0.06em',
-              textTransform: 'uppercase',
-            }}
-          >
-            {/* Invisible (not removed — a real button still needs real text
-                for accessibility/click semantics) whenever the crack overlay
-                is showing. positioned elements always paint above
-                non-positioned in-flow content in the same stacking context
-                regardless of DOM order, so crack-overlay (position:absolute)
-                was rendering on top of this text even though it comes first
-                in the markup — at high severity the cracks could visually
-                cross right over the label. The visible label lives in a
-                separate topmost element below instead. */}
-            <span style={{ visibility: showCracks ? 'hidden' : 'visible' }}>{buttonLabel}</span>
-          </button>
+          {ownsDiamondButton ? (
+            // Shop-unlocked skin — same handlers/disabled logic as the
+            // default button below, just image-based (no border/background
+            // box to draw a CSS ring on, see .push-btn-diamond's own
+            // comment). The label still needs .push-btn-label's dark halo
+            // treatment here UNCONDITIONALLY (not just during the crack
+            // overlay, like the default skin below) — a plain <span> reads
+            // fine against the default button's flat near-black
+            // background, but not against this busier image.
+            <button
+              onClick={push}
+              onMouseEnter={() => setButtonHover(true)}
+              onMouseLeave={() => setButtonHover(false)}
+              disabled={rolling}
+              className={
+                'push-btn-diamond' +
+                (state.status === 'dead' ? ' push-btn-diamond--dead' : ' push-btn-diamond--playing') +
+                (idlePulseActive ? ' push-btn-diamond--idle-pulse' : '') +
+                (bustedIdle ? ' push-btn-diamond--busted-idle' : '')
+              }
+              style={{ width: 190, height: 190 }}
+            >
+              <img src="/diamond-button.png" alt="" width={190} height={190} style={{ display: 'block', pointerEvents: 'none' }} />
+              <span className="push-btn-label" style={{ visibility: showCracks ? 'hidden' : 'visible' }}>
+                {buttonLabel}
+              </span>
+            </button>
+          ) : (
+            <button
+              onClick={push}
+              onMouseEnter={() => setButtonHover(true)}
+              onMouseLeave={() => setButtonHover(false)}
+              // Not disabled once busted anymore — see pokeBustedButton, push
+              // now routes dead-state clicks there instead of the real push
+              // logic, rather than the button just doing nothing.
+              disabled={rolling}
+              className={
+                'push-btn' +
+                (state.status === 'dead' ? ' push-btn--dead' : ' push-btn--playing') +
+                (idlePulseActive ? ' push-btn--idle-pulse' : '') +
+                (bustedIdle ? ' push-btn--busted-idle' : '')
+              }
+              style={{
+                width: 190,
+                height: 190,
+                borderRadius: '50%',
+                background: 'var(--panel)',
+                color: 'var(--text)',
+                fontWeight: 700,
+                fontSize: 16,
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+              }}
+            >
+              {/* Invisible (not removed — a real button still needs real text
+                  for accessibility/click semantics) whenever the crack overlay
+                  is showing. positioned elements always paint above
+                  non-positioned in-flow content in the same stacking context
+                  regardless of DOM order, so crack-overlay (position:absolute)
+                  was rendering on top of this text even though it comes first
+                  in the markup — at high severity the cracks could visually
+                  cross right over the label. The visible label lives in a
+                  separate topmost element below instead. */}
+              <span style={{ visibility: showCracks ? 'hidden' : 'visible' }}>{buttonLabel}</span>
+            </button>
+          )}
           {showCracks && (
             <>
               <svg className="crack-overlay" viewBox="0 0 190 190">
@@ -1458,8 +1622,6 @@ export default function Home() {
 
       </div>
       )}
-
-      {uiMode === 'money' && showMoneyShop && <MoneyShop onClose={() => setShowMoneyShop(false)} />}
 
       {flashKey > 0 && <div key={flashKey} className="screen-flash" />}
 
@@ -1543,7 +1705,16 @@ export default function Home() {
                 // internally, not exposed here, so the server-side
                 // "no active run" 409 in adminForceBustMoney is what
                 // actually guards that case instead.
-                disabled={uiMode === 'classic' && state.status !== 'playing'}
+                //
+                // `|| rolling` closes a real race: a push's own response
+                // takes 450ms+network to land (see pushServer), and until
+                // it does, state.status is still 'playing' — clicking
+                // Force Bust in that window used to fire a second,
+                // independent bust that could land before or after the
+                // in-flight push's own callback, with whichever one
+                // resolved LAST on the client winning the displayed state
+                // regardless of what the server actually did first.
+                disabled={uiMode === 'classic' && (state.status !== 'playing' || rolling)}
                 onClick={() => (uiMode === 'money' ? setMoneyForceBustSignal((k) => k + 1) : user ? adminForceBustServer() : bust(state.streak))}
               >
                 💥 Force bust
@@ -1552,6 +1723,7 @@ export default function Home() {
                 ⏱ Reset day timer
               </button>
               <button className="btn-ghost" onClick={adminResetMoneyDay}>⏱ Reset money timer</button>
+              <button className="btn-ghost" onClick={adminForceMoneyDiamond}>💎 Force diamond next</button>
               <button className="btn-ghost" onClick={resetBestStreak}>↺ Reset best streak</button>
               <button className="btn-ghost" onClick={adminResetBadges}>🏅 Reset all badges</button>
               <button className="btn-ghost" onClick={adminClaimAllBadges}>🏆 Claim all badges</button>

@@ -49,6 +49,37 @@ Deno.serve(async (req) => {
     return json({ error: 'implausible stats payload' }, 400);
   }
 
+  // Optional — only present when the caller (AuthContext.jsx) still has a
+  // guest run for TODAY specifically, either still in progress OR already
+  // busted (see storage.js's getTodayState). Carries it into a real
+  // daily_runs row so logging in mid-run doesn't reset it to 0, and so a
+  // guest who busts and THEN signs up still shows up on today's
+  // leaderboard for that run instead of it just vanishing (see
+  // schema.sql's merge_local_stats, which is what actually applies this —
+  // only ever when no row already exists for that user+date, so this
+  // can't inflate/overwrite an existing real run). Same "reject outright
+  // rather than silently clamp" posture as the stats above, plus the same
+  // "can't exceed total pushes" logic — every push in today's streak is
+  // also counted in totalPushes.
+  let todayStreak = null;
+  let todayDate = null;
+  let todayStatus = null;
+  if (body.todayStreak != null || body.todayDate != null || body.todayStatus != null) {
+    const rawTodayStreak = Number(body.todayStreak);
+    if (
+      typeof body.todayDate !== 'string' ||
+      (body.todayStatus !== 'playing' && body.todayStatus !== 'dead') ||
+      !Number.isFinite(rawTodayStreak) ||
+      rawTodayStreak < 0 ||
+      rawTodayStreak > totalPushes
+    ) {
+      return json({ error: 'implausible today-run payload' }, 400);
+    }
+    todayStreak = rawTodayStreak;
+    todayDate = body.todayDate;
+    todayStatus = body.todayStatus;
+  }
+
   const db = createServiceClient();
 
   const { data, error } = await db
@@ -60,6 +91,9 @@ Deno.serve(async (req) => {
       p_last_played_date: body.lastPlayedDate ?? null,
       p_busted_zero: !!body.bustedAtZero,
       p_busted_one: !!body.bustedAtOne,
+      p_today_date: todayDate,
+      p_today_streak: todayStreak,
+      p_today_status: todayStatus,
     })
     .single();
   if (error) return json({ error: error.message }, 500);

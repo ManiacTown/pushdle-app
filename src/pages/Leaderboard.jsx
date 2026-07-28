@@ -62,8 +62,15 @@ function WeeklyPodium({ top3 }) {
         return (
           <div
             key={rankIdx}
-            className="mono"
+            className="mono podium-entry"
             onClick={goToProfile}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return;
+              e.preventDefault();
+              goToProfile();
+            }}
             style={{ width: 50, textAlign: 'center', cursor: 'pointer' }}
           >
             <div style={{ fontSize: 15, marginBottom: 2 }}>{entry.emoji || ''}</div>
@@ -121,6 +128,12 @@ export default function Leaderboard() {
   // from this state) stays current — same pattern as MoneyMode.jsx/
   // Home.jsx's own countdown timers.
   const [tick, setTick] = useState(0);
+  // Distinct from "allRows is just empty" (a real, quiet day/tab with
+  // nobody on it) — a failed fetch used to render identically to that,
+  // with no way to tell the two apart. Reset at the start of every fetch,
+  // not just on success, so switching tabs after a failure clears the
+  // banner instead of leaving a stale error up.
+  const [fetchError, setFetchError] = useState(false);
 
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
@@ -142,6 +155,7 @@ export default function Leaderboard() {
 
   useEffect(() => {
     setPage(0);
+    setFetchError(false);
 
     if (!isSupabaseConfigured) {
       setAllRows([]);
@@ -165,17 +179,21 @@ export default function Leaderboard() {
         .order(scoreColumn, { ascending: false })
         .limit(1000)
         .then(({ data, error }) => {
-          const rows =
-            !error && data
-              ? data.map((row) => ({
-                  userId: row.id,
-                  name: row.username ?? 'Unknown',
-                  emoji: row.selected_emoji ?? null,
-                  score: row[scoreColumn],
-                  me: user ? row.id === user.id : false,
-                }))
-              : [];
-          setAllRows(rows);
+          if (error) {
+            console.error('leaderboard money fetch failed:', error);
+            setFetchError(true);
+            setAllRows([]);
+            return;
+          }
+          setAllRows(
+            (data ?? []).map((row) => ({
+              userId: row.id,
+              name: row.username ?? 'Unknown',
+              emoji: row.selected_emoji ?? null,
+              score: row[scoreColumn],
+              me: user ? row.id === user.id : false,
+            }))
+          );
         });
       return;
     }
@@ -191,17 +209,21 @@ export default function Leaderboard() {
       .order('streak', { ascending: false })
       .limit(1000)
       .then(({ data, error }) => {
-        const rows =
-          !error && data
-            ? data.map((row) => ({
-                userId: row.user_id,
-                name: row.profiles?.username ?? 'Unknown',
-                emoji: row.profiles?.selected_emoji ?? null,
-                score: row.streak,
-                me: user ? row.user_id === user.id : false,
-              }))
-            : [];
-        setAllRows(rows);
+        if (error) {
+          console.error('leaderboard streak fetch failed:', error);
+          setFetchError(true);
+          setAllRows([]);
+          return;
+        }
+        setAllRows(
+          (data ?? []).map((row) => ({
+            userId: row.user_id,
+            name: row.profiles?.username ?? 'Unknown',
+            emoji: row.profiles?.selected_emoji ?? null,
+            score: row.streak,
+            me: user ? row.user_id === user.id : false,
+          }))
+        );
       });
   }, [user, tab, moneyPeriod, isAdmin]);
 
@@ -306,6 +328,17 @@ export default function Leaderboard() {
           ? 'Total money ever cashed out — spending in the shop never lowers this.'
           : 'Real runs from logged-in players — guest runs stay local and never appear here.'}
       </div>
+      {/* Distinct from an empty board — a failed fetch used to render as
+          an indistinguishable blank list, with no way to tell "nobody's
+          played" from "this broke." */}
+      {fetchError && (
+        <div
+          className="mono"
+          style={{ fontSize: 11, color: 'var(--neon-red)', marginBottom: 14, padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(255,90,90,0.35)', background: 'rgba(255,90,90,0.06)' }}
+        >
+          Couldn't load the leaderboard right now. Try refreshing the page.
+        </div>
+      )}
       {/* Live countdown to next Monday midnight (Pacific) — see
           msUntilNextPacificWeekStart. Sits between the "resets every
           Monday" description above and the rank banner below, per the
@@ -342,16 +375,29 @@ export default function Leaderboard() {
         const rank = page * PAGE_SIZE + i;
         const medal = rank === 0 ? '🥇' : rank === 1 ? '🥈' : rank === 2 ? '🥉' : rank + 1;
         const rankColor = RANK_COLORS[rank];
+        // Bots have no userId (see lib/bots.js — they're a fixed
+        // client-side list, not real accounts, nothing to navigate to),
+        // so only real rows are clickable/focusable at all.
+        const goToRowProfile = row.userId ? () => { playNav(); navigate(`/player/${row.userId}`); } : undefined;
         return (
           <div
             key={`${row.name}-${i}`}
             className="mono leaderboard-row"
-            // Bots have no userId (see lib/bots.js — they're a fixed
-            // client-side list, not real accounts, nothing to navigate
-            // to), so only real rows are clickable. Clicking your own row
-            // goes to the same read-only view everyone else sees when they
-            // click you, not your private editable /profile.
-            onClick={row.userId ? () => { playNav(); navigate(`/player/${row.userId}`); } : undefined}
+            // Clicking your own row goes to the same read-only view
+            // everyone else sees when they click you, not your private
+            // editable /profile.
+            onClick={goToRowProfile}
+            role={goToRowProfile ? 'button' : undefined}
+            tabIndex={goToRowProfile ? 0 : undefined}
+            onKeyDown={
+              goToRowProfile
+                ? (e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    goToRowProfile();
+                  }
+                : undefined
+            }
             style={{
               display: 'flex',
               justifyContent: 'space-between',
