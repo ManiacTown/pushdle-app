@@ -49,5 +49,15 @@ Deno.serve(async (req) => {
     // show the correct corner icon the whole time the bar is filling,
     // not just reveal it the moment it does.
     nextDiamond: data.out_next_diamond,
+    // True on a bust that weekly insurance caught instead of letting
+    // through as a normal loss (see resolve_money_push's bust branch) —
+    // MoneyMode.jsx uses this to run its "Insured!" flow instead of the
+    // bust shake/flash. walletCents/lifetimeCents are only non-null on
+    // this same path (a plain push/bust never moves them) — mirrors the
+    // fields resolve_money_cashout already returns, so the client can
+    // reuse the exact same coin-to-wallet animation off either source.
+    insuranceUsed: data.out_insurance_used,
+    walletCents: data.out_wallet_cents,
+    lifetimeCents: data.out_lifetime_cents,
   });
 });

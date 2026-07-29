@@ -102,12 +102,57 @@ create table if not exists profiles (
   money_diamonds        int not null default 0 check (money_diamonds >= 0),
   -- The shop's first real purchase (see MoneyShop.jsx/purchase_diamond_button
   -- below) — 10 diamonds, permanent, applies to CLASSIC mode's push button
-  -- (see Home.jsx), not money mode's own bag button. A plain boolean, not
-  -- an "equipped skin" enum/table — there's exactly one purchasable skin
-  -- right now, so an owned/not-owned flag is the whole model; a real skin
-  -- system (multiple items, equip/unequip) can replace this if a second
-  -- skin ever gets added.
+  -- (see Home.jsx), not money mode's own bag button. Kept as its own
+  -- dedicated boolean/RPC pair (purchase_diamond_button, active_push_skin)
+  -- rather than folded into the generic owned_cosmetics/purchase_cosmetic
+  -- pair below — it predates them and already works, no reason to touch it.
   owns_diamond_button    boolean not null default false,
+  -- Every OTHER purchasable cosmetic (auras, leaderboard row styles — see
+  -- MoneyShop.jsx) lives in this one list rather than getting its own
+  -- boolean column each, since unlike the push-button skin there's more
+  -- than one item per category and more categories than just one. A plain
+  -- text[] of item ids, checked with `= any(...)` (see purchase_cosmetic/
+  -- set_active_cosmetic below) rather than a normalized items/ownership
+  -- table — there are a small, fixed number of these right now, and this
+  -- avoids a join for something Leaderboard.jsx/Profile.jsx need to read
+  -- on every render. Revisit if the catalog grows enough that hand-listing
+  -- ids everywhere (here, purchase_cosmetic's price table, cosmetics.js's
+  -- color maps) gets unwieldy.
+  owned_cosmetics        text[] not null default '{}',
+  -- Which cosmetic is equipped in each independent slot, if any — null
+  -- means none equipped in that slot even if something's owned for it.
+  -- THREE separate columns, not one shared pointer (that was this
+  -- project's first attempt — see git history) — a push-button skin, a
+  -- badge-flair aura, and a leaderboard-row style are three different
+  -- places on screen that can all be equipped at once, not competing
+  -- alternatives for one shared spot the way multiple push-button skins
+  -- would be. Client-unwritable (see the grant below) — set_active_cosmetic
+  -- is the only path, and it re-checks ownership server-side every time,
+  -- same "never trust the client's cached owned/active state" reasoning as
+  -- purchase_diamond_button/purchase_cosmetic.
+  active_push_skin       text check (active_push_skin is null or active_push_skin in ('diamond_button')),
+  -- Rendered as a colored ring around the flair emoji (see
+  -- src/lib/cosmetics.js's AURA_COLORS) wherever it shows: Leaderboard.jsx
+  -- rows, Profile.jsx, PublicProfile.jsx — same emoji, same aura, every
+  -- place it appears, since this is "whose flair is this" styling, not a
+  -- per-page setting.
+  active_aura            text check (active_aura is null or active_aura in ('aura_gold', 'aura_violet', 'aura_green', 'aura_diamond')),
+  -- Recolors the player's own row on Leaderboard.jsx (see
+  -- src/lib/cosmetics.js's ROW_STYLE_COLORS) — medal-rank rows (top 3)
+  -- still always win over this, same "rank tier beats personalization"
+  -- precedence the row's own me-highlight already had before this existed.
+  active_row_style       text check (active_row_style is null or active_row_style in ('row_gold', 'row_violet', 'row_green', 'row_diamond')),
+
+  -- Once-per-week safety net for money mode (see MoneyShop.jsx and
+  -- resolve_money_push's bust branch below) — a permanent purchase, not a
+  -- consumable that's re-bought; owns_insurance never goes back to false.
+  owns_insurance          boolean not null default false,
+  -- The LIVE per-week flag: true once insurance has saved a bust this
+  -- week, false again from the moment it's armed. Reset to false every
+  -- Monday by api/weekly-money-reset.js, in the same pass as
+  -- money_weekly_cents — same reset boundary, so "once a week" always
+  -- means the same week the money leaderboard itself uses.
+  insurance_used_this_week boolean not null default false,
 
   -- Money-badge tracking (see game.js's money-* BADGES) — all written
   -- exclusively by resolve_money_push/resolve_money_cashout below, same
@@ -514,14 +559,24 @@ grant select on money_runs to authenticated;
 grant all on money_runs to service_role;
 
 -- Same atomic get-or-create-row + roll + write pattern as resolve_push,
--- for the exact same reason (closing the same read-then-write race). Never
--- touches profiles — see the earnings_cents comment above for why that
--- matters. The money variant's first push is a GUARANTEED success (v_chance
--- 1.0, not classic's 0.999) — a deliberately softer ante for this mode.
+-- for the exact same reason (closing the same read-then-write race).
+-- Doesn't touch profiles on a normal push or a plain bust — see the
+-- earnings_cents comment above for why that matters — EXCEPT when weekly
+-- insurance saves a bust (see the bust branch below), which is the one
+-- case a push can bank money outside of resolve_money_cashout. The money
+-- variant's first push is a GUARANTEED success (v_chance 1.0, not
+-- classic's 0.999) — a deliberately softer ante for this mode.
+--
+-- Return shape changed (added out_insurance_used/out_wallet_cents/
+-- out_lifetime_cents) when weekly insurance was added — CREATE OR REPLACE
+-- can't change a function's column set, hence the DROP right before it.
+drop function if exists public.resolve_money_push(uuid, date);
+
 create or replace function public.resolve_money_push(p_user_id uuid, p_date date)
 returns table(
   out_pushes int, out_earnings_cents int, out_status text, out_success boolean, out_bonus_cents int,
-  out_diamond_earned boolean, out_next_diamond boolean
+  out_diamond_earned boolean, out_next_diamond boolean, out_insurance_used boolean,
+  out_wallet_cents int, out_lifetime_cents int
 ) as $$
 declare
   v_id bigint;
@@ -545,6 +600,22 @@ declare
   -- overwrites either.
   v_bonus int := 0;
   v_diamond boolean := false;
+  -- Weekly bust-insurance (see owns_insurance/insurance_used_this_week's
+  -- own comments above) — v_wallet/v_lifetime stay null on every path
+  -- except the insurance-saves-the-run one below, same "only meaningful
+  -- when it actually happened" reasoning v_bonus/v_diamond already used
+  -- before this existed. money-push/index.ts passes all three straight
+  -- through so MoneyMode.jsx can run its coin-to-wallet animation off a
+  -- save exactly the way it already does off a real cash-out.
+  v_insurance_used boolean := false;
+  v_wallet int;
+  v_lifetime int;
+  v_owns_insurance boolean;
+  v_insurance_used_this_week boolean;
+  v_insured_cents int;
+  v_last_banked date;
+  v_prev_streak int;
+  v_new_streak int;
 begin
   select id, pushes, earnings_cents, next_bonus_is_diamond, status
     into v_id, v_pushes, v_earnings, v_next_diamond, v_status
@@ -561,7 +632,7 @@ begin
   -- Idempotent safety net, same as resolve_push's dead-guard — just two
   -- terminal states here instead of one.
   if v_status <> 'playing' then
-    return query select v_pushes, v_earnings, v_status, false, v_bonus, v_diamond, v_next_diamond;
+    return query select v_pushes, v_earnings, v_status, false, v_bonus, v_diamond, v_next_diamond, v_insurance_used, v_wallet, v_lifetime;
     return;
   end if;
 
@@ -598,18 +669,61 @@ begin
     update money_runs set pushes = v_pushes, earnings_cents = v_earnings,
       next_bonus_is_diamond = v_next_diamond where id = v_id;
   else
-    update money_runs set status = 'dead' where id = v_id returning status into v_status;
-    -- money_busted_over100 (see game.js's "Too Greedy" badge) — v_earnings
-    -- here is this run's unbanked total right before the bust, since a
-    -- bust never adds to it. Busting also breaks the banking streak,
-    -- same as classic's day_streak breaking on a missed day.
-    update profiles set
-      money_busted_over100 = money_busted_over100 or (v_earnings >= 10000),
-      money_bank_streak = 0
-    where id = p_user_id;
+    -- Bust — check weekly insurance before finalizing anything as a loss.
+    -- Locks profiles here (a plain bust otherwise only ever touches it via
+    -- the update in the else branch below) so a concurrent purchase can't
+    -- race a use of the same charge.
+    select owns_insurance, insurance_used_this_week into v_owns_insurance, v_insurance_used_this_week
+      from profiles where id = p_user_id for update;
+
+    if v_owns_insurance and not v_insurance_used_this_week then
+      -- Saved: bank HALF this run's unbanked earnings, rounded down
+      -- (integer division truncates toward zero, which for a non-negative
+      -- value IS floor) instead of losing all of it. Mirrors
+      -- resolve_money_cashout's own banking math line-for-line rather than
+      -- calling that function — this already holds every lock it would
+      -- need to reacquire, and the two functions don't otherwise share a
+      -- helper either (see resolve_money_cashout's own structure).
+      -- Deliberately does NOT run the money_busted_over100 check below —
+      -- a save isn't a bust, so it can't retroactively earn "Too Greedy"
+      -- no matter how much was unbanked going in.
+      v_insurance_used := true;
+      v_insured_cents := v_earnings / 2;
+
+      select money_last_banked_date, money_bank_streak into v_last_banked, v_prev_streak
+        from profiles where id = p_user_id;
+      v_new_streak := case when v_last_banked = p_date - 1 then v_prev_streak + 1 else 1 end;
+
+      update profiles set
+        money_wallet_cents = money_wallet_cents + v_insured_cents,
+        money_lifetime_cents = money_lifetime_cents + v_insured_cents,
+        money_best_run_cents = greatest(money_best_run_cents, v_insured_cents),
+        money_weekly_cents = money_weekly_cents + v_insured_cents,
+        money_best_weekly_cents = greatest(money_best_weekly_cents, money_weekly_cents + v_insured_cents),
+        money_banked_after_one_push = money_banked_after_one_push or (v_pushes = 1),
+        money_bank_streak = v_new_streak,
+        money_best_bank_streak = greatest(money_best_bank_streak, v_new_streak),
+        money_last_banked_date = p_date,
+        insurance_used_this_week = true
+      where id = p_user_id
+      returning money_wallet_cents, money_lifetime_cents into v_wallet, v_lifetime;
+
+      update money_runs set status = 'cashed_out', earnings_cents = v_insured_cents where id = v_id returning status into v_status;
+      v_earnings := v_insured_cents;
+    else
+      update money_runs set status = 'dead' where id = v_id returning status into v_status;
+      -- money_busted_over100 (see game.js's "Too Greedy" badge) — v_earnings
+      -- here is this run's unbanked total right before the bust, since a
+      -- bust never adds to it. Busting also breaks the banking streak,
+      -- same as classic's day_streak breaking on a missed day.
+      update profiles set
+        money_busted_over100 = money_busted_over100 or (v_earnings >= 10000),
+        money_bank_streak = 0
+      where id = p_user_id;
+    end if;
   end if;
 
-  return query select v_pushes, v_earnings, v_status, v_success, v_bonus, v_diamond, v_next_diamond;
+  return query select v_pushes, v_earnings, v_status, v_success, v_bonus, v_diamond, v_next_diamond, v_insurance_used, v_wallet, v_lifetime;
 end;
 $$ language plpgsql security definer set search_path = public;
 
@@ -724,6 +838,158 @@ $$ language plpgsql security definer set search_path = public;
 
 revoke execute on function public.purchase_diamond_button from public, anon, authenticated;
 grant execute on function public.purchase_diamond_button to service_role;
+
+-- Equips/unequips an owned cosmetic in ONE of the three independent slots
+-- (see active_push_skin/active_aura/active_row_style's own comments above)
+-- — p_slot picks which column gets written, p_cosmetic_id which value.
+-- p_cosmetic_id = null always succeeds (unequipping never needs an
+-- ownership check); any other value must both be owned AND match a slot
+-- this function actually knows how to grant, checked with the same "never
+-- trust the client" posture as purchase_diamond_button/purchase_cosmetic —
+-- a client claiming to own something it doesn't (or a made-up id, or the
+-- wrong slot for a real id) just gets out_success=false with the unchanged
+-- current value, not an error. New cosmetics need a branch here (and a
+-- value in the relevant column's check constraint above) before they can
+-- ever be equipped, same allowlist-shaped safety property as
+-- ALLOWED_BADGE_FIELDS in _shared/utils.ts.
+create or replace function public.set_active_cosmetic(p_user_id uuid, p_slot text, p_cosmetic_id text)
+returns table(out_success boolean, out_active_cosmetic text) as $$
+declare
+  v_owns_diamond_button boolean;
+  v_owned text[];
+  v_current text;
+begin
+  select owns_diamond_button, owned_cosmetics into v_owns_diamond_button, v_owned
+    from profiles where id = p_user_id for update;
+
+  if p_slot = 'push_skin' then
+    select active_push_skin into v_current from profiles where id = p_user_id;
+    if p_cosmetic_id is null then
+      update profiles set active_push_skin = null where id = p_user_id;
+      return query select true, null::text;
+    elsif p_cosmetic_id = 'diamond_button' and v_owns_diamond_button then
+      update profiles set active_push_skin = 'diamond_button' where id = p_user_id;
+      return query select true, 'diamond_button'::text;
+    else
+      return query select false, v_current;
+    end if;
+    return;
+  end if;
+
+  if p_slot = 'aura' then
+    select active_aura into v_current from profiles where id = p_user_id;
+    if p_cosmetic_id is null then
+      update profiles set active_aura = null where id = p_user_id;
+      return query select true, null::text;
+    elsif p_cosmetic_id = any(v_owned) and p_cosmetic_id like 'aura_%' then
+      update profiles set active_aura = p_cosmetic_id where id = p_user_id;
+      return query select true, p_cosmetic_id;
+    else
+      return query select false, v_current;
+    end if;
+    return;
+  end if;
+
+  if p_slot = 'row_style' then
+    select active_row_style into v_current from profiles where id = p_user_id;
+    if p_cosmetic_id is null then
+      update profiles set active_row_style = null where id = p_user_id;
+      return query select true, null::text;
+    elsif p_cosmetic_id = any(v_owned) and p_cosmetic_id like 'row_%' then
+      update profiles set active_row_style = p_cosmetic_id where id = p_user_id;
+      return query select true, p_cosmetic_id;
+    else
+      return query select false, v_current;
+    end if;
+    return;
+  end if;
+
+  return query select false, null::text;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+revoke execute on function public.set_active_cosmetic from public, anon, authenticated;
+grant execute on function public.set_active_cosmetic to service_role;
+
+-- Generic purchase path for everything in owned_cosmetics (auras, row
+-- styles — NOT the diamond push-button skin, which keeps its own dedicated
+-- purchase_diamond_button). Prices live here as the single source of
+-- truth server-side; src/lib/cosmetics.js's COSMETIC_PRICES is the
+-- client-side mirror used only for display (see that file's own comment on
+-- keeping the two in sync) — this CASE is the actual enforcement point
+-- regardless of what a client shows or sends. Unknown id, already-owned,
+-- and insufficient-balance are all just a clean out_success=false, same
+-- "the client already knows better, but this is the real check" reasoning
+-- as purchase_diamond_button.
+create or replace function public.purchase_cosmetic(p_user_id uuid, p_cosmetic_id text)
+returns table(out_success boolean, out_diamonds int, out_owned_cosmetics text[]) as $$
+declare
+  v_diamonds int;
+  v_owned text[];
+  v_price int;
+begin
+  select money_diamonds, owned_cosmetics into v_diamonds, v_owned
+    from profiles where id = p_user_id for update;
+
+  v_price := case p_cosmetic_id
+    when 'aura_gold' then 8
+    when 'aura_violet' then 8
+    when 'aura_green' then 8
+    when 'aura_diamond' then 8
+    when 'row_gold' then 12
+    when 'row_violet' then 12
+    when 'row_green' then 12
+    when 'row_diamond' then 12
+    else null
+  end;
+
+  if v_price is null or p_cosmetic_id = any(v_owned) or v_diamonds < v_price then
+    return query select false, v_diamonds, v_owned;
+    return;
+  end if;
+
+  update profiles set
+    money_diamonds = money_diamonds - v_price,
+    owned_cosmetics = array_append(owned_cosmetics, p_cosmetic_id)
+    where id = p_user_id
+    returning money_diamonds, owned_cosmetics into v_diamonds, v_owned;
+
+  return query select true, v_diamonds, v_owned;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+revoke execute on function public.purchase_cosmetic from public, anon, authenticated;
+grant execute on function public.purchase_cosmetic to service_role;
+
+-- One-time purchase of the weekly bust-insurance perk (see
+-- resolve_money_push's bust branch below for what it actually does, and
+-- insurance_used_this_week's own comment for the weekly reset). Priced
+-- well above the cosmetics above — this has real economic value (recovers
+-- half an otherwise-lost run once a week) rather than being purely visual.
+create or replace function public.purchase_weekly_insurance(p_user_id uuid)
+returns table(out_success boolean, out_diamonds int, out_owns_insurance boolean) as $$
+declare
+  v_diamonds int;
+  v_owns boolean;
+begin
+  select money_diamonds, owns_insurance into v_diamonds, v_owns
+    from profiles where id = p_user_id for update;
+
+  if v_owns or v_diamonds < 30 then
+    return query select false, v_diamonds, v_owns;
+    return;
+  end if;
+
+  update profiles set money_diamonds = money_diamonds - 30, owns_insurance = true
+    where id = p_user_id
+    returning money_diamonds, owns_insurance into v_diamonds, v_owns;
+
+  return query select true, v_diamonds, v_owns;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+revoke execute on function public.purchase_weekly_insurance from public, anon, authenticated;
+grant execute on function public.purchase_weekly_insurance to service_role;
 
 -- ---- Weekly money leaderboard reset (see api/weekly-money-reset.js) ----
 --

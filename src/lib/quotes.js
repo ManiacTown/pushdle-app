@@ -399,3 +399,22 @@ const MONEY_BANK_QUOTES = [
 export function getMoneyBankQuote() {
   return MONEY_BANK_QUOTES[Math.floor(Math.random() * MONEY_BANK_QUOTES.length)];
 }
+
+// Idle text once weekly bust insurance saves an otherwise-lost run (see
+// resolve_money_push's bust branch and MoneyMode.jsx's triggerInsuranceSave)
+// — distinct from both the bust and plain-bank pools above: this wasn't a
+// deliberate cash-out decision (the bag still busted), and it wasn't a
+// clean loss either, so the tone is "relief," not "discipline" or "bad luck."
+const MONEY_INSURANCE_QUOTES = [
+  'The bag busted. Your insurance did not.',
+  'Half is better than none.',
+  'That could have been a total loss. It was not.',
+  "Insurance: the least exciting way to win.",
+  'The safety net actually worked this time.',
+  'You still lost the run. You still kept the money. Rare combo.',
+  "That's why you paid for the umbrella.",
+];
+
+export function getMoneyInsuranceQuote() {
+  return MONEY_INSURANCE_QUOTES[Math.floor(Math.random() * MONEY_INSURANCE_QUOTES.length)];
+}

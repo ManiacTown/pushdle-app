@@ -223,6 +223,44 @@ export function playDiamond() {
   tone({ freq: 1900, duration: 0.16, type: 'sine', gain: 0.13, delay: 0.12 });
 }
 
+// The shop panel opening/closing (see the Shop button toggle in Home.jsx)
+// — a quick rising sweep to open, the same sweep reversed (falling) to
+// close, so the pair reads as one panel sliding out and back rather than
+// two unrelated blips. Triangle (not sine) for a touch more "mechanical
+// sliding" texture, distinct from the plainer confirm/nav tones elsewhere.
+export function playShopOpen() {
+  tone({ freq: 420, freqEnd: 640, duration: 0.09, type: 'triangle', gain: 0.09 });
+}
+
+export function playShopClose() {
+  tone({ freq: 640, freqEnd: 420, duration: 0.08, type: 'triangle', gain: 0.08 });
+}
+
+// Weekly bust insurance saving an otherwise-lost run (see
+// resolve_money_push's bust branch and MoneyMode.jsx's
+// triggerInsuranceSave) — a warm, relieved two-note rise, triangle (not
+// sine) to sit apart from playComboFull/playDiamond's brighter/glassier
+// reward tones and playBankPress's sharper confirm blip. This is "relief,"
+// not "reward" — a bust still happened, just a softened one.
+export function playInsuranceSave() {
+  tone({ freq: 340, freqEnd: 480, duration: 0.14, type: 'triangle', gain: 0.11 });
+  tone({ freq: 480, freqEnd: 600, duration: 0.16, type: 'triangle', gain: 0.1, delay: 0.1 });
+}
+
+// The shield physically launching off the status pill toward the bag (see
+// MoneyMode.jsx's runInsuranceRevealSequence/.money-shield-fly--jump in
+// global.css) — played the instant the JUMP phase starts, not the moment
+// the bust itself resolved. Two-part shape (a quick rising launch sweep
+// immediately followed by a lower falling thud) so the cue itself reads
+// as "leaping, then touching down," distinct from playInsuranceSave —
+// that one's the separate "insurance worked" relief chime, deliberately
+// held back until the later COVER phase instead of layering both cues
+// at once, so the two beats read as distinct moments, not a rushed pair.
+export function playShieldJump() {
+  tone({ freq: 200, freqEnd: 720, duration: 0.12, type: 'sine', gain: 0.1 });
+  tone({ freq: 900, freqEnd: 420, duration: 0.11, type: 'triangle', gain: 0.09, delay: 0.12 });
+}
+
 export function playReveal() {
   if (muted) return;
   const audioCtx = getCtx();

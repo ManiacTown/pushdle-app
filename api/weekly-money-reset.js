@@ -8,14 +8,18 @@
 // not a wall-clock "is it exactly Monday midnight" check — same pattern
 // the daily bot-seeding cron already established.
 //
-// Does three things once per Pacific week: snapshots whoever is in the top
+// Does four things once per Pacific week: snapshots whoever is in the top
 // 3 by money_weekly_cents into a permanent money_reached_top3_weekly flag
 // (see game.js's "Golden Goose" badge — live rank isn't a stable thing to
 // derive a badge from, so this is the one moment that rank gets turned
 // into something permanent); writes that same top 3 (username/emoji/score
 // AS OF right now) into this week's money_weekly_resets row, which is what
-// Leaderboard.jsx's "last week's champions" podium reads back; then resets
-// money_weekly_cents to 0 for the new week.
+// Leaderboard.jsx's "last week's champions" podium reads back; resets
+// money_weekly_cents to 0 for the new week; and re-arms weekly bust
+// insurance for everyone who used their charge this past week (see
+// insurance_used_this_week's own comment in schema.sql — "once a week"
+// means the same week the money leaderboard itself uses, so it resets in
+// this same pass).
 //
 // SB_URL/SB_SERVICE_KEY/CRON_SECRET — same env vars, same reasoning, as
 // api/simulate-bot-day.js.
@@ -126,6 +130,14 @@ export default async function handler(req, res) {
       method: 'PATCH',
       headers: { Prefer: 'return=minimal' },
       body: JSON.stringify({ money_weekly_cents: 0 }),
+    });
+
+    // Re-arms insurance for anyone who spent their charge this past week —
+    // same "only touch rows with something to reset" idempotency as above.
+    await api(url, serviceKey, '/rest/v1/profiles?insurance_used_this_week=eq.true', {
+      method: 'PATCH',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ insurance_used_this_week: false }),
     });
 
     // The real "this week is done" signal (see completed_at's own comment

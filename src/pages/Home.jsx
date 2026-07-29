@@ -16,7 +16,7 @@ import {
 import { getQuoteForStreak, getBustQuoteForStreak, getPokeQuip } from '../lib/quotes.js';
 import { MONEY_SUCCESS_CHANCE } from '../lib/money.js';
 import { modeSlotStyle, MODE_TRANSITION_PHASE_MS } from '../lib/modeTransition.js';
-import { playPush, playSuccess, playBust, playBadge, playNav, playReveal, playPoke } from '../lib/sound.js';
+import { playPush, playSuccess, playBust, playBadge, playNav, playReveal, playPoke, playShopOpen, playShopClose } from '../lib/sound.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { useChrome } from '../lib/ChromeContext.jsx';
 import { useAuth } from '../lib/AuthContext.jsx';
@@ -396,7 +396,7 @@ export default function Home() {
   const statsInitialized = useRef(false);
   const streakPanelRef = useRef(null);
   const { collapsed: chromeCollapsed, setCollapsed } = useChrome();
-  const { user, isAdmin, stats: authStats, setStats: setAuthStats } = useAuth();
+  const { user, isAdmin, stats: authStats, setStats: setAuthStats, refreshMoneyStats } = useAuth();
 
   // Logged-in users' today's run lives server-side (daily_runs), and so do
   // their lifetime stats now (profiles.best_streak/total_pushes/day_streak/
@@ -1235,6 +1235,43 @@ export default function Home() {
     setMoneyForceDiamondSignal((k) => k + 1);
   }
 
+  // Shop-testing dev tools — see admin/index.ts's add_diamonds/
+  // drain_diamonds for what actually changes server-side. refreshMoneyStats
+  // pulls the new balance back into stats.moneyDiamonds so MoneyShop.jsx's
+  // Buy buttons reflect it immediately, same as every other money-mode
+  // mutation already refreshes after writing.
+  async function adminAddDiamonds() {
+    const { error } = await supabase.functions.invoke('admin', { body: { action: 'add_diamonds' } });
+    if (error) {
+      console.error('add diamonds failed:', error);
+      return;
+    }
+    refreshMoneyStats();
+  }
+
+  async function adminDrainDiamonds() {
+    const { error } = await supabase.functions.invoke('admin', { body: { action: 'drain_diamonds' } });
+    if (error) {
+      console.error('drain diamonds failed:', error);
+      return;
+    }
+    refreshMoneyStats();
+  }
+
+  // Re-arms weekly bust insurance on demand instead of waiting for the
+  // real Monday reset (see api/weekly-money-reset.js) — no signal prop
+  // needed unlike adminResetMoneyDay/adminForceMoneyDiamond above, since
+  // MoneyMode.jsx's own insurance badge reads straight off
+  // stats.insuranceUsedThisWeek, which refreshMoneyStats already updates.
+  async function adminResetInsurance() {
+    const { error } = await supabase.functions.invoke('admin', { body: { action: 'reset_insurance' } });
+    if (error) {
+      console.error('reset insurance failed:', error);
+      return;
+    }
+    refreshMoneyStats();
+  }
+
   // Shares the classic "Force bust" button (see the onClick branch below)
   // rather than a separate button. Deliberately NOT a remount (unlike
   // adminResetMoneyDay above) — a remount would load MoneyMode fresh from
@@ -1322,9 +1359,10 @@ export default function Home() {
   // Shop-unlocked push-button skin (see MoneyShop.jsx/purchase_diamond_button)
   // — classic mode only, guests included (authStats is null while logged
   // out, so this is just false for them, same as any other money-mode
-  // field). Applies automatically once owned; there's no separate
-  // equip/unequip toggle since it's the only skin that exists yet.
-  const ownsDiamondButton = !!authStats?.ownsDiamondButton;
+  // field). Gated on active_push_skin (see schema.sql), not just ownership
+  // — MoneyShop.jsx's Equip/Unequip toggle is what actually sets this, so
+  // owning it is necessary but no longer sufficient for it to render here.
+  const diamondButtonActive = authStats?.activePushSkin === 'diamond_button';
   // Hovering stops the idle-pulse animation (rather than just adding an
   // unrelated :hover rule) so the hover feedback actually shows instead of
   // being silently overridden by the running animation — see DECISIONS.md
@@ -1412,7 +1450,12 @@ export default function Home() {
           {uiMode === 'money' && (
             <button
               className="btn-ghost btn-shop"
-              onClick={() => setShowMoneyShop((s) => !s)}
+              onClick={() =>
+                setShowMoneyShop((s) => {
+                  (s ? playShopClose : playShopOpen)();
+                  return !s;
+                })
+              }
               style={{ width: 140, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
             >
               <img src="/diamond.png" alt="" width={14} height={14} style={{ display: 'block' }} />
@@ -1485,7 +1528,7 @@ export default function Home() {
             visibly detached from the button's edge instead of looking like
             part of the same cracked surface flinching. */}
         <div className={poking ? 'push-wrap--poke' : ''} style={{ position: 'relative', ...modeSlotStyle(modeTransition, 1) }}>
-          {ownsDiamondButton ? (
+          {diamondButtonActive ? (
             // Shop-unlocked skin — same handlers/disabled logic as the
             // default button below, just image-based (no border/background
             // box to draw a CSS ring on, see .push-btn-diamond's own
@@ -1724,6 +1767,9 @@ export default function Home() {
               </button>
               <button className="btn-ghost" onClick={adminResetMoneyDay}>⏱ Reset money timer</button>
               <button className="btn-ghost" onClick={adminForceMoneyDiamond}>💎 Force diamond next</button>
+              <button className="btn-ghost" onClick={adminAddDiamonds}>💎 +1000 diamonds</button>
+              <button className="btn-ghost" onClick={adminDrainDiamonds}>💎 Drain diamonds</button>
+              <button className="btn-ghost" onClick={adminResetInsurance}>🛡️ Reset insurance timer</button>
               <button className="btn-ghost" onClick={resetBestStreak}>↺ Reset best streak</button>
               <button className="btn-ghost" onClick={adminResetBadges}>🏅 Reset all badges</button>
               <button className="btn-ghost" onClick={adminClaimAllBadges}>🏆 Claim all badges</button>

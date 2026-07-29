@@ -7,9 +7,12 @@ import * as storage from '../lib/storage.js';
 import { BADGES, BADGE_CATEGORIES, BADGE_EMOJI, earnedBadges } from '../lib/game.js';
 import { formatCents } from '../lib/money.js';
 import { spotlightMove } from '../lib/spotlight.js';
+import { auraStyle, AURA_COLORS, ROW_STYLE_COLORS, COSMETIC_CATEGORIES } from '../lib/cosmetics.js';
 import { playBadgeSelect } from '../lib/sound.js';
 import StatTilesPanel from '../components/StatTilesPanel.jsx';
 import AchievementTabToggle from '../components/AchievementTabToggle.jsx';
+import CosmeticTabs from '../components/CosmeticTabs.jsx';
+import InsuranceBadge from '../components/InsuranceBadge.jsx';
 import BadgeGrid from '../components/BadgeGrid.jsx';
 
 // Username's own natural (unshrunk) size and the floor it can shrink to
@@ -18,8 +21,73 @@ import BadgeGrid from '../components/BadgeGrid.jsx';
 const USERNAME_BASE_FONT_SIZE = 22;
 const USERNAME_MIN_FONT_SIZE = 12;
 
+const COSMETICS_TABS = [{ id: 'flair', label: 'Flair' }, ...COSMETIC_CATEGORIES.map((c) => ({ id: c.id, label: c.label }))];
+
+// Shared by every tab in the Cosmetics panel below (Flair included) — a
+// row of owned options plus an explicit "none" (🚫) choice, the active one
+// highlighted with the same gold ring regardless of which tab it's in.
+// `items`/`renderItem` let each tab supply its own glyph (an emoji for
+// flair, a colored swatch for name-color/row-background, an icon for
+// push-button skins) without four near-identical button blocks. Returns
+// just the empty-state message (no button row, not even the 🚫) when
+// nothing's ownable yet — matches Flair's own pre-existing behavior of
+// fully hiding the picker until there's at least one real choice to make.
+function EquipPicker({ items, activeId, onSelect, disabled, renderItem, emptyMessage }) {
+  if (items.length === 0) {
+    // Flair passes no emptyMessage — its own bespoke "earn a badge to
+    // unlock one" copy already lives just above this component, so
+    // rendering nothing here avoids a redundant/blank second message box.
+    if (!emptyMessage) return null;
+    return (
+      <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+        {emptyMessage}
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+      <button
+        className="btn-ghost"
+        onClick={() => onSelect(null)}
+        disabled={disabled}
+        title="None"
+        style={{
+          fontSize: 15,
+          lineHeight: 1,
+          padding: '8px 12px',
+          border: !activeId ? '1px solid rgba(255,212,94,0.7)' : undefined,
+          background: !activeId ? 'rgba(255,212,94,0.12)' : undefined,
+          boxShadow: !activeId ? '0 0 10px rgba(255,212,94,0.25)' : undefined,
+        }}
+      >
+        🚫
+      </button>
+      {items.map((id) => (
+        <button
+          key={id}
+          className="btn-ghost"
+          onClick={() => onSelect(id)}
+          disabled={disabled}
+          title={activeId === id ? 'Currently equipped' : 'Equip'}
+          style={{
+            padding: '8px 12px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            border: activeId === id ? '1px solid rgba(255,212,94,0.7)' : undefined,
+            background: activeId === id ? 'rgba(255,212,94,0.12)' : undefined,
+            boxShadow: activeId === id ? '0 0 10px rgba(255,212,94,0.25)' : undefined,
+          }}
+        >
+          {renderItem(id)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function Profile() {
-  const { user, logout, isAdmin, selectedEmoji, updateSelectedEmoji, stats: authStats } = useAuth();
+  const { user, logout, isAdmin, selectedEmoji, updateSelectedEmoji, stats: authStats, refreshMoneyStats } = useAuth();
   const location = useLocation();
   const [guestBestStreak, setGuestBestStreak] = useState(0);
   const [guestStats, setGuestStats] = useState({ totalPushes: 0, dayStreak: 0, bustedAtZero: false, bustedAtOne: false });
@@ -47,6 +115,13 @@ export default function Profile() {
   // all would leak that the mode exists before it's ready, even if every
   // badge behind it reads as locked.
   const [achievementTab, setAchievementTab] = useState('streak');
+  // Which tab of the Cosmetics panel is showing — Flair first (see
+  // COSMETICS_TABS above), then the three shop-purchased equip categories.
+  const [cosmeticsTab, setCosmeticsTab] = useState('flair');
+  // Shared busy flag for every equip click across all three cosmetic tabs
+  // (not per-tab) — only one equip request is ever in flight at a time
+  // regardless of which tab it came from.
+  const [equipBusy, setEquipBusy] = useState(false);
   // Today's streak/money-run — mirrors PublicProfile.jsx's own
   // todayRun/todayMoneyRun, just sourced per-mode below (guest local
   // storage vs. a real daily_runs/money_runs row for a logged-in
@@ -171,6 +246,20 @@ export default function Profile() {
   // so their flair is purely a local preview — logged-in players' flair is
   // the one that actually shows up for other people.
   const currentEmoji = user ? selectedEmoji : guestEmoji;
+  // Guests can't own shop cosmetics (see cosmetics.js) — everything below
+  // is null/empty for them, same "authStats is null while logged out"
+  // reasoning every other money-mode field already follows. The
+  // Cosmetics panel's three shop tabs show a "log in" message instead of
+  // an empty picker in that case (see the render below).
+  const activeAura = user ? authStats?.activeAura : null;
+  const activePushSkin = user ? authStats?.activePushSkin : null;
+  const activeRowStyle = user ? authStats?.activeRowStyle : null;
+  const ownedCosmetics = user ? authStats?.ownedCosmetics ?? [] : [];
+  const ownedPushSkins = user && authStats?.ownsDiamondButton ? ['diamond_button'] : [];
+  // Guests can't buy shop upgrades either — see InsuranceBadge's own gate.
+  const ownsInsurance = user ? !!authStats?.ownsInsurance : false;
+  const ownedAuras = ownedCosmetics.filter((id) => id.startsWith('aura_'));
+  const ownedRowStyles = ownedCosmetics.filter((id) => id.startsWith('row_'));
 
   // Shrinks the username's font-size (never the Log out button, which has
   // flex-shrink:0 below) if the header row is too narrow to fit both at
@@ -246,6 +335,26 @@ export default function Profile() {
     }
   }
 
+  // Shared by all three shop-cosmetic tabs below (push skin/name color/row
+  // background) — set_active_cosmetic (see schema.sql) is the real
+  // enforcement point, same "server never trusts the client's cached
+  // owned/active state" reasoning as the shop's own purchase calls.
+  // cosmeticId null unequips that slot, always succeeds.
+  async function equipCosmetic(slot, cosmeticId) {
+    if (equipBusy) return;
+    setEquipBusy(true);
+    playBadgeSelect();
+    try {
+      const { data, error } = await supabase.functions.invoke('set-active-cosmetic', { body: { slot, cosmeticId } });
+      if (error || !data?.success) throw error ?? new Error('no response');
+      await refreshMoneyStats();
+    } catch (err) {
+      console.error('equip cosmetic failed:', err);
+    } finally {
+      setEquipBusy(false);
+    }
+  }
+
   async function handleBadgeClick(badge) {
     const emoji = BADGE_EMOJI[badge.id];
     if (!emoji || !earnedIds.has(badge.id)) return;
@@ -288,24 +397,37 @@ export default function Profile() {
     <div>
       <div className="panel spotlight" onMouseMove={spotlightMove} style={{ marginBottom: 20 }}>
         <div ref={headerRowRef} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-            {/* No streak badge here anymore — it's redundant with the nav
-                bar (always visible there regardless of page), and removing
-                it buys back exactly the width that was causing a max-length
-                username to hit the shrink floor and still need to truncate
-                on the narrowest phones. */}
-            <h2
-              ref={nameRef}
-              className="gradient-title"
-              style={{ fontSize: usernameFontSize, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-            >
-              {user ? user.user_metadata?.username || user.email : 'Guest'}
-            </h2>
-            {/* Same treatment PublicProfile.jsx gives everyone else's name —
-                your own header showed the username alone with no visual
-                confirmation of which flair (if any) is actually selected,
-                the one place on the whole site that couldn't show it. */}
-            {currentEmoji && <span ref={emojiRef} style={{ fontSize: 20, flexShrink: 0 }}>{currentEmoji}</span>}
+          <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+              {/* No streak badge here anymore — it's redundant with the nav
+                  bar (always visible there regardless of page), and removing
+                  it buys back exactly the width that was causing a max-length
+                  username to hit the shrink floor and still need to truncate
+                  on the narrowest phones. */}
+              <h2
+                ref={nameRef}
+                className="gradient-title"
+                style={{
+                  fontSize: usernameFontSize,
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  ...(activeAura ? auraStyle(activeAura) : {}),
+                }}
+              >
+                {user ? user.user_metadata?.username || user.email : 'Guest'}
+              </h2>
+              {/* Same treatment PublicProfile.jsx gives everyone else's name —
+                  your own header showed the username alone with no visual
+                  confirmation of which flair (if any) is actually selected,
+                  the one place on the whole site that couldn't show it. */}
+              {currentEmoji && (
+                <span ref={emojiRef} style={{ fontSize: 20, flexShrink: 0 }}>
+                  {currentEmoji}
+                </span>
+              )}
+            </div>
+            <InsuranceBadge owns={ownsInsurance} />
           </div>
           {user && (
             <button
@@ -348,59 +470,101 @@ export default function Profile() {
       )}
 
       <div className="panel spotlight" onMouseMove={spotlightMove} style={{ marginBottom: 20 }}>
-        <h3 style={{ fontSize: 15, marginBottom: 14 }}>Flair</h3>
-        <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-          {unlockedFlairs.length > 0
-            ? 'Pick which badge shows next to your name on the leaderboard, or choose no flair:'
-            : `Earn a rare-or-better badge to unlock a flair emoji — ${isTouch ? 'tap' : 'click'} it to show it next to your name on the leaderboard.`}
-        </div>
-        {/* Quick-pick row of every unlocked flair, plus an explicit "no
-            flair" option (🚫) — the badge grid below still supports
-            click-to-set/clear too (same setFlair underneath), this is just
-            a faster path that doesn't need scrolling to find the specific
-            badge card, and is the only place a straightforward "I want
-            none of these" choice existed before now. */}
-        {unlockedFlairs.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-            <button
-              className="btn-ghost"
-              onClick={() => setFlair(null)}
-              title="No flair"
-              style={{
-                fontSize: 15,
-                lineHeight: 1,
-                padding: '8px 12px',
-                border: !currentEmoji ? '1px solid rgba(255,212,94,0.7)' : undefined,
-                background: !currentEmoji ? 'rgba(255,212,94,0.12)' : undefined,
-                boxShadow: !currentEmoji ? '0 0 10px rgba(255,212,94,0.25)' : undefined,
-              }}
-            >
-              🚫
-            </button>
-            {unlockedFlairs.map((emoji) => (
-              <button
-                key={emoji}
-                className="btn-ghost"
-                onClick={() => setFlair(emoji)}
-                title={currentEmoji === emoji ? 'Currently selected' : 'Set as your leaderboard flair'}
-                style={{
-                  fontSize: 15,
-                  lineHeight: 1,
-                  padding: '8px 12px',
-                  border: currentEmoji === emoji ? '1px solid rgba(255,212,94,0.7)' : undefined,
-                  background: currentEmoji === emoji ? 'rgba(255,212,94,0.12)' : undefined,
-                  boxShadow: currentEmoji === emoji ? '0 0 10px rgba(255,212,94,0.25)' : undefined,
-                }}
-              >
-                {emoji}
-              </button>
-            ))}
-          </div>
+        <h3 style={{ fontSize: 15, marginBottom: 14 }}>Cosmetics</h3>
+        <CosmeticTabs tabs={COSMETICS_TABS} active={cosmeticsTab} onChange={setCosmeticsTab} />
+
+        {cosmeticsTab === 'flair' && (
+          <>
+            <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+              {unlockedFlairs.length > 0
+                ? 'Pick which badge shows next to your name on the leaderboard, or choose no flair:'
+                : `Earn a rare-or-better badge to unlock a flair emoji — ${isTouch ? 'tap' : 'click'} it to show it next to your name on the leaderboard.`}
+            </div>
+            {/* The badge grid below still supports click-to-set/clear too
+                (same setFlair underneath) — this quick-pick row is just a
+                faster path that doesn't need scrolling to find the
+                specific badge card. */}
+            <EquipPicker
+              items={unlockedFlairs}
+              activeId={currentEmoji}
+              onSelect={setFlair}
+              renderItem={(emoji) => <span style={{ fontSize: 15 }}>{emoji}</span>}
+              emptyMessage=""
+            />
+            {flairError && (
+              <div className="mono" style={{ fontSize: 11, color: 'var(--neon-red)', marginTop: 8 }}>
+                {flairError}
+              </div>
+            )}
+          </>
         )}
-        {flairError && (
-          <div className="mono" style={{ fontSize: 11, color: 'var(--neon-red)', marginTop: 8 }}>
-            {flairError}
-          </div>
+
+        {cosmeticsTab === 'push_skin' && (
+          <>
+            <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>
+              Which push-button skin shows in classic mode.
+            </div>
+            {!user ? (
+              <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                Log in to buy and equip cosmetics from the shop.
+              </div>
+            ) : (
+              <EquipPicker
+                items={ownedPushSkins}
+                activeId={activePushSkin}
+                onSelect={(id) => equipCosmetic('push_skin', id)}
+                disabled={equipBusy}
+                renderItem={() => <img src="/diamond-button.png" alt="" width={20} height={20} style={{ display: 'block' }} />}
+                emptyMessage="Nothing owned yet — buy a push-button skin from the Shop to equip it here."
+              />
+            )}
+          </>
+        )}
+
+        {cosmeticsTab === 'aura' && (
+          <>
+            <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>
+              Which color your username shows in, everywhere it appears.
+            </div>
+            {!user ? (
+              <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                Log in to buy and equip cosmetics from the shop.
+              </div>
+            ) : (
+              <EquipPicker
+                items={ownedAuras}
+                activeId={activeAura}
+                onSelect={(id) => equipCosmetic('aura', id)}
+                disabled={equipBusy}
+                renderItem={(id) => <span style={{ fontWeight: 700, color: AURA_COLORS[id] }}>Aa</span>}
+                emptyMessage="Nothing owned yet — buy a name color from the Shop to equip it here."
+              />
+            )}
+          </>
+        )}
+
+        {cosmeticsTab === 'row_style' && (
+          <>
+            <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>
+              Which background color highlights your row on the leaderboard.
+            </div>
+            {!user ? (
+              <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                Log in to buy and equip cosmetics from the shop.
+              </div>
+            ) : (
+              <EquipPicker
+                items={ownedRowStyles}
+                activeId={activeRowStyle}
+                onSelect={(id) => equipCosmetic('row_style', id)}
+                disabled={equipBusy}
+                renderItem={(id) => (
+                  <div style={{ width: 16, height: 16, borderRadius: '50%', background: ROW_STYLE_COLORS[id] }} />
+                )}
+                emptyMessage="Nothing owned yet — buy a row background from the Shop to equip it here."
+              />
+            )}
+          </>
         )}
       </div>
 

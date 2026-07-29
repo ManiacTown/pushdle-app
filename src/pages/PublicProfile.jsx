@@ -7,9 +7,11 @@ import { formatCents } from '../lib/money.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
 import { useAuth } from '../lib/AuthContext.jsx';
+import { auraStyle, AURA_COLORS, ROW_STYLE_COLORS, COSMETIC_LABELS } from '../lib/cosmetics.js';
 import StatTilesPanel from '../components/StatTilesPanel.jsx';
 import AchievementTabToggle from '../components/AchievementTabToggle.jsx';
 import BadgeGrid from '../components/BadgeGrid.jsx';
+import InsuranceBadge from '../components/InsuranceBadge.jsx';
 
 // Read-only counterpart to Profile.jsx — same stats/badge-grid look, but
 // for viewing *someone else's* profile from the leaderboard (see the
@@ -56,7 +58,10 @@ export default function PublicProfile() {
     (async () => {
       const { data, error } = await supabase
         .from('profiles')
-        .select('username, selected_emoji, best_streak, total_pushes, day_streak, busted_at_zero, busted_at_one')
+        .select(
+          'username, selected_emoji, active_aura, active_push_skin, active_row_style, owns_insurance, ' +
+            'best_streak, total_pushes, day_streak, busted_at_zero, busted_at_one'
+        )
         .eq('id', userId)
         .maybeSingle();
       if (cancelled) return;
@@ -219,14 +224,26 @@ export default function PublicProfile() {
   return (
     <div>
       <div className="panel spotlight" onMouseMove={spotlightMove} style={{ marginBottom: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-          <h2
-            className="gradient-title"
-            style={{ fontSize: 22, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}
-          >
-            {profile.username}
-          </h2>
-          {profile.selected_emoji && <span style={{ fontSize: 20, flexShrink: 0 }}>{profile.selected_emoji}</span>}
+        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            <h2
+              className="gradient-title"
+              style={{
+                fontSize: 22,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: 0,
+                ...(profile.active_aura ? auraStyle(profile.active_aura) : {}),
+              }}
+            >
+              {profile.username}
+            </h2>
+            {profile.selected_emoji && (
+              <span style={{ fontSize: 20, flexShrink: 0 }}>{profile.selected_emoji}</span>
+            )}
+          </div>
+          <InsuranceBadge owns={!!profile.owns_insurance} />
         </div>
         {todayRun && (
           <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 8 }}>
@@ -246,6 +263,46 @@ export default function PublicProfile() {
           and Leaderboard.jsx's money tab — a real viewer seeing this at
           all would leak that money mode exists before it's ready. */}
       {isAdmin && <AchievementTabToggle tab={achievementTab} onChange={setAchievementTab} />}
+
+      {/* Read-only summary of whichever shop cosmetics this player has
+          EQUIPPED (see Profile.jsx's own Cosmetics tabs, where they picked
+          these) — sits right above the badge grid, on purpose, since both
+          are "what does this player show off" content. Only lists
+          categories that actually have something equipped; a player with
+          nothing equipped anywhere just doesn't get this panel at all,
+          same "no clutter for what isn't there" reasoning as
+          InsuranceBadge above. */}
+      {(profile.active_push_skin || profile.active_aura || profile.active_row_style) && (
+        <div className="panel spotlight" onMouseMove={spotlightMove} style={{ marginBottom: 20 }}>
+          <h3 style={{ fontSize: 13, marginBottom: 10 }}>Cosmetics</h3>
+          <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+            {profile.active_push_skin === 'diamond_button' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <img src="/diamond-button.png" alt="" width={20} height={20} style={{ display: 'block' }} />
+                <span className="mono" style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                  {COSMETIC_LABELS.diamond_button}
+                </span>
+              </div>
+            )}
+            {profile.active_aura && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontWeight: 700, color: AURA_COLORS[profile.active_aura] }}>Aa</span>
+                <span className="mono" style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                  {COSMETIC_LABELS[profile.active_aura]} name
+                </span>
+              </div>
+            )}
+            {profile.active_row_style && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div style={{ width: 14, height: 14, borderRadius: '50%', background: ROW_STYLE_COLORS[profile.active_row_style] }} />
+                <span className="mono" style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                  {COSMETIC_LABELS[profile.active_row_style]} row
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <BadgeGrid
         categories={BADGE_CATEGORIES.filter((cat) => cat.id.startsWith('money-') === (achievementTab === 'money'))}

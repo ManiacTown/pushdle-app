@@ -6,6 +6,7 @@ import { pacificDateString, msUntilNextPacificWeekStart } from '../lib/pacificDa
 import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
 import { formatCents } from '../lib/money.js';
+import { ROW_STYLE_COLORS, auraStyle } from '../lib/cosmetics.js';
 
 // Gold / silver / bronze accents for the top 3 ranks.
 const RANK_COLORS = ['#ffd45e', '#c9d3e0', '#e8935a'];
@@ -118,7 +119,7 @@ export default function Leaderboard() {
   // Monday — see that file and game.js's "Golden Goose" badge, which
   // snapshots the top 3 here into something permanent right before the
   // reset happens).
-  const [moneyPeriod, setMoneyPeriod] = useState('lifetime');
+  const [moneyPeriod, setMoneyPeriod] = useState('weekly');
   // Last week's champions (see WeeklyPodium above) — fetched once per
   // visit to the money tab, independent of moneyPeriod (it's always "last
   // week," regardless of which period you're currently browsing).
@@ -175,7 +176,7 @@ export default function Leaderboard() {
       const scoreColumn = moneyPeriod === 'weekly' ? 'money_weekly_cents' : 'money_lifetime_cents';
       supabase
         .from('profiles')
-        .select(`id, username, selected_emoji, ${scoreColumn}`)
+        .select(`id, username, selected_emoji, active_aura, active_row_style, ${scoreColumn}`)
         .order(scoreColumn, { ascending: false })
         .limit(1000)
         .then(({ data, error }) => {
@@ -190,6 +191,8 @@ export default function Leaderboard() {
               userId: row.id,
               name: row.username ?? 'Unknown',
               emoji: row.selected_emoji ?? null,
+              aura: row.active_aura ?? null,
+              rowStyle: row.active_row_style ?? null,
               score: row[scoreColumn],
               me: user ? row.id === user.id : false,
             }))
@@ -204,7 +207,7 @@ export default function Leaderboard() {
     // player's row in this same query, no separate merge needed.
     supabase
       .from('daily_runs')
-      .select('user_id, streak, profiles(username, selected_emoji)')
+      .select('user_id, streak, profiles(username, selected_emoji, active_aura, active_row_style)')
       .eq('date', today)
       .order('streak', { ascending: false })
       .limit(1000)
@@ -220,6 +223,8 @@ export default function Leaderboard() {
             userId: row.user_id,
             name: row.profiles?.username ?? 'Unknown',
             emoji: row.profiles?.selected_emoji ?? null,
+            aura: row.profiles?.active_aura ?? null,
+            rowStyle: row.profiles?.active_row_style ?? null,
             score: row.streak,
             me: user ? row.user_id === user.id : false,
           }))
@@ -375,6 +380,13 @@ export default function Leaderboard() {
         const rank = page * PAGE_SIZE + i;
         const medal = rank === 0 ? '🥇' : rank === 1 ? '🥈' : rank === 2 ? '🥉' : rank + 1;
         const rankColor = RANK_COLORS[rank];
+        // Shop-purchased personalization (see MoneyShop.jsx/cosmetics.js)
+        // for the row's OWN owner, whoever that is — every row can show
+        // its owner's equipped row style, not just your own. Medal ranks
+        // still always win (see the row's own style block below), same
+        // "rank tier beats personalization" precedence row.me's default
+        // violet tint already followed before this existed.
+        const rowStyleColor = row.rowStyle ? ROW_STYLE_COLORS[row.rowStyle] : null;
         // Bots have no userId (see lib/bots.js — they're a fixed
         // client-side list, not real accounts, nothing to navigate to),
         // so only real rows are clickable/focusable at all.
@@ -407,16 +419,36 @@ export default function Leaderboard() {
               marginBottom: 4,
               cursor: row.userId ? 'pointer' : 'default',
               // Rank tier (gold/silver/bronze) always wins the row's base
-              // look, even when it's the player's own row — "you" is layered
-              // on top via the cyan inset ring + tag below instead of
-              // overriding the medal color outright.
+              // look, even for a personalized/own row — "you" is layered on
+              // top via the cyan inset ring + tag below instead of
+              // overriding the medal color outright. A purchased row style
+              // (see MoneyShop.jsx) is a background tint PLUS a matching
+              // border (the border exists purely to emphasize/delineate the
+              // tint against neighboring rows, not to signal "selected" —
+              // it never touches text color or font-weight, which stay
+              // rank/me-driven only, so it can't be confused with the real
+              // is-this-me treatment).
               color: rankColor ? '#e8e8f0' : row.me ? 'var(--neon-cyan)' : 'var(--text-dim)',
+              // A purchased row style wins over the plain "is this me"
+              // violet default (it's a deliberate choice, made BY that
+              // row's own owner, whether that's you or someone else) — for
+              // both background and border; text color/font-weight above
+              // still come from rank/me alone, so the row style never reads
+              // as "selected," just tinted-and-outlined.
               background: rankColor
                 ? `${rankColor}1a`
+                : rowStyleColor
+                ? `${rowStyleColor}1a`
                 : row.me
                 ? 'rgba(139,92,246,0.14)'
                 : 'rgba(255,255,255,0.02)',
-              border: rankColor ? `1px solid ${rankColor}55` : row.me ? '1px solid rgba(139,92,246,0.4)' : 'none',
+              border: rankColor
+                ? `1px solid ${rankColor}55`
+                : rowStyleColor
+                ? `1px solid ${rowStyleColor}66`
+                : row.me
+                ? '1px solid rgba(139,92,246,0.4)'
+                : 'none',
               borderLeft: rankColor ? `3px solid ${rankColor}` : undefined,
               boxShadow: row.me && rankColor ? 'inset 0 0 0 1px rgba(34,229,255,0.65)' : undefined,
               fontWeight: row.me || rankColor ? 700 : 400,
@@ -443,7 +475,15 @@ export default function Leaderboard() {
                   client-side list), could still in principle be long enough
                   to break this row's layout. Truncates gracefully instead
                   of wrapping or pushing the score column around. */}
-              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span
+                style={{
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  ...(row.aura ? auraStyle(row.aura) : undefined),
+                }}
+              >
                 {row.name}
               </span>
               {row.emoji && <span>{row.emoji}</span>}

@@ -17,9 +17,11 @@ import {
   playBankPress,
   playComboFull,
   playDiamond,
+  playInsuranceSave,
+  playShieldJump,
 } from '../lib/sound.js';
 import { modeSlotStyle } from '../lib/modeTransition.js';
-import { getMoneyQuote, getMoneyBustQuote, getMoneyBankQuote } from '../lib/quotes.js';
+import { getMoneyQuote, getMoneyBustQuote, getMoneyBankQuote, getMoneyInsuranceQuote } from '../lib/quotes.js';
 
 // TEMP: only reachable via Home.jsx's isAdmin-gated mode-switch button —
 // see that gate's comment for the full removal plan once this is ready
@@ -103,6 +105,26 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
   const [displayedWalletCents, setDisplayedWalletCents] = useState(() => stats?.moneyWalletCents ?? 0);
   const [flyingCoin, setFlyingCoin] = useState(null);
   const [floaterAmount, setFloaterAmount] = useState(null);
+  // Same "hold the old value until the reveal's had a moment to land"
+  // technique as displayedWalletCents above, applied to the insurance
+  // status badge (see the render below) — without this, the badge would
+  // flip from ARMED to USED THIS WEEK the instant the push response comes
+  // back, before the player's even seen the "Insured!" reveal begin.
+  // suppressInsuranceSyncRef mirrors suppressWalletSyncRef's own role.
+  const [displayedInsuranceUsed, setDisplayedInsuranceUsed] = useState(() => !!stats?.insuranceUsedThisWeek);
+  // Measured flight path for the shield-save animation (see
+  // runInsuranceRevealSequence/insuranceBadgeRef) — null when nothing's
+  // happening, same shape/pattern as flyingCoin above: appears already at
+  // full (covering) size and jumps from the status badge's own position
+  // straight to the bag (phase:'jump'), landing already covering it —
+  // then, after a real held pause, not just a slow patch of the same
+  // animation, lifts away upward and fades (phase:'lift'); see
+  // .money-shield-fly--jump/--lift in global.css for the two separate
+  // CSS animations this switches between. A measured start/delta rather
+  // than a plain boolean since the badge can sit anywhere depending on
+  // layout/viewport — this can't just be a fixed "pop over the bag"
+  // position the way an earlier version was.
+  const [flyingShield, setFlyingShield] = useState(null);
   // Visible before the first push and again once the result's been read —
   // hidden the instant a push actually goes out, so it "exits" the same
   // way the header/mode-switch row do while a run is in progress, just
@@ -169,16 +191,26 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
   // quotes.js's money-variant pools). moneyQuote cycles every 3 pushes
   // while playing (quoteBucketRef tracks which 3-push bucket it was last
   // rolled for, same technique as Home.jsx's quoteBucketRef);
-  // moneyBustQuip/moneyBankQuip are each picked ONCE, right when that
-  // outcome happens, and held — not re-rolled by poking.
+  // moneyBustQuip/moneyBankQuip/moneyInsuranceQuip are each picked ONCE,
+  // right when that outcome happens, and held — not re-rolled by poking.
   const [moneyQuote, setMoneyQuote] = useState(null);
   const [moneyBustQuip, setMoneyBustQuip] = useState(null);
   const [moneyBankQuip, setMoneyBankQuip] = useState(null);
+  const [moneyInsuranceQuip, setMoneyInsuranceQuip] = useState(null);
+  // True when weekly bust insurance is what closed out THIS run (see
+  // triggerInsuranceSave) — run.status is still just 'cashed_out' in the
+  // data itself (same terminal state a deliberate cash-out leaves), this
+  // is purely a local "how do I flavor the reveal" flag layered on top,
+  // not persisted — reloading mid-idle after an insurance save just shows
+  // the plain Banked! look, same simplification moneyBankQuip's own
+  // pick-once-live reasoning already accepts.
+  const [insuranceSaved, setInsuranceSaved] = useState(false);
   const quoteBucketRef = useRef(-1);
   const amountRef = useRef(null);
   const walletPanelRef = useRef(null);
   const cashOutBtnRef = useRef(null);
   const bagBtnRef = useRef(null);
+  const insuranceBadgeRef = useRef(null);
   const lastPokeAtRef = useRef(0);
   const sparkleId = useRef(0);
   const timers = useRef([]);
@@ -199,6 +231,8 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
   // ahead of the coin-landing animation, same reasoning the `flyingCoin`
   // guard below already documents.
   const suppressWalletSyncRef = useRef(false);
+  // See displayedInsuranceUsed's own comment above.
+  const suppressInsuranceSyncRef = useRef(false);
 
   useEffect(() => {
     return () => clickFxTimers.current.forEach(clearTimeout);
@@ -211,6 +245,11 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
     if (flyingCoin || suppressWalletSyncRef.current) return;
     setDisplayedWalletCents(stats?.moneyWalletCents ?? 0);
   }, [stats?.moneyWalletCents, flyingCoin]);
+
+  useEffect(() => {
+    if (suppressInsuranceSyncRef.current) return;
+    setDisplayedInsuranceUsed(!!stats?.insuranceUsedThisWeek);
+  }, [stats?.insuranceUsedThisWeek]);
 
   // Mid-run quip cycling — identical mechanics to Home.jsx's own quote
   // effect (same 3-push bucket size, same "only re-roll when the bucket
@@ -299,6 +338,119 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
     // read on its own for a moment before the bank panel slides back in.
     timers.current.push(setTimeout(() => setShowWalletPanel(true), 5150));
     timers.current.push(setTimeout(() => setRevealing(false), 7900));
+  }
+
+  // Insurance saving a run gets its OWN timeline, not runRevealSequence's —
+  // it has a real physical beat (the shield jumping onto the bag already
+  // covering it, holding, then lifting away) that classic's Busted!/TOP-X%
+  // pacing was never built around, and it was asked to be deliberately
+  // SLOWER/more spaced-out than a normal reveal so each beat has room to
+  // actually register: bust (silent beat) -> shield JUMPS to the bag
+  // ALREADY AT FULL SIZE, landing already covering it -> shield finishes
+  // jumping, THEN "Insured!" appears -> a real ~1.5s HOLD (the shield just
+  // sits there, still covering the bag) -> shield LIFTS away upward and
+  // fades (not a shrink-in-place) -> the status pill flips the moment it's
+  // gone -> label slides -> "$X earned" appears -> wallet panel returns ->
+  // coin flies. JUMP_MS/LIFT_MS must match @keyframes moneyShieldJump/
+  // moneyShieldLift's own durations in global.css — they're driven
+  // independently (this is JS setTimeout math, those are CSS animations),
+  // so if one changes the other has to too.
+  const JUMP_MS = 550;
+  const HOLD_MS = 1500;
+  const LIFT_MS = 700;
+  function runInsuranceRevealSequence(data) {
+    clearTimers();
+    resetRevealVisuals();
+    setRevealing(true);
+
+    const jumpStart = 900; // the initial "bust" beat, held in silence
+    const jumpDone = jumpStart + JUMP_MS; // shield has landed on the bag, already covering it; "Insured!" appears now
+    const liftStart = jumpDone + HOLD_MS; // the shield just sits there covering the bag for a real held beat
+    const liftDone = liftStart + LIFT_MS; // shield has lifted away + faded; pill flips together
+    const labelSlide = liftDone + 700;
+    const amountShow = labelSlide + 700;
+    const walletBack = amountShow + 700;
+    const coinLaunch = walletBack + 550; // lets the wallet panel finish sliding in first
+    const done = coinLaunch + 1400; // coin flight (650ms) + impact settle
+
+    // Measured once, up front, and reused for both the jump and lift
+    // phases below — the badge/bag don't move mid-sequence, so there's no
+    // need to re-measure between phases, just to swap which animation
+    // class is applied to the same measured start/delta.
+    let flight = null;
+    const badge = insuranceBadgeRef.current;
+    const bag = bagBtnRef.current;
+    if (badge && bag) {
+      const from = badge.getBoundingClientRect();
+      const to = bag.getBoundingClientRect();
+      const startX = from.left + from.width / 2;
+      const startY = from.top + from.height / 2;
+      const landX = to.left + to.width / 2;
+      const landY = to.top + to.height / 2;
+      flight = { startX, startY, dx: landX - startX, dy: landY - startY };
+    }
+
+    timers.current.push(
+      setTimeout(() => {
+        // The launch whoosh plays at the START of the jump, not layered
+        // with any other cue — spacing the jump/reveal/lift sounds out
+        // across their own distinct beats (rather than firing two at once)
+        // is what was asked for after the first pass felt rushed.
+        playShieldJump();
+        if (flight) setFlyingShield({ ...flight, phase: 'jump' });
+      }, jumpStart)
+    );
+
+    timers.current.push(
+      setTimeout(() => {
+        // The jump has physically finished arriving before this fires —
+        // "Insured!" reads as a reaction to the shield having gotten
+        // there, not a coincidence of timing.
+        setShowLabel(true);
+        playReveal();
+      }, jumpDone)
+    );
+
+    timers.current.push(
+      setTimeout(() => {
+        if (flight) {
+          setFlyingShield({ ...flight, phase: 'lift' });
+          playInsuranceSave();
+          spawnWalletImpact(flight.startX + flight.dx, flight.startY + flight.dy);
+        }
+      }, liftStart)
+    );
+
+    timers.current.push(
+      setTimeout(() => {
+        setFlyingShield(null);
+        setLabelSettled(true);
+        // Deliberately delayed this far, not instant — refreshMoneyStats
+        // (called right after this returns, in push()) would otherwise
+        // flip the status badge from ARMED to USED THIS WEEK the moment
+        // the network response lands, long before the player's seen any
+        // of this play out. Tied to the shield's own lift-and-fade
+        // completing (not a separate arbitrary delay) so the pill visibly
+        // switches at the exact moment the shield is gone, reading as one
+        // event — the shield WAS the insurance; once it's lifted away,
+        // the status is spent.
+        suppressInsuranceSyncRef.current = false;
+        setDisplayedInsuranceUsed(true);
+      }, liftDone)
+    );
+
+    timers.current.push(setTimeout(() => setLabelSlid(true), labelSlide));
+    timers.current.push(
+      setTimeout(() => {
+        setShowAmount(true);
+        playReveal();
+      }, amountShow)
+    );
+    timers.current.push(setTimeout(() => setShowWalletPanel(true), walletBack));
+    timers.current.push(
+      setTimeout(() => launchCoinToWallet(data.walletCents, data.lifetimeCents, data.earningsCents), coinLaunch)
+    );
+    timers.current.push(setTimeout(() => setRevealing(false), done));
   }
 
   // Loads today's existing run, if any — a fresh day (or a first-ever
@@ -410,7 +562,12 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
     setMoneyQuote(null);
     setMoneyBustQuip(null);
     setMoneyBankQuip(null);
+    setMoneyInsuranceQuip(null);
+    setInsuranceSaved(false);
+    setFlyingShield(null);
     suppressWalletSyncRef.current = false;
+    suppressInsuranceSyncRef.current = false;
+    setDisplayedInsuranceUsed(!!stats?.insuranceUsedThisWeek);
     setRun(DEFAULT_RUN);
     // Same cancellation-guard pattern as the mount effect above, for the
     // same reason — without it, two rapid "Reset money timer" clicks fire
@@ -446,11 +603,46 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
     runRevealSequence();
   }
 
+  // Weekly bust insurance saved this run (see resolve_money_push's bust
+  // branch in schema.sql and money-push/index.ts's insuranceUsed field) —
+  // this bag still busted, so none of triggerMoneyBust's impact effects
+  // (shake/flash/debris) fire; instead runInsuranceRevealSequence (see
+  // above) walks through its own slower, more spaced-out timeline: the
+  // shield visibly jumps off the status pill to the bag ALREADY covering
+  // it, holds there for a real beat, then lifts away and fades (see
+  // .money-shield-fly--jump/--lift in global.css), then the SAME
+  // coin-to-wallet flight cashOut() uses — data.status is already
+  // 'cashed_out' and data.earningsCents already holds the insured (halved)
+  // amount, the RPC did the actual banking, this sequence is just
+  // presenting it.
+  function triggerInsuranceSave(data) {
+    setBagAnim('');
+    setInsuranceSaved(true);
+    setMoneyInsuranceQuip(getMoneyInsuranceQuote());
+    // Same "hold the pre-save balance through the whole reveal, only apply
+    // it once the coin visually lands" reasoning as cashOut() below, and
+    // same "don't let a live refreshMoneyStats jump the status badge ahead
+    // of the reveal" reasoning for the insurance-sync suppression — see
+    // runInsuranceRevealSequence's own comment on where that gets released.
+    suppressWalletSyncRef.current = true;
+    suppressInsuranceSyncRef.current = true;
+    runInsuranceRevealSequence(data);
+  }
+
   async function push() {
     if (!user || rolling || run.status !== 'playing') return;
     setRolling(true);
     setBagAnim('pressing');
     setShowWalletPanel(false); // exits right away — see runRevealSequence for when it comes back
+    // Clears a stale true left over from an EARLIER run's insurance save —
+    // otherwise a genuinely new run's plain cash-out (or bust) could
+    // inherit the previous run's "Insured!" label/quip, since nothing else
+    // resets this outside the admin resetSignal effect (see
+    // insuranceSaved's own comment on why it's not derived from run.status
+    // directly). Harmless to call on every push within the SAME run too —
+    // it's already false until the one push that might set it true, and
+    // that push ends the run either way.
+    setInsuranceSaved(false);
     playPush();
     try {
       const { data, error } = await supabase.functions.invoke('money-push');
@@ -516,6 +708,13 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
         // immediately rather than only after the next bust/cash-out's own
         // refreshMoneyStats call.
         if (gotDiamond) refreshMoneyStats();
+      } else if (data.insuranceUsed) {
+        triggerInsuranceSave(data);
+        // Insurance moves real money (wallet/lifetime/weekly/streak — see
+        // resolve_money_push's bust branch), same as a real cash-out —
+        // refresh so those and any newly-earned badge show up immediately,
+        // same reasoning as the plain-bust branch below.
+        refreshMoneyStats().then((fresh) => fresh && onMoneyResolved?.(fresh));
       } else {
         triggerMoneyBust(data.pushes);
         // A bust can flip money_busted_over100 and resets money_bank_streak
@@ -584,6 +783,9 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
   async function cashOut() {
     if (!user || rolling || run.status !== 'playing' || run.pushes === 0) return;
     setRolling(true);
+    // Same stale-flag guard as push()'s own — a deliberate cash-out on a
+    // fresh run shouldn't inherit an earlier run's "Insured!" flavor.
+    setInsuranceSaved(false);
     // Immediate click feedback — playBankPress is its own dedicated "press"
     // cue, distinct from playCoinBank (that one's reserved for the coin
     // actually landing a couple seconds later, in launchCoinToWallet, not
@@ -926,6 +1128,51 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
           </div>
         </div>
 
+        {/* Weekly bust insurance status (see MoneyShop.jsx/
+            resolve_money_push's bust branch in schema.sql) — only shown to
+            players who actually own it, same "no clutter for what you
+            don't have" reasoning as the diamond-button skin only rendering
+            once owned. Reads displayedInsuranceUsed (a locally-delayed
+            mirror of stats.insuranceUsedThisWeek — see its own comment)
+            rather than stats directly, so a live save doesn't flip this
+            the instant the response lands. Still just works for admin's
+            "Reset insurance timer" dev tool (see Home.jsx) via its own
+            refreshMoneyStats() call — no signal prop needed, since that
+            path isn't suppressed (only triggerInsuranceSave sets the
+            suppress ref). Same slot as the run/wallet row above (0) since
+            it's visually part of that same cluster and should animate with
+            it, not independently. Red for "used" (not just dimmed) —
+            deliberately reads as the OPPOSITE of armed's green, a clear
+            on/off state rather than "still fine, just faded." */}
+        {stats?.ownsInsurance && (
+          <div
+            ref={insuranceBadgeRef}
+            className="mono"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              fontSize: 9,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              padding: '4px 10px',
+              borderRadius: 20,
+              // marginBottom, not marginTop — .money-tap-aura (the "tap"
+              // label above the bag, see global.css) is absolutely
+              // positioned 12px above .money-bag-wrap's own top edge,
+              // entirely outside normal flow, so this badge needs real
+              // clearance below it or the two visually collide regardless
+              // of how far apart their own boxes sit in the document.
+              marginBottom: 28,
+              border: `1px solid ${displayedInsuranceUsed ? 'rgba(255,45,109,0.4)' : 'rgba(57,255,143,0.4)'}`,
+              color: displayedInsuranceUsed ? 'var(--neon-red)' : 'var(--neon-green)',
+              ...modeSlotStyle(modeTransition, 0),
+            }}
+          >
+            🛡️ {displayedInsuranceUsed ? 'Insurance used this week' : 'Insurance armed'}
+          </div>
+        )}
+
         {/* poking (see pokeMoneyBag) reuses .push-wrap--poke on THIS
             wrapper, not the <button> — same reasoning as Home.jsx's own
             push-wrap: it moves the bag, the tap-aura, and the particle
@@ -1051,14 +1298,20 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
 
         {/* Quips — mirrors Home.jsx's quote/bustQuote fallback chain
             exactly: a picked-once idle quip once resolved (moneyBustQuip/
-            moneyBankQuip), a cycling mid-run quip once pushes >= 3
-            (moneyQuote), falling back to the plain static line whenever
-            the relevant quip hasn't been rolled yet (e.g. the instant a
-            run resolves, before that render's setMoneyBustQuip/
-            setMoneyBankQuip call has landed). */}
+            moneyBankQuip/moneyInsuranceQuip), a cycling mid-run quip once
+            pushes >= 3 (moneyQuote), falling back to the plain static line
+            whenever the relevant quip hasn't been rolled yet (e.g. the
+            instant a run resolves, before that render's setMoneyBustQuip/
+            setMoneyBankQuip/setMoneyInsuranceQuip call has landed).
+            insuranceSaved is checked before the plain banked case since
+            run.status is 'cashed_out' either way — see its own comment on
+            why this is a separate local flag, not a third money_runs
+            status. */}
         <div className="mono" style={{ marginTop: 16, fontSize: 11, color: 'var(--text-dim)', textAlign: 'center', ...modeSlotStyle(modeTransition, 2) }}>
           {run.status === 'dead'
             ? moneyBustQuip ?? 'Cashed-out money is always safe.'
+            : run.status === 'cashed_out' && insuranceSaved
+            ? moneyInsuranceQuip ?? 'Insurance covered half.'
             : run.status === 'cashed_out'
             ? moneyBankQuip ?? 'Nice take.'
             : run.pushes === 0
@@ -1072,9 +1325,9 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
               {showLabel && (
                 <div
                   className={'bust-busted' + (labelSettled ? ' settled' : '') + (labelSlid ? ' slid' : '')}
-                  style={banked ? { color: 'var(--neon-green)' } : undefined}
+                  style={insuranceSaved ? { color: '#2bc8f7' } : banked ? { color: 'var(--neon-green)' } : undefined}
                 >
-                  {banked ? 'Banked!' : 'Busted!'}
+                  {insuranceSaved ? 'Insured!' : banked ? 'Banked!' : 'Busted!'}
                 </div>
               )}
               {showAmount && (
@@ -1123,6 +1376,25 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
       </div>
 
       {flashKey > 0 && <div key={flashKey} className="screen-flash" />}
+
+      {/* Same position:fixed + measured-coordinates approach as the flying
+          coin below — see runInsuranceRevealSequence/insuranceBadgeRef.
+          className switches between the jump and lift animations (see
+          global.css) as flyingShield.phase changes; the left/top/--fly-dx/
+          --fly-dy stay the same measured values throughout both phases. */}
+      {flyingShield && (
+        <div
+          className={`money-shield-fly--${flyingShield.phase}`}
+          style={{
+            left: flyingShield.startX,
+            top: flyingShield.startY,
+            '--fly-dx': `${flyingShield.dx}px`,
+            '--fly-dy': `${flyingShield.dy}px`,
+          }}
+        >
+          🛡️
+        </div>
+      )}
 
       {/* position:fixed with viewport coordinates measured directly off
           the reveal text and wallet panel (see launchCoinToWallet) — no

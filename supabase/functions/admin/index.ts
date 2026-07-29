@@ -129,6 +129,35 @@ Deno.serve(async (req) => {
     return json({ success: true });
   }
 
+  // Dev tools for testing the shop without grinding real combo-bar rolls
+  // for diamonds (see MoneyShop.jsx) — add_diamonds is a plain +1000 on
+  // top of whatever's there (so it can be clicked repeatedly to stack up
+  // for testing several purchases), drain_diamonds is a hard reset to 0
+  // (so "what does an empty wallet look like" is one click away too).
+  // Select-then-update rather than an atomic increment — fine for an
+  // admin-only dev tool with no concurrent-request concern, unlike the
+  // real economy RPCs in schema.sql which all lock the row first.
+  if (action === 'add_diamonds') {
+    const { data: profile } = await db.from('profiles').select('money_diamonds').eq('id', user.id).single();
+    const next = (profile?.money_diamonds ?? 0) + 1000;
+    await db.from('profiles').update({ money_diamonds: next }).eq('id', user.id);
+    return json({ success: true, diamonds: next });
+  }
+
+  if (action === 'drain_diamonds') {
+    await db.from('profiles').update({ money_diamonds: 0 }).eq('id', user.id);
+    return json({ success: true, diamonds: 0 });
+  }
+
+  // Dev tool — re-arms weekly bust insurance on demand instead of waiting
+  // for api/weekly-money-reset.js's real Monday reset (see
+  // insurance_used_this_week's own comment in schema.sql). Only meaningful
+  // once a bust has actually consumed it; harmless to click otherwise.
+  if (action === 'reset_insurance') {
+    await db.from('profiles').update({ insurance_used_this_week: false }).eq('id', user.id);
+    return json({ success: true });
+  }
+
   // Dev tools below mirror what the client already does to its own
   // localStorage for guests (see Home.jsx) — these exist so the same
   // buttons work for a logged-in admin now that those stats live server-side.

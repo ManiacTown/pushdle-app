@@ -1,0 +1,44 @@
+name: Simulate bot day
+
+# Polls the staggered bot-simulation endpoint (see api/simulate-bot-day.js
+# and scripts/lib/bot-day-sim.mjs's unlockedCountNow) every 15 minutes
+# across a window wide enough to cover Pacific midnight landing at EITHER
+# 07:00 UTC (PDT, summer) or 08:00 UTC (PST, winter), plus the full ~5-hour
+# staggered rollout after it (10 bots immediately, then 2 more every 15
+# minutes until the whole roster's run).
+#
+# This exists instead of Vercel Cron because Vercel's Hobby-plan cron tier
+# only supports once-a-day schedules, which can't drive a same-day
+# staggered release. Being polled far more often than bots actually unlock
+# is intentional and harmless — the endpoint is idempotent (an
+# already-simulated bot, in either classic or money mode, is just skipped)
+# and self-paces off the real elapsed-since-Pacific-midnight clock rather
+# than any batch index this workflow would otherwise have to track, so
+# irregular timing (GitHub's scheduled-workflow triggers are "best effort,"
+# often several minutes late under load) doesn't throw the release schedule
+# off either.
+#
+# NOTE: GitHub auto-disables scheduled workflows after 60 days with no
+# commits to the repo — if bot updates ever silently stop, check
+# Actions -> this workflow for a "disabled due to inactivity" banner and
+# re-enable it (or just push a commit).
+on:
+  schedule:
+    - cron: '*/15 6-13 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    steps:
+      # SITE_URL is a repo/environment VARIABLE (not a secret — it's just a
+      # public URL), defaulting to production if unset. CRON_SECRET must be
+      # set as a repo SECRET matching the same value configured in the
+      # Vercel project's env vars (see api/simulate-bot-day.js's own
+      # comment on it) — required for this to authenticate, not optional
+      # here the way it is on the Vercel side.
+      - name: Poll simulate-bot-day
+        run: |
+          curl --fail-with-body -sS \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ vars.SITE_URL || 'https://pushdle.com' }}/api/simulate-bot-day"

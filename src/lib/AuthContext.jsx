@@ -229,6 +229,7 @@ export function AuthProvider({ children }) {
       .select(
         'money_wallet_cents, money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
           'money_weekly_cents, money_best_weekly_cents, money_diamonds, owns_diamond_button, ' +
+          'owned_cosmetics, active_push_skin, active_aura, active_row_style, owns_insurance, insurance_used_this_week, ' +
           'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100'
       )
       .eq('id', user.id)
@@ -257,6 +258,20 @@ export function AuthProvider({ children }) {
       // table/row" reason moneyDiamonds does, even though it's read in
       // classic mode, not the shop itself.
       ownsDiamondButton: !!data?.owns_diamond_button,
+      // Everything ELSE purchasable (auras, row styles — see
+      // MoneyShop.jsx/cosmetics.js) and which of each independent slot is
+      // currently equipped, if any (see active_push_skin/active_aura/
+      // active_row_style's own comments in schema.sql).
+      ownedCosmetics: data?.owned_cosmetics ?? [],
+      activePushSkin: data?.active_push_skin ?? null,
+      activeAura: data?.active_aura ?? null,
+      activeRowStyle: data?.active_row_style ?? null,
+      // Weekly money-mode bust insurance (see resolve_money_push's bust
+      // branch in schema.sql for what owning it actually does).
+      // insuranceUsedThisWeek resets to false every Monday alongside
+      // moneyWeeklyCents (see api/weekly-money-reset.js).
+      ownsInsurance: !!data?.owns_insurance,
+      insuranceUsedThisWeek: !!data?.insurance_used_this_week,
     };
     setStats((prev) => ({ ...prev, ...next }));
     return next;

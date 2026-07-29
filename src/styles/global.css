@@ -633,24 +633,49 @@ input:focus{
 /* The money shop (see Home.jsx) sliding down from the Shop button/up back
    away — same always-mounted, class-toggled max-height technique as
    .header-panel just above, so both directions get a real transition
-   instead of the old instant mount/unmount. max-height's target (355px)
-   is deliberately close to the panel's real measured height (~329px with
-   the real diamond-button purchase card's preview image/Buy button/"need
-   X more" line, which is taller than the other two still-placeholder
-   cards) rather than something huge — too big a gap between the real
-   content height and the max-height target makes the reveal look like it
-   finishes early, easing the last stretch of the transition toward empty
-   space instead of the actual panel edge. */
+   instead of the old instant mount/unmount. max-height's target (350px)
+   is deliberately close to the panel's real measured WORST-CASE height
+   (Name Color/Row Background tabs at ~345px — measured live via
+   Playwright with a fresh, 0-diamond account, since an unaffordable card
+   is TALLER than an owned/bought one, it grows a "Need N more" line under
+   the Buy button. Always re-measure with an UNOWNED, 0-diamond account,
+   not a partially-bought one — a partially-bought account measures
+   shorter and under-sizes this value, which is exactly what caused this
+   to clip and let the money-mode game panels below the shop start too
+   early and visually overlap/intercept clicks on the shop's own lower
+   cards for a brand-new player, twice now.) rather than something huge —
+   too big a gap between the real content height and the max-height target
+   makes the reveal look like it finishes early, easing the last stretch
+   of the transition toward empty space instead of the actual panel edge.
+   The cards themselves were also shrunk (see MoneyShop.jsx's
+   CosmeticCard/diamond-button/insurance card padding and swatch sizes) —
+   this isn't just a smaller cap on the same content, the content is
+   genuinely more compact now. */
 .money-shop-wrap{
   overflow: hidden;
-  max-height: 355px;
+  max-height: 350px;
+  /* The actual gap to the run/wallet panels below (MoneyMode.jsx's first
+     rendered row) — separate concern from max-height above, which only
+     controls how tall the shop's OWN content is allowed to render at.
+     Without this, the shop panel (marginTop:16 above itself, nothing
+     below) sat flush against the run/wallet row with no breathing room at
+     all, easy to mistake for the same clipping bug max-height already
+     fixed, but actually just a missing margin between two separate
+     panels. 32px (bumped up from an initial 24px) so there's comfortable
+     clearance even when the shop is rendering its worst-case (tallest,
+     ~345px content) tab, not just a bare-minimum gap sized for a shorter
+     one. Animated (see the transition list) and zeroed out in the
+     collapsed state below so it doesn't leave phantom empty space once
+     the shop closes. */
+  margin-bottom: 32px;
   opacity: 1;
   transform: translateY(0);
-  transition: opacity 0.35s ease, max-height 0.4s ease, transform 0.35s ease, margin-top 0.4s ease;
+  transition: opacity 0.35s ease, max-height 0.4s ease, transform 0.35s ease, margin-top 0.4s ease, margin-bottom 0.4s ease;
 }
 .money-shop-wrap--collapsed{
   opacity: 0;
   max-height: 0;
+  margin-bottom: 0;
   transform: translateY(-10px);
   pointer-events: none;
 }
@@ -972,6 +997,57 @@ input:focus{
   color: #ffd45e;
   pointer-events: none;
   animation: moneyTapAuraGlow 2.4s ease-in-out infinite;
+}
+/* Weekly bust insurance actually saving a run (see MoneyMode.jsx's
+   triggerInsuranceSave/insuranceBadgeRef/flyingShield) — TWO separate
+   animations played with a real JS-timed pause in between (see
+   runInsuranceRevealSequence's JUMP_MS/HOLD_MS/LIFT_MS), not one
+   continuous keyframe: the shield appears already AT FULL (covering) size
+   and jumps straight from the status pill to the bag, landing already
+   covering it — "Insured!" appears once it lands — then, after a real
+   held pause (the shield just sits there covering the bag), it lifts
+   away upward and fades, rather than shrinking/dissolving in place.
+   Distinct from a normal bust's shake/flash/debris trio, so insurance
+   reads as its own deliberate "something protected you" moment rather
+   than a quieter version of losing. position:fixed + measured
+   start/--fly-dx/--fly-dy, same technique as .money-fly-coin below
+   (translate(-50%,-50%) stays fixed across every step so the element's
+   own CENTER is what travels/lifts, not its top-left corner). Both
+   classes share the same --fly-dx/--fly-dy custom properties set inline
+   in JS — the jump animates them in from (0,0), the lift phase holds them
+   constant (plus its own upward offset) while opacity fades, so the
+   element never visibly jumps position when the class swaps between the
+   two. Scale (5.5, "already covering the bag" -- down from an initial 6.5,
+   about 15% smaller after that first pass rendered too large) is constant
+   across BOTH phases now -- nothing grows into place anymore, it's just
+   already big. */
+@keyframes moneyShieldJump{
+  0%{ transform: translate(-50%, -50%) translate(0, 0) scale(5.5); opacity: 1; }
+  100%{ transform: translate(-50%, -50%) translate(var(--fly-dx, 0px), var(--fly-dy, 0px)) scale(5.5); opacity: 1; }
+}
+.money-shield-fly--jump{
+  position: fixed;
+  font-size: 22px;
+  line-height: 1;
+  pointer-events: none;
+  z-index: 600;
+  filter: drop-shadow(0 0 8px rgba(43,200,247,0.85));
+  /* Duration must match MoneyMode.jsx's own JUMP_MS constant. */
+  animation: moneyShieldJump 0.55s cubic-bezier(0.32, 0, 0.4, 1) forwards;
+}
+@keyframes moneyShieldLift{
+  0%{ transform: translate(-50%, -50%) translate(var(--fly-dx, 0px), var(--fly-dy, 0px)) scale(5.5); opacity: 1; }
+  100%{ transform: translate(-50%, -50%) translate(var(--fly-dx, 0px), calc(var(--fly-dy, 0px) - 70px)) scale(5.5); opacity: 0; }
+}
+.money-shield-fly--lift{
+  position: fixed;
+  font-size: 22px;
+  line-height: 1;
+  pointer-events: none;
+  z-index: 600;
+  filter: drop-shadow(0 0 8px rgba(43,200,247,0.85));
+  /* Duration must match MoneyMode.jsx's own LIFT_MS constant. */
+  animation: moneyShieldLift 0.7s ease-out forwards;
 }
 /* Press-then-bounce sequence (see MoneyMode.jsx's push()) — driven by JS
    toggling these two classes rather than a plain :active pseudo-class,
