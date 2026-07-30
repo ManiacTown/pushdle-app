@@ -22,7 +22,10 @@ import { useChrome } from '../lib/ChromeContext.jsx';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { useParticles } from '../lib/useParticles.js';
+import { hasSeenOnboardingLocally } from '../lib/onboarding.js';
+import { hasSeenMoneyUnlockLocally, markMoneyUnlockSeenLocally } from '../lib/moneyUnlock.js';
 import OnboardingModal from '../components/OnboardingModal.jsx';
+import MoneyModeUnlockModal from '../components/MoneyModeUnlockModal.jsx';
 import MoneyMode, { MONEY_BADGE_REVEAL_DELAY_MS, MONEY_PANEL_GAP } from '../components/MoneyMode.jsx';
 import MoneyShop from '../components/MoneyShop.jsx';
 import BadgeToastStack from '../components/BadgeToast.jsx';
@@ -255,10 +258,18 @@ export default function Home() {
   // Admin dev-tools "summon onboarding" preview — see OnboardingModal.jsx's
   // forceOpen prop.
   const [forceShowOnboarding, setForceShowOnboarding] = useState(false);
-  // Money-variant mode switch — admin-gated for now (see the isAdmin &&
-  // check around the switch button below and MoneyMode.jsx's own header
-  // comment for the full removal plan once it's ready for everyone). Not
-  // persisted across reloads — always starts back on classic.
+  // Celebratory modal (see MoneyModeUnlockModal.jsx) shown once per
+  // account, gated by profiles.money_unlock_seen — see the effect below
+  // (near the other useLayoutEffects) for the actual trigger condition.
+  const [showMoneyUnlockModal, setShowMoneyUnlockModal] = useState(false);
+  // True only when the admin dev-tools button summoned this for
+  // preview/QA (see the "🎉 Preview money unlock" button below) — a
+  // preview dismissal must NOT call markMoneyUnlockSeen, or previewing it
+  // would consume a real player's actual one-time unlock moment.
+  const [moneyUnlockPreview, setMoneyUnlockPreview] = useState(false);
+  // Money-variant mode switch — open to everyone (see hasPlayedClassic
+  // below for the one real requirement). Not persisted across reloads —
+  // always starts back on classic.
   const [uiMode, setUiMode] = useState('classic');
   // Retriggers the odds-text flash below every time the mode actually
   // changes — keyed remount (same trick as flashKey/screen-flash) is what
@@ -287,6 +298,12 @@ export default function Home() {
   const [modeTransition, setModeTransition] = useState(null);
   function startModeSwitch(target) {
     if (modeTransition || target === uiMode) return;
+    // Money mode is gated behind having played classic at least once —
+    // see hasPlayedClassic's own declaration/comment below for the actual
+    // check. Kept here too (not just on the button that's hidden until
+    // it's true) so any other future call site can't skip the
+    // requirement.
+    if (target === 'money' && !hasPlayedClassic) return;
     playNav(); // reused as-is — already described as "a light, airy tick"
     // A toast earned in the mode we're LEAVING shouldn't just vanish when
     // that mode's component unmounts a moment from now — start its exit
@@ -395,8 +412,50 @@ export default function Home() {
   }, [showBadges]);
   const statsInitialized = useRef(false);
   const streakPanelRef = useRef(null);
+  // Drives the shop panel's height (see the money-shop-wrap render below) —
+  // measured off shopContentRef's actual rendered content instead of a
+  // fixed guess, so switching tabs (each a different height) animates
+  // smoothly between the two real sizes instead of snapping, and the panel
+  // can never clip its own bottom border again (see global.css's old
+  // max-height comment history — that approach required re-measuring a
+  // "worst case" by hand and clipped for real on more than one occasion
+  // when it drifted out of date).
+  const shopContentRef = useRef(null);
+  const [shopContentHeight, setShopContentHeight] = useState(0);
   const { collapsed: chromeCollapsed, setCollapsed } = useChrome();
-  const { user, isAdmin, stats: authStats, setStats: setAuthStats, refreshMoneyStats } = useAuth();
+  const {
+    user,
+    isAdmin,
+    stats: authStats,
+    setStats: setAuthStats,
+    refreshMoneyStats,
+    moneyUnlockSeen,
+    markMoneyUnlockSeen,
+    onboardingSeen,
+  } = useAuth();
+
+  // Money mode's progression gate, computed once here rather than
+  // inline at each of its three call sites (startModeSwitch, the
+  // unlock-modal trigger effect, and the mode-switch button's own
+  // render logic below) — those all used to repeat this exact
+  // ternary by hand, which is exactly the kind of thing that quietly
+  // drifts out of sync if the threshold ever changes in only one of
+  // the copies. Deliberately reads authStats (not this component's own
+  // `stats`) for a logged-in user — see the removed inline copies'
+  // original comment, preserved here: `stats` is a ONE-TIME snapshot of
+  // authStats taken the instant it first turns non-null, and authStats
+  // can legitimately go non-null from the money-stats fetch (no
+  // totalPushes field at all) before the separate sync-stats login-merge
+  // — which is what actually carries totalPushes in — has resolved.
+  // Reading `stats` here could freeze this gate on a false "0 pushes"
+  // for a returning user with real history, for the rest of the
+  // session. authStats itself stays live and re-renders once sync-stats
+  // lands, so this can't get stuck. Safe to reference from code defined
+  // textually ABOVE this line too (startModeSwitch, the trigger effect)
+  // — a function declaration's body, and a useEffect callback that
+  // hasn't fired yet, both only actually read this at CALL time, by
+  // which point this render's already run top-to-bottom past this line.
+  const hasPlayedClassic = user ? (authStats?.totalPushes ?? 0) > 0 : (stats?.totalPushes ?? 0) > 0;
 
   // Logged-in users' today's run lives server-side (daily_runs), and so do
   // their lifetime stats now (profiles.best_streak/total_pushes/day_streak/
@@ -511,6 +570,15 @@ export default function Home() {
   // only job is the one-time initial load.
   useEffect(() => {
     statsInitialized.current = false;
+  }, [user]);
+
+  // Same reset reasoning as statsInitialized above, for
+  // moneyUnlockShownRef (declared further down, next to the effect that
+  // actually reads it) — without this, a logout followed by a DIFFERENT
+  // account logging in in the same tab would stay wrongly suppressed by
+  // the first account's already-fired flag.
+  useEffect(() => {
+    moneyUnlockShownRef.current = false;
   }, [user]);
 
   useEffect(() => {
@@ -704,6 +772,80 @@ export default function Home() {
     };
   }, [classicCollapsed, state.status, state.streak, state.newBestToday, bestStreak, user]);
 
+  // Tracks the shop panel's true rendered content height (see
+  // shopContentRef's declaration above) so the wrapper can animate to it
+  // with a real height transition — fires on mount AND on every tab switch
+  // inside MoneyShop, since a ResizeObserver reacts to any size change of
+  // the observed element, not just window resizes. shopContentRef's own
+  // element is never itself height-clamped (only its ancestor
+  // .money-shop-wrap is), so its scrollHeight is always the shop's true,
+  // unclipped natural size regardless of the wrapper's current collapsed/
+  // open state.
+  useLayoutEffect(() => {
+    if (uiMode !== 'money' || !shopContentRef.current) return;
+    const el = shopContentRef.current;
+    const measure = () => setShopContentHeight(el.scrollHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [uiMode]);
+
+  // Single trigger for MoneyModeUnlockModal.jsx, covering THREE different
+  // players with one mechanism: a brand-new logged-in player crosses
+  // authStats.totalPushes 0 -> 1 right after their first-ever push (see
+  // applySuccess/bust, both called from pushServer, which fold
+  // serverStats into authStats synchronously) — this effect fires
+  // straight off that. An EXISTING logged-in player (total_pushes already
+  // > 0 from before this modal existed) instead crosses moneyUnlockSeen
+  // null -> false once AuthContext's login-time fetch resolves. A GUEST
+  // crosses stats.totalPushes 0 -> 1 the same way the logged-in
+  // brand-new case does, just off the local `stats` copy instead of
+  // authStats, and tracked via lib/moneyUnlock.js's localStorage flag
+  // instead of profiles.money_unlock_seen (no row to hold it in — see
+  // that file's own comment on why, and AuthContext.jsx's carry-over on
+  // signup so a guest who already saw this doesn't see it again).
+  // Guests DO get the modal (and can tap "Try Money Mode" from it) even
+  // though they can't actually play yet — MoneyMode.jsx shows its own
+  // "make an account" prompt in place of the game once they get there,
+  // same as clicking the header button directly would.
+  //
+  // Every path is gated to fire at most once per session by
+  // moneyUnlockShownRef, and marks itself seen (via the modal's own
+  // onDismiss/onTryMoney handlers below) so it can never fire again for
+  // this account/device after that.
+  //
+  // Flat 1400ms delay (roughly matching OnboardingModal's own 1150ms
+  // "let the page settle first" convention) rather than popping the
+  // instant the condition's met — covers both "push's own success tick
+  // finishing" and "page finished loading in" per the different
+  // triggering scenarios. Not specially delayed for the rare case of a
+  // brand-new account's literal first push busting (0.1% chance, given
+  // the first-push odds) — accepted rather than adding a data.success
+  // branch here, since that reveal sequence running a little past this
+  // modal's appearance in that edge case isn't worth the extra coupling.
+  const moneyUnlockShownRef = useRef(false);
+  useEffect(() => {
+    // Not strictly needed for a genuine existing player (real gameplay
+    // can't produce total_pushes > 0 with onboarding still undismissed —
+    // dismissing it is what unlocks the push button in the first place),
+    // but a cheap, real guard against ever stacking this on top of
+    // OnboardingModal in some inconsistent-data edge case is worth the
+    // one extra check. hasSeenOnboardingLocally() covers the guest half —
+    // onboardingSeen itself is always null while logged out (see
+    // AuthContext.jsx), so it can't be read directly here for a guest.
+    const onboardingDone = user ? onboardingSeen === true : hasSeenOnboardingLocally();
+    if (!onboardingDone) return;
+    const alreadySeenUnlock = user ? moneyUnlockSeen : hasSeenMoneyUnlockLocally();
+    if (alreadySeenUnlock !== false) return; // null (still loading) or already true
+    if (!hasPlayedClassic) return;
+    if (moneyUnlockShownRef.current) return;
+    moneyUnlockShownRef.current = true;
+    const timer = setTimeout(() => setShowMoneyUnlockModal(true), 1400);
+    timers.current.push(timer);
+    return () => clearTimeout(timer);
+  }, [user, onboardingSeen, moneyUnlockSeen, hasPlayedClassic]);
+
   // Once busted, tick every second so the "next run" countdown is live,
   // and re-check the date so the run auto-resets the moment it rolls over.
   useEffect(() => {
@@ -755,7 +897,13 @@ export default function Home() {
       clearTimeout(pendingRevealTimerRef.current);
       pendingRevealTimerRef.current = null;
     }
-    if (!showBadges) return;
+    // showBadgesRef (live value), not showBadges — this can be called from
+    // a closure captured well before the toast it's dismissing ever
+    // appeared (e.g. the 5s auto-dismiss timer scheduled inside
+    // revealBadgeToast's own showNow, itself scheduled from a render where
+    // showBadges was still false) — reading the plain state var there would
+    // silently no-op on a real, currently-visible toast.
+    if (!showBadgesRef.current) return;
     setBadgesLeaving(true);
     timers.current.push(
       setTimeout(() => {
@@ -927,6 +1075,11 @@ export default function Home() {
       } else {
         bust(data.streak, serverStats);
       }
+      // Money-mode-unlock modal trigger lives in its own effect below
+      // (watching authStats.totalPushes/moneyUnlockSeen), not here — see
+      // that effect's comment for why. applySuccess/bust above already
+      // fold serverStats.totalPushes into authStats synchronously, so that
+      // effect fires right off the back of this same push.
     }, 450);
   }
 
@@ -1009,6 +1162,11 @@ export default function Home() {
       // Force Bust, or now that switching modes makes multiple busts in
       // one sitting normal).
       setEarnedAtRunStart((prev) => new Set([...prev, ...newly.map((b) => b.id)]));
+      // Auto-dismiss 5s after the toast actually appears, on top of
+      // whatever dismisses it early (mode switch, admin reset, a new run) —
+      // dismissBadgeToast is a no-op once showBadges is already false, so
+      // this firing after an earlier manual dismiss is harmless.
+      timers.current.push(setTimeout(() => dismissBadgeToast(), 5000));
     };
     const id = setTimeout(() => {
       pendingRevealTimerRef.current = null;
@@ -1407,62 +1565,70 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Money-variant mode switch — TEMP admin gate, see MoneyMode.jsx's
-          header comment for the full removal plan once it's ready for
-          everyone. Not persisted across reloads (see uiMode above).
-          Collapses right alongside the header (same class, same shared
-          chromeCollapsed signal) — this row sits above the actual game
-          content in both modes, so it should tuck away during a run same
-          as everything else above it. Also slides out/in via modeSlotStyle
-          on an actual mode switch, same slot-0 timing as the streak/run
-          panel(s) right below it, so this row rides along with the rest
-          of the page's own switch transition instead of just snapping to
-          its new label/Shop-button state. Safe to combine with the
-          collapse transition above since they're mutually exclusive in
-          practice — the buttons are hidden (0-height, unclickable) any
-          time the header's collapsed, so a switch can only ever START
-          from an already-uncollapsed state. */}
-      {isAdmin && (
-        <div
-          className={'header-panel' + (chromeCollapsed ? ' header-panel--collapsed' : '')}
-          style={{ display: 'flex', justifyContent: 'center', gap: MONEY_PANEL_GAP, marginBottom: 12, ...modeSlotStyle(modeTransition, 0) }}
+      {/* Money-variant mode switch — open to everyone, guests included,
+          but HIDDEN entirely (not just disabled) until hasPlayedClassic —
+          a new/guest player who's never pushed shouldn't see a locked
+          button advertising a mode they can't reach yet, only find out
+          once they've earned it. Once true it stays true (a permanent,
+          ever-increasing total_pushes threshold), so this can only ever
+          go from hidden to shown, never back. Not persisted across
+          reloads (see uiMode above). Collapses right alongside the header
+          (same class, same shared chromeCollapsed signal) — this row sits
+          above the actual game content in both modes, so it should tuck
+          away during a run same as everything else above it. Also slides
+          out/in via modeSlotStyle on an actual mode switch, same slot-0
+          timing as the streak/run panel(s) right below it, so this row
+          rides along with the rest of the page's own switch transition
+          instead of just snapping to its new label/Shop-button state.
+          Safe to combine with the collapse transition above since
+          they're mutually exclusive in practice — the buttons are hidden
+          (0-height, unclickable) any time the header's collapsed, so a
+          switch can only ever START from an already-uncollapsed state. */}
+      {hasPlayedClassic && (
+      <div
+        className={'header-panel' + (chromeCollapsed ? ' header-panel--collapsed' : '')}
+        style={{ display: 'flex', justifyContent: 'center', gap: MONEY_PANEL_GAP, marginBottom: 12, ...modeSlotStyle(modeTransition, 0) }}
+      >
+        {/* A shared literal width on both buttons (not their own natural
+            text width) is what lines the gap between them up with the
+            gap between MoneyMode's run/wallet panels below — same fix as
+            those panels (see MONEY_PANEL_WIDTH in MoneyMode.jsx): "←
+            Back to classic" and "🛍 Shop" are very different lengths, so
+            without this the gap between them sits wherever the longer
+            label happens to push it, not at the row's true center. 140
+            comfortably fits "← Back to classic", the longer of the two.
+            The gap itself is MONEY_PANEL_GAP (imported from
+            MoneyMode.jsx), the same literal value the panels below use,
+            so the two gaps match exactly, not just their positions. */}
+        <button
+          className="btn-ghost btn-money-mode"
+          onClick={() => startModeSwitch(uiMode === 'classic' ? 'money' : 'classic')}
+          disabled={!!modeTransition}
+          title={uiMode === 'classic' ? 'Try money mode' : 'Back to classic'}
+          style={{ width: 140, textAlign: 'center' }}
         >
-          {/* A shared literal width on both buttons (not their own natural
-              text width) is what lines the gap between them up with the
-              gap between MoneyMode's run/wallet panels below — same fix as
-              those panels (see MONEY_PANEL_WIDTH in MoneyMode.jsx): "←
-              Back to classic" and "🛍 Shop" are very different lengths, so
-              without this the gap between them sits wherever the longer
-              label happens to push it, not at the row's true center. 140
-              comfortably fits "← Back to classic", the longer of the two.
-              The gap itself is MONEY_PANEL_GAP (imported from
-              MoneyMode.jsx), the same literal value the panels below use,
-              so the two gaps match exactly, not just their positions. */}
+          {uiMode === 'classic' ? '💰 Money mode' : '← Back to classic'}
+        </button>
+        {/* Guest-gated too, same as the shop panel below — a guest who's
+            unlocked Money Mode still can't actually shop (no account to
+            spend diamonds from), so this button would just open a panel
+            with nothing usable in it. */}
+        {uiMode === 'money' && user && (
           <button
-            className="btn-ghost btn-money-mode"
-            onClick={() => startModeSwitch(uiMode === 'classic' ? 'money' : 'classic')}
-            disabled={!!modeTransition}
-            title={uiMode === 'classic' ? 'Try money mode' : 'Back to classic'}
-            style={{ width: 140, textAlign: 'center' }}
+            className="btn-ghost btn-shop"
+            onClick={() =>
+              setShowMoneyShop((s) => {
+                (s ? playShopClose : playShopOpen)();
+                return !s;
+              })
+            }
+            style={{ width: 140, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
           >
-            {uiMode === 'classic' ? '💰 Money mode' : '← Back to classic'}
+            <img src="/diamond.png" alt="" width={14} height={14} style={{ display: 'block' }} />
+            Shop
           </button>
-          {uiMode === 'money' && (
-            <button
-              className="btn-ghost btn-shop"
-              onClick={() =>
-                setShowMoneyShop((s) => {
-                  (s ? playShopClose : playShopOpen)();
-                  return !s;
-                })
-              }
-              style={{ width: 140, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
-            >
-              <img src="/diamond.png" alt="" width={14} height={14} style={{ display: 'block' }} />
-              Shop
-            </button>
-          )}
-        </div>
+        )}
+      </div>
       )}
 
       {/* Slides down right under the button that opens it, pushing the
@@ -1472,12 +1638,23 @@ export default function Home() {
           so both the open AND close directions get a real transition
           instead of just popping in and vanishing on unmount. Mounted for
           the whole time uiMode==='money', not just while showMoneyShop is
-          true — the class alone drives visibility/height; unmounting only
+          true — the class alone drives opacity/transform; unmounting only
           happens by leaving money mode entirely (see the uiMode check
-          here and startModeSwitch's own setShowMoneyShop(false)). */}
-      {uiMode === 'money' && (
-        <div className={'money-shop-wrap' + (showMoneyShop ? '' : ' money-shop-wrap--collapsed')}>
-          <MoneyShop onClose={() => setShowMoneyShop(false)} />
+          here and startModeSwitch's own setShowMoneyShop(false)). Height
+          itself is the one part NOT class-driven — it's the live
+          shopContentHeight measurement above, so switching tabs inside the
+          shop (each a different natural height) animates smoothly to the
+          new size instead of snapping, and the open/close reveal always
+          targets the shop's real current content instead of a guessed
+          worst case. */}
+      {uiMode === 'money' && user && (
+        <div
+          className={'money-shop-wrap' + (showMoneyShop ? '' : ' money-shop-wrap--collapsed')}
+          style={{ height: showMoneyShop ? shopContentHeight : 0 }}
+        >
+          <div ref={shopContentRef}>
+            <MoneyShop onClose={() => setShowMoneyShop(false)} />
+          </div>
         </div>
       )}
 
@@ -1683,6 +1860,28 @@ export default function Home() {
             onForceOpenConsumed={() => setForceShowOnboarding(false)}
           />
 
+          {showMoneyUnlockModal && (
+            <MoneyModeUnlockModal
+              onTryMoney={() => {
+                setShowMoneyUnlockModal(false);
+                // A preview dismissal never marks it seen — see
+                // moneyUnlockPreview's own declaration comment. Real
+                // dismissals mark it server-side for a logged-in account,
+                // or locally for a guest (see lib/moneyUnlock.js).
+                if (moneyUnlockPreview) setMoneyUnlockPreview(false);
+                else if (user) markMoneyUnlockSeen();
+                else markMoneyUnlockSeenLocally();
+                startModeSwitch('money');
+              }}
+              onDismiss={() => {
+                setShowMoneyUnlockModal(false);
+                if (moneyUnlockPreview) setMoneyUnlockPreview(false);
+                else if (user) markMoneyUnlockSeen();
+                else markMoneyUnlockSeenLocally();
+              }}
+            />
+          )}
+
           {/* Gated strictly by role now the site is actually public — this
               used to also show for guests (no account = no role to check),
               since that was the only way to dev-test the local/guest game
@@ -1736,6 +1935,15 @@ export default function Home() {
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 8,
+                // This list only ever grows as more dev tools get added —
+                // without a cap it runs off the bottom of the viewport
+                // with no way to reach whatever's below the fold. Caps at
+                // the remaining space below this panel's own (dynamic,
+                // scroll-position-dependent) top offset instead of a flat
+                // number, so it still uses the full available height on a
+                // tall viewport rather than clipping early.
+                maxHeight: 'calc(100vh - var(--admin-top) - var(--nav-bar-height) - 20px)',
+                overflowY: 'auto',
               }}
             >
               <div className="mono" style={{ fontSize: 10, letterSpacing: '0.15em', color: '#ffd45e', textTransform: 'uppercase' }}>
@@ -1774,6 +1982,15 @@ export default function Home() {
               <button className="btn-ghost" onClick={adminResetBadges}>🏅 Reset all badges</button>
               <button className="btn-ghost" onClick={adminClaimAllBadges}>🏆 Claim all badges</button>
               <button className="btn-ghost" onClick={() => setForceShowOnboarding(true)}>👋 Show onboarding</button>
+              <button
+                className="btn-ghost"
+                onClick={() => {
+                  setMoneyUnlockPreview(true);
+                  setShowMoneyUnlockModal(true);
+                }}
+              >
+                🎉 Preview money unlock
+              </button>
             </div>
           )}
 

@@ -3,14 +3,17 @@
 // set_active_cosmetic itself, not here — this is just the thin HTTP
 // wrapper, same shape as buy-diamond-button.
 //
-// TEMP: admin-gated for now, same reasoning as the rest of the money
-// variant/shop — not reachable by real players yet. Remove the isAdmin
-// block below once it's ready for everyone; nothing else here or in
-// schema.sql needs to change.
+// Open to every logged-in account now — see money-push/index.ts's header
+// comment for the money variant's overall access model. Equipping only
+// ever succeeds for an already-OWNED cosmetic (checked inside
+// set_active_cosmetic itself), and owning one requires having bought it
+// via purchase-cosmetic, which requires diamonds, which only ever come
+// from money-push's combo bar — so hasPlayedClassic is covered
+// transitively here too, just one hop further out than the shop itself.
 //
 // Deploy with: supabase functions deploy set-active-cosmetic
 
-import { createServiceClient, handlePreflight, isAdmin, json, requireUser } from '../_shared/utils.ts';
+import { createServiceClient, handlePreflight, json, requireUser } from '../_shared/utils.ts';
 
 Deno.serve(async (req) => {
   const preflight = handlePreflight(req);
@@ -20,7 +23,6 @@ Deno.serve(async (req) => {
   if (!user) return json({ error: 'unauthorized' }, 401);
 
   const db = createServiceClient();
-  if (!(await isAdmin(db, user.id))) return json({ error: 'forbidden' }, 403);
 
   // slot picks which of the three independent equip slots this touches
   // (see active_push_skin/active_aura/active_row_style in schema.sql) —

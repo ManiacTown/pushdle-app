@@ -25,8 +25,7 @@ export const BADGE_CATEGORIES = [
   { id: 'pushes', label: 'Total Pushes' },
   { id: 'days', label: 'Days Played' },
   { id: 'bust', label: 'Bust' },
-  // Money-variant categories (admin-gated for now, same as the mode
-  // itself) — kept as separate ids/labels rather than folded into the
+  // Money-variant categories — kept as separate ids/labels rather than folded into the
   // 4 above, both because "streak badges are classic-mode only" (see
   // AuthContext.jsx/Home.jsx's explicit-field-pick comments from earlier
   // this session) and because a combined grid would be one long scroll —
@@ -85,7 +84,7 @@ export const BADGES = [
   { id: 'pushes-500', label: 'Button Masher', category: 'pushes', hint: '500 total pushes', rarity: 'rare', field: 'totalPushes', min: 500 },
   { id: 'pushes-1000', label: 'Boop.', category: 'pushes', hint: '1000 total pushes', rarity: 'legendary', field: 'totalPushes', min: 1000 },
 
-  // ---- Money variant (admin-gated) ----
+  // ---- Money variant ----
   // Reads moneyBestRunCents/moneyLifetimeCents/moneyBestBankStreak/etc off
   // the same stats object as everything above (see AuthContext.jsx) — just
   // a different set of fields, all sourced from profiles' money_* columns.

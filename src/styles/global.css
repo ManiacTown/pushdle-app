@@ -505,18 +505,37 @@ input:focus{
      stop" feel, not independently invented. */
   animation: onboardingModalGlideIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
-/* Exit — literally the entrance animations played backwards
-   (animation-direction:reverse on the SAME keyframes/timing-functions,
-   not separately hand-authored ones), so closing is the exact mirror of
-   opening rather than an independently-tuned motion. OnboardingModal.jsx
-   holds the actual unmount off for EXIT_DURATION_MS (matching this
-   0.5s) so this gets to finish playing instead of being cut off by the
-   DOM node disappearing mid-animation. */
+/* Exit — the entrance animations' own keyframes mirrored into separate
+   0%/100% pairs (NOT animation-direction:reverse on the same
+   onboardingBackdropFadeIn/onboardingModalGlideIn names, which is what
+   this used to do). That looked right on paper — same keyframes, same
+   timing-function, just played backwards — but browsers don't reliably
+   restart an animation whose fill-mode is already holding the entrance
+   animation's forwards end-state when only its direction changes and the
+   name stays identical: the element jumped straight to the reversed
+   animation's own end-state (opacity/transform at their exit values)
+   within single-digit milliseconds instead of actually playing the
+   0.35s/0.5s transition, on both OnboardingModal AND
+   MoneyModeUnlockModal (confirmed live on both — same shared classes).
+   A distinct animation-name per direction sidesteps that restart quirk
+   entirely, since the browser always treats a changed animation-name as
+   a fresh animation. Both modals still hold their actual unmount off for
+   their own EXIT_DURATION_MS (matching these durations) so this gets to
+   finish playing instead of being cut off by the DOM node disappearing
+   mid-animation. */
+@keyframes onboardingBackdropFadeOut{
+  0%{ opacity: 1; }
+  100%{ opacity: 0; }
+}
+@keyframes onboardingModalGlideOut{
+  0%{ opacity: 1; transform: translateY(0); }
+  100%{ opacity: 0; transform: translateY(28px); }
+}
 .onboarding-backdrop.onboarding-exiting{
-  animation: onboardingBackdropFadeIn 0.35s ease-out reverse forwards;
+  animation: onboardingBackdropFadeOut 0.35s ease-out forwards;
 }
 .onboarding-modal.onboarding-exiting{
-  animation: onboardingModalGlideIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) reverse forwards;
+  animation: onboardingModalGlideOut 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 .onboarding-note{
   font-size: 11px;
@@ -631,50 +650,35 @@ input:focus{
 }
 
 /* The money shop (see Home.jsx) sliding down from the Shop button/up back
-   away — same always-mounted, class-toggled max-height technique as
-   .header-panel just above, so both directions get a real transition
-   instead of the old instant mount/unmount. max-height's target (350px)
-   is deliberately close to the panel's real measured WORST-CASE height
-   (Name Color/Row Background tabs at ~345px — measured live via
-   Playwright with a fresh, 0-diamond account, since an unaffordable card
-   is TALLER than an owned/bought one, it grows a "Need N more" line under
-   the Buy button. Always re-measure with an UNOWNED, 0-diamond account,
-   not a partially-bought one — a partially-bought account measures
-   shorter and under-sizes this value, which is exactly what caused this
-   to clip and let the money-mode game panels below the shop start too
-   early and visually overlap/intercept clicks on the shop's own lower
-   cards for a brand-new player, twice now.) rather than something huge —
-   too big a gap between the real content height and the max-height target
-   makes the reveal look like it finishes early, easing the last stretch
-   of the transition toward empty space instead of the actual panel edge.
-   The cards themselves were also shrunk (see MoneyShop.jsx's
-   CosmeticCard/diamond-button/insurance card padding and swatch sizes) —
-   this isn't just a smaller cap on the same content, the content is
-   genuinely more compact now. */
+   away — same always-mounted, class-toggled technique as .header-panel
+   just above, so both directions get a real transition instead of the old
+   instant mount/unmount. Height itself is NOT class-driven (unlike
+   opacity/transform below) — Home.jsx measures the shop's real rendered
+   content height live (shopContentRef + ResizeObserver) and sets it as an
+   inline style, animated by the `height` entry in the transition list.
+   This replaced an earlier fixed max-height guess (a hand-measured "worst
+   case" tab height, re-measured by hand every time a tab's content
+   changed) that clipped for real THREE times when that guess drifted out
+   of date — once cutting off the shop's own bottom border entirely. A
+   live measurement can't go stale the same way, and as a bonus it's what
+   makes switching tabs (each a different natural height) animate smoothly
+   between the two real sizes instead of snapping. */
 .money-shop-wrap{
   overflow: hidden;
-  max-height: 350px;
   /* The actual gap to the run/wallet panels below (MoneyMode.jsx's first
-     rendered row) — separate concern from max-height above, which only
-     controls how tall the shop's OWN content is allowed to render at.
-     Without this, the shop panel (marginTop:16 above itself, nothing
-     below) sat flush against the run/wallet row with no breathing room at
-     all, easy to mistake for the same clipping bug max-height already
-     fixed, but actually just a missing margin between two separate
-     panels. 32px (bumped up from an initial 24px) so there's comfortable
-     clearance even when the shop is rendering its worst-case (tallest,
-     ~345px content) tab, not just a bare-minimum gap sized for a shorter
-     one. Animated (see the transition list) and zeroed out in the
-     collapsed state below so it doesn't leave phantom empty space once
-     the shop closes. */
+     rendered row) — separate concern from height above, which only
+     controls how tall the shop's OWN content renders at. Without this,
+     the shop panel (marginTop:16 above itself, nothing below) sat flush
+     against the run/wallet row with no breathing room at all. Animated
+     (see the transition list) and zeroed out in the collapsed state below
+     so it doesn't leave phantom empty space once the shop closes. */
   margin-bottom: 32px;
   opacity: 1;
   transform: translateY(0);
-  transition: opacity 0.35s ease, max-height 0.4s ease, transform 0.35s ease, margin-top 0.4s ease, margin-bottom 0.4s ease;
+  transition: opacity 0.35s ease, height 0.35s ease, transform 0.35s ease, margin-top 0.4s ease, margin-bottom 0.4s ease;
 }
 .money-shop-wrap--collapsed{
   opacity: 0;
-  max-height: 0;
   margin-bottom: 0;
   transform: translateY(-10px);
   pointer-events: none;
@@ -922,7 +926,7 @@ input:focus{
   animation: diamondBtnBustedSmolder 6s ease-in-out infinite;
 }
 
-/* ---- Money-variant bag icon (see MoneyMode.jsx, admin-gated) ---- */
+/* ---- Money-variant bag icon (see MoneyMode.jsx) ---- */
 /* No button chrome at all (no border/background/box-shadow ring like
    .push-btn) — the money-bag image itself IS the button, so state (gold
    "in progress"/green "cashed out"/red "busted") is carried by a

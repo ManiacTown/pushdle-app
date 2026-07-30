@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured } from './supabaseClient.js';
 import * as storage from './storage.js';
 import { hasSeenOnboardingLocally } from './onboarding.js';
+import { hasSeenMoneyUnlockLocally } from './moneyUnlock.js';
 
 const AuthContext = createContext(null);
 
@@ -19,6 +20,10 @@ export function AuthProvider({ children }) {
   // OnboardingModal.jsx, which treats null as "don't know yet, don't
   // render"). Guests never touch this; they check localStorage directly.
   const [onboardingSeen, setOnboardingSeenState] = useState(null);
+  // Whether THIS account has seen MoneyModeUnlockModal.jsx's unlock
+  // announcement — same null-while-unknown convention as onboardingSeen
+  // above, but no localStorage side (see the modal's own comment on why).
+  const [moneyUnlockSeen, setMoneyUnlockSeenState] = useState(null);
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
@@ -58,6 +63,7 @@ export function AuthProvider({ children }) {
       setSelectedEmojiState(null);
       setStats(null);
       setOnboardingSeenState(null);
+      setMoneyUnlockSeenState(null);
       return;
     }
     supabase
@@ -114,8 +120,45 @@ export function AuthProvider({ children }) {
         }
       });
 
-    // Money-variant wallet/lifetime totals (admin-gated feature — see
-    // MoneyMode.jsx). Same reasoning as the onboarding_seen query above:
+    // Same defensive separate-query reasoning as onboarding_seen just
+    // above (a not-yet-migrated database missing this column can't take
+    // role/flair or onboarding_seen loading down with it). Also carries
+    // over a guest-local dismissal on signup, same "OR, never lowers"
+    // reasoning as onboarding_seen right above — without this, a guest
+    // who already saw the unlock modal before creating an account would
+    // see it a second time as a "welcome back" the moment they sign up
+    // (money_unlock_seen defaults false on a brand-new profile row,
+    // and this trigger doesn't know about the local dismissal otherwise).
+    supabase
+      .from('profiles')
+      .select('money_unlock_seen')
+      .eq('id', user.id)
+      .single()
+      .then(({ data, error }) => {
+        if (error) {
+          // Defaults to false (not yet seen) rather than true, unlike
+          // onboarding_seen's error fallback — showing it an extra time is
+          // harmless but silently never showing it at all isn't.
+          setMoneyUnlockSeenState(false);
+          return;
+        }
+        const serverSeen = data?.money_unlock_seen ?? false;
+        if (hasSeenMoneyUnlockLocally() && !serverSeen) {
+          setMoneyUnlockSeenState(true);
+          supabase
+            .from('profiles')
+            .update({ money_unlock_seen: true })
+            .eq('id', user.id)
+            .then(({ error }) => {
+              if (error) console.error('money_unlock_seen carry-over failed:', error);
+            });
+        } else {
+          setMoneyUnlockSeenState(serverSeen);
+        }
+      });
+
+    // Money-variant wallet/lifetime totals (see MoneyMode.jsx). Same
+    // reasoning as the onboarding_seen query above:
     // kept separate from role/selected_emoji so a not-yet-migrated
     // database (missing these columns) can't take that query down too —
     // this one just silently no-ops, leaving the fields undefined, until
@@ -286,6 +329,16 @@ export function AuthProvider({ children }) {
     if (error) console.error('failed to sync onboarding_seen:', error);
   }
 
+  // Called by Home.jsx when MoneyModeUnlockModal.jsx is dismissed for
+  // real (not the admin dev-tools preview, which never touches this) —
+  // same optimistic-update shape as markOnboardingSeen above.
+  async function markMoneyUnlockSeen() {
+    if (!user) return;
+    setMoneyUnlockSeenState(true);
+    const { error } = await supabase.from('profiles').update({ money_unlock_seen: true }).eq('id', user.id);
+    if (error) console.error('failed to sync money_unlock_seen:', error);
+  }
+
   return (
     <AuthContext.Provider
       value={{
@@ -307,6 +360,8 @@ export function AuthProvider({ children }) {
         // OnboardingModal.jsx, which treats null as "don't render yet".
         onboardingSeen,
         markOnboardingSeen,
+        moneyUnlockSeen,
+        markMoneyUnlockSeen,
         signUp,
         signIn,
         logout,

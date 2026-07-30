@@ -27,11 +27,7 @@ import InsuranceBadge from '../components/InsuranceBadge.jsx';
 // scripts/simulate-bot-day.mjs), no special-casing needed.
 export default function PublicProfile() {
   const { userId } = useParams();
-  // The VIEWER's own isAdmin, not the profile owner's — gates the money
-  // stat tile below the same way Leaderboard.jsx gates its money tab,
-  // so a regular player doesn't see a stray "Lifetime $" tile pointing at
-  // a mode they can't play yet.
-  const { isAdmin } = useAuth();
+  const { user } = useAuth();
   const [profile, setProfile] = useState(null);
   const [todayRun, setTodayRun] = useState(null);
   const [todayMoneyRun, setTodayMoneyRun] = useState(null);
@@ -90,24 +86,29 @@ export default function PublicProfile() {
       // select above — same reasoning as AuthContext.jsx's onboarding_seen
       // fetch: Postgrest fails a select() as a whole if any requested
       // column doesn't exist yet, and this page has no fallback for a
-      // failed main query (it reads as "player not found"). Only bothers
-      // fetching for an admin viewer, since it's the only one who'd ever
-      // see it (see the isAdmin-gated tile below).
-      if (isAdmin) {
-        const { data: moneyData, error: moneyError } = await supabase
-          .from('profiles')
-          .select(
-            'money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
-              'money_weekly_cents, money_best_weekly_cents, ' +
-              'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100'
-          )
-          .eq('id', userId)
-          .maybeSingle();
-        if (!cancelled && !moneyError) setMoneyStats(moneyData ?? {});
+      // failed main query (it reads as "player not found"). These columns
+      // are public-read on profiles, same as the streak stats above, so
+      // every viewer gets this now.
+      const { data: moneyData, error: moneyError } = await supabase
+        .from('profiles')
+        .select(
+          'money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
+            'money_weekly_cents, money_best_weekly_cents, ' +
+            'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100'
+        )
+        .eq('id', userId)
+        .maybeSingle();
+      if (!cancelled && !moneyError) setMoneyStats(moneyData ?? {});
 
-        // money_runs isn't publicly readable (see schema.sql) — this only
-        // succeeds for an admin viewer, via the "admins can read any money
-        // run" RLS policy added specifically for this tile.
+      // Unlike the columns above, money_runs (today's IN-PROGRESS run) is
+      // deliberately NOT publicly readable (see schema.sql) — there's no
+      // live money leaderboard the way daily_runs backs one for classic,
+      // so nobody's unbanked-and-still-changing balance is anyone else's
+      // business. Only fetch it when viewing your own profile, where RLS
+      // ("users can read their own money run") actually allows it anyway;
+      // for every other viewer this just silently stays null, dropping
+      // the "Today's Money" tile below rather than erroring.
+      if (userId === user?.id) {
         const { data: moneyRun } = await supabase
           .from('money_runs')
           .select('earnings_cents, status')
@@ -122,7 +123,7 @@ export default function PublicProfile() {
     return () => {
       cancelled = true;
     };
-  }, [userId, isAdmin]);
+  }, [userId, user?.id]);
 
   if (loading) {
     return (
@@ -168,12 +169,10 @@ export default function PublicProfile() {
 
   // Explicit field picks — same reasoning as Profile.jsx's identical
   // comment: keeps "streak badges are classic-mode only" true by
-  // construction rather than by coincidence. moneyStats is null for a
-  // non-admin viewer (never fetched at all, see the isAdmin gate above),
-  // so every money-* field below is simply undefined for them — the same
-  // "not earned" result earnedBadges already gives any missing field.
-  // Reused as-is for BadgeGrid's own progress-hint calc below, not just
-  // earnedBadges() — same fields either way.
+  // construction rather than by coincidence. moneyStats is null only
+  // while still loading or on a fetch error — every real viewer gets it
+  // now. Reused as-is for BadgeGrid's own progress-hint calc below, not
+  // just earnedBadges() — same fields either way.
   const statsForBadges = {
     bestStreak: profile.best_streak,
     totalPushes: profile.total_pushes,
@@ -206,20 +205,24 @@ export default function PublicProfile() {
   ];
   const moneyStatTiles = moneyStats
     ? [
-        {
-          label: "Today's Money",
-          value: formatCents(todayMoneyRun?.status === 'dead' ? 0 : todayMoneyRun?.earnings_cents ?? 0),
-        },
+        // Only on your own profile — see the fetch effect above for why
+        // todayMoneyRun stays null for every other viewer (money_runs'
+        // own RLS policy wouldn't return it for them anyway).
+        ...(userId === user?.id
+          ? [
+              {
+                label: "Today's Money",
+                value: formatCents(todayMoneyRun?.status === 'dead' ? 0 : todayMoneyRun?.earnings_cents ?? 0),
+              },
+            ]
+          : []),
         { label: 'Most Banked', value: formatCents(moneyStats.money_best_run_cents) },
         { label: 'Weekly $', value: formatCents(moneyStats.money_weekly_cents) },
         { label: 'Best Weekly $', value: formatCents(moneyStats.money_best_weekly_cents) },
         { label: 'Lifetime $', value: formatCents(moneyStats.money_lifetime_cents) },
       ]
     : [];
-  // TEMP admin-gated (see isAdmin above) — the money variant isn't ready
-  // for real players yet, so a regular viewer never sees the money tiles
-  // (or the tab that would even let them ask for that view).
-  const statTiles = achievementTab === 'money' && isAdmin ? moneyStatTiles : streakStatTiles;
+  const statTiles = achievementTab === 'money' ? moneyStatTiles : streakStatTiles;
 
   return (
     <div>
@@ -259,10 +262,7 @@ export default function PublicProfile() {
 
       <StatTilesPanel tiles={statTiles} />
 
-      {/* TEMP admin gate, same as Profile.jsx's own achievement-tab toggle
-          and Leaderboard.jsx's money tab — a real viewer seeing this at
-          all would leak that money mode exists before it's ready. */}
-      {isAdmin && <AchievementTabToggle tab={achievementTab} onChange={setAchievementTab} />}
+      <AchievementTabToggle tab={achievementTab} onChange={setAchievementTab} />
 
       {/* Read-only summary of whichever shop cosmetics this player has
           EQUIPPED (see Profile.jsx's own Cosmetics tabs, where they picked

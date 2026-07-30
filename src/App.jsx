@@ -14,6 +14,7 @@ import Leaderboard from './pages/Leaderboard.jsx';
 import About from './pages/About.jsx';
 import Terms from './pages/Terms.jsx';
 import Privacy from './pages/Privacy.jsx';
+import Updates from './pages/Updates.jsx';
 
 function AppRoutes() {
   const location = useLocation();
@@ -45,6 +46,7 @@ function AppRoutes() {
         <Route path="/about" element={<About />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/privacy" element={<Privacy />} />
+        <Route path="/updates" element={<Updates />} />
       </Routes>
     </div>
   );

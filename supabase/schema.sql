@@ -80,14 +80,30 @@ create table if not exists profiles (
   -- dismissed it pre-login — never sees it again either.
   onboarding_seen   boolean not null default false,
 
-  -- Money-variant currency (see money_runs below, admin-gated for now —
-  -- MoneyMode.jsx). Two separate numbers on purpose: money_lifetime_cents
-  -- only ever increases, on every cash-out (it's what the money-variant
-  -- leaderboard ranks on) — money_wallet_cents also increases on cash-out
-  -- but decreases when a future shop purchase is made. That split is the
-  -- entire reason spending in the shop can never move someone's
-  -- leaderboard rank. Both are NOT client-updatable (see the grant below)
-  -- — only resolve_money_push/resolve_money_cashout write them.
+  -- Whether this account has seen MoneyModeUnlockModal.jsx's "you unlocked
+  -- Money Mode" announcement — same one-way, never-back-to-false semantics
+  -- as onboarding_seen above, and the same reason it's client-writable in
+  -- the grant below. Unlike onboarding_seen, there's no localStorage/guest
+  -- side to this one: the modal only ever targets logged-in accounts (see
+  -- Home.jsx's trigger effect), since money mode itself requires an
+  -- account regardless.
+  money_unlock_seen boolean not null default false,
+
+  -- Money-variant currency (see money_runs below). money_lifetime_cents
+  -- only ever increases, on every cash-out (it's what the Lifetime
+  -- leaderboard tab ranks on). money_wallet_cents moves in exact lockstep
+  -- with it (same amount, same moments, in every resolve_money_push/
+  -- resolve_money_cashout write) — the original plan was for the shop to
+  -- spend down money_wallet_cents while leaving money_lifetime_cents
+  -- untouched, so leaderboard rank couldn't be bought down; the shop ended
+  -- up spending money_diamonds instead (see below), so nothing ever
+  -- decrements this column in practice. Kept (not dropped) since it's
+  -- still written correctly and cheap to keep around if a real
+  -- wallet-spend feature shows up later — just not read by any client
+  -- code today (the money-mode home screen's wallet/bank panel switched
+  -- to money_weekly_cents instead — see MoneyMode.jsx). Neither column is
+  -- client-updatable (see the grant below) — only resolve_money_push/
+  -- resolve_money_cashout write them.
   money_wallet_cents    int not null default 0 check (money_wallet_cents >= 0),
   money_lifetime_cents  int not null default 0 check (money_lifetime_cents >= 0),
   -- The shop's own currency — deliberately NOT cents/dollars (see
@@ -203,7 +219,8 @@ create policy "profiles are publicly readable"
   using (true);
 
 -- A user may only touch their own row, and (per the column-restricted
--- grant below) only username/selected_emoji/onboarding_seen directly — the
+-- grant below) only username/selected_emoji/onboarding_seen/
+-- money_unlock_seen directly — the
 -- actual stat columns are written exclusively by resolve_push/
 -- merge_local_stats (security definer, service_role-only), never by a
 -- direct client update.
@@ -219,10 +236,10 @@ grant select on profiles to anon, authenticated;
 -- row, but this grant only allows touching these three columns — role/
 -- stat columns are unreachable from the client even though the row itself
 -- is "theirs", because column-level and row-level privileges are checked
--- independently. onboarding_seen is safe to leave directly client-writable
--- (unlike the stat columns) since it's a one-way true flag with no scoring
--- implications either way.
-grant update (username, selected_emoji, onboarding_seen) on profiles to authenticated;
+-- independently. onboarding_seen/money_unlock_seen are safe to leave
+-- directly client-writable (unlike the stat columns) since they're
+-- one-way true flags with no scoring implications either way.
+grant update (username, selected_emoji, onboarding_seen, money_unlock_seen) on profiles to authenticated;
 -- service_role bypasses RLS policies but NOT base object grants — those are
 -- two separate permission layers, and creating a table via raw SQL doesn't
 -- grant either automatically the way the Table Editor UI does.
@@ -497,8 +514,8 @@ $$ language plpgsql security definer set search_path = public;
 revoke execute on function public.merge_local_stats from public, anon, authenticated;
 grant execute on function public.merge_local_stats to service_role;
 
--- ---- money_runs (the money-variant game mode — admin-gated for now,
---      see money-push/money-cashout Edge Functions and MoneyMode.jsx) ----
+-- ---- money_runs (the money-variant game mode — see money-push/
+--      money-cashout Edge Functions and MoneyMode.jsx) ----
 --
 -- A parallel table to daily_runs, not a mode column bolted onto it —
 -- daily_runs' shape (two states, one score column, public-read leaderboard
@@ -535,25 +552,22 @@ create table if not exists money_runs (
 
 alter table money_runs enable row level security;
 
--- Unlike daily_runs, NOT publicly readable — there's no live "today's
--- money leaderboard" requirement (the money leaderboard is a lifetime
--- total sourced from profiles, see Leaderboard.jsx), so there's no reason
--- to expose anyone's in-progress run to anyone but its own owner.
+-- NOT publicly readable, unlike daily_runs — there's no live "today's
+-- money leaderboard" requirement (the money leaderboard is a lifetime/
+-- weekly total sourced from profiles, see Leaderboard.jsx), so there's no
+-- reason to expose anyone's in-progress run to anyone but its own owner.
+-- This used to have a second policy letting an ADMIN viewer read anyone's
+-- row too (PublicProfile.jsx's "Today's Money" tile, back when the whole
+-- money variant was admin-only and that was the only way to preview it
+-- against a real account) — dropped now that the rest of the money
+-- variant is open to everyone: that policy was only ever a testing
+-- convenience, not a real access model, and this privacy stance (own
+-- in-progress run only) was the deliberate design the whole time. See
+-- PublicProfile.jsx's own comment on how it now only shows that tile on
+-- your own profile.
 create policy "users can read their own money run"
   on money_runs for select
   using (auth.uid() = user_id);
-
--- Second SELECT policy, not a replacement — Postgres RLS policies for the
--- same command OR together, so a row is visible if EITHER this or the one
--- above allows it. Lets PublicProfile.jsx's "Today's Money" stat tile work
--- for an admin viewer looking at someone else's profile (same viewer-
--- isAdmin gate that tile already uses client-side) without opening
--- everyone's live in-progress run to the public — this is the first RLS
--- policy in this file to check the CALLER's own role (via profiles,
--- itself publicly readable) rather than just auth.uid() directly.
-create policy "admins can read any money run"
-  on money_runs for select
-  using (exists (select 1 from profiles where profiles.id = auth.uid() and profiles.role = 'admin'));
 
 grant select on money_runs to authenticated;
 grant all on money_runs to service_role;
@@ -568,7 +582,7 @@ grant all on money_runs to service_role;
 -- classic's 0.999) — a deliberately softer ante for this mode.
 --
 -- Return shape changed (added out_insurance_used/out_wallet_cents/
--- out_lifetime_cents) when weekly insurance was added — CREATE OR REPLACE
+-- out_lifetime_cents, then later out_weekly_cents) — CREATE OR REPLACE
 -- can't change a function's column set, hence the DROP right before it.
 drop function if exists public.resolve_money_push(uuid, date);
 
@@ -576,7 +590,7 @@ create or replace function public.resolve_money_push(p_user_id uuid, p_date date
 returns table(
   out_pushes int, out_earnings_cents int, out_status text, out_success boolean, out_bonus_cents int,
   out_diamond_earned boolean, out_next_diamond boolean, out_insurance_used boolean,
-  out_wallet_cents int, out_lifetime_cents int
+  out_wallet_cents int, out_lifetime_cents int, out_weekly_cents int
 ) as $$
 declare
   v_id bigint;
@@ -610,6 +624,13 @@ declare
   v_insurance_used boolean := false;
   v_wallet int;
   v_lifetime int;
+  -- The money-mode home screen's wallet/bank panel now tracks THIS WEEK's
+  -- earnings (money_weekly_cents), not a lifetime-mirroring total — see
+  -- MoneyMode.jsx's displayedWeeklyCents/launchCoinToWallet. Stays null on
+  -- every path except the insurance-saves-the-run one below, same
+  -- "only meaningful when it actually happened" reasoning v_wallet/
+  -- v_lifetime already used.
+  v_weekly int;
   v_owns_insurance boolean;
   v_insurance_used_this_week boolean;
   v_insured_cents int;
@@ -632,7 +653,7 @@ begin
   -- Idempotent safety net, same as resolve_push's dead-guard — just two
   -- terminal states here instead of one.
   if v_status <> 'playing' then
-    return query select v_pushes, v_earnings, v_status, false, v_bonus, v_diamond, v_next_diamond, v_insurance_used, v_wallet, v_lifetime;
+    return query select v_pushes, v_earnings, v_status, false, v_bonus, v_diamond, v_next_diamond, v_insurance_used, v_wallet, v_lifetime, v_weekly;
     return;
   end if;
 
@@ -706,7 +727,7 @@ begin
         money_last_banked_date = p_date,
         insurance_used_this_week = true
       where id = p_user_id
-      returning money_wallet_cents, money_lifetime_cents into v_wallet, v_lifetime;
+      returning money_wallet_cents, money_lifetime_cents, money_weekly_cents into v_wallet, v_lifetime, v_weekly;
 
       update money_runs set status = 'cashed_out', earnings_cents = v_insured_cents where id = v_id returning status into v_status;
       v_earnings := v_insured_cents;
@@ -723,7 +744,7 @@ begin
     end if;
   end if;
 
-  return query select v_pushes, v_earnings, v_status, v_success, v_bonus, v_diamond, v_next_diamond, v_insurance_used, v_wallet, v_lifetime;
+  return query select v_pushes, v_earnings, v_status, v_success, v_bonus, v_diamond, v_next_diamond, v_insurance_used, v_wallet, v_lifetime, v_weekly;
 end;
 $$ language plpgsql security definer set search_path = public;
 
@@ -739,9 +760,14 @@ grant execute on function public.resolve_money_push to service_role;
 -- not-'playing' guard and is a no-op instead of a lost or duplicated
 -- write. Only success=false means nothing changed; a caller can always
 -- tell from out_status whether this actually banked anything.
+-- Return shape changed (added out_weekly_cents, see resolve_money_push's
+-- own comment on why) — same DROP-before-CREATE OR REPLACE requirement.
+drop function if exists public.resolve_money_cashout(uuid, date);
+
 create or replace function public.resolve_money_cashout(p_user_id uuid, p_date date)
 returns table(
-  out_earnings_cents int, out_status text, out_wallet_cents int, out_lifetime_cents int, out_success boolean
+  out_earnings_cents int, out_status text, out_wallet_cents int, out_lifetime_cents int,
+  out_weekly_cents int, out_success boolean
 ) as $$
 declare
   v_id bigint;
@@ -750,6 +776,7 @@ declare
   v_status text;
   v_wallet int;
   v_lifetime int;
+  v_weekly int;
   v_last_banked date;
   v_prev_streak int;
   v_new_streak int;
@@ -760,9 +787,9 @@ begin
     for update;
 
   if not found or v_status <> 'playing' then
-    select money_wallet_cents, money_lifetime_cents into v_wallet, v_lifetime
+    select money_wallet_cents, money_lifetime_cents, money_weekly_cents into v_wallet, v_lifetime, v_weekly
       from profiles where id = p_user_id;
-    return query select coalesce(v_earnings, 0), coalesce(v_status, 'dead'), v_wallet, v_lifetime, false;
+    return query select coalesce(v_earnings, 0), coalesce(v_status, 'dead'), v_wallet, v_lifetime, v_weekly, false;
     return;
   end if;
 
@@ -795,11 +822,11 @@ begin
     money_best_bank_streak = greatest(money_best_bank_streak, v_new_streak),
     money_last_banked_date = p_date
   where id = p_user_id
-  returning money_wallet_cents, money_lifetime_cents into v_wallet, v_lifetime;
+  returning money_wallet_cents, money_lifetime_cents, money_weekly_cents into v_wallet, v_lifetime, v_weekly;
 
   update money_runs set status = 'cashed_out' where id = v_id;
 
-  return query select v_earnings, 'cashed_out', v_wallet, v_lifetime, true;
+  return query select v_earnings, 'cashed_out', v_wallet, v_lifetime, v_weekly, true;
 end;
 $$ language plpgsql security definer set search_path = public;
 

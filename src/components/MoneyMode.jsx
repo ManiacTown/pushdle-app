@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { useChrome } from '../lib/ChromeContext.jsx';
 import { supabase } from '../lib/supabaseClient.js';
@@ -19,16 +20,17 @@ import {
   playDiamond,
   playInsuranceSave,
   playShieldJump,
+  playNav,
 } from '../lib/sound.js';
 import { modeSlotStyle } from '../lib/modeTransition.js';
 import { getMoneyQuote, getMoneyBustQuote, getMoneyBankQuote, getMoneyInsuranceQuote } from '../lib/quotes.js';
 
-// TEMP: only reachable via Home.jsx's isAdmin-gated mode-switch button —
-// see that gate's comment for the full removal plan once this is ready
-// for everyone. Requires a real account (no guest path at all, unlike
-// classic mode) — the money-push/money-cashout Edge Functions this calls
-// are ALSO admin-gated server-side, so this component never has to
-// special-case a guest itself; a guest simply has no `user` to act with.
+// Reachable via Home.jsx's mode-switch button, open to everyone who's
+// played classic at least once (see hasPlayedClassic there). Requires a
+// real account (no guest path at all, unlike classic mode) — the
+// money-push/money-cashout Edge Functions this calls both 401 without
+// one, so this component never has to special-case a guest itself; a
+// guest simply has no `user` to act with.
 //
 // Deliberately independent from Home.jsx's own state machine (state.status
 // etc.) rather than threading a third value through it — classic mode's
@@ -70,6 +72,7 @@ export const MONEY_BADGE_REVEAL_DELAY_MS = 8700;
 
 export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSignal, modeTransition, onMoneyResolved }) {
   const { user, stats, setStats, refreshMoneyStats } = useAuth();
+  const navigate = useNavigate();
   const { setCollapsed } = useChrome();
   const { particles, rings, spawnEffect, popCoin, spawnDebris, spawnSpark } = useParticles();
   const [run, setRun] = useState(DEFAULT_RUN);
@@ -95,18 +98,23 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
   const [showAmount, setShowAmount] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const [instant, setInstant] = useState(false);
-  // Wallet panel + the coin-flies-over-then-lands animation on cash-out.
-  // displayedWalletCents is its own state (not just reading stats directly)
-  // so it can keep showing the OLD balance for the whole reveal and only
-  // tick up right when the coin visually lands — see the sync effect below
-  // and launchCoinToWallet. flyingCoin holds the measured flight path
-  // (null when nothing's mid-flight); floaterAmount drives the rising
-  // "+$X" text at the wallet once it lands.
-  const [displayedWalletCents, setDisplayedWalletCents] = useState(() => stats?.moneyWalletCents ?? 0);
+  // Wallet/bank panel + the coin-flies-over-then-lands animation on
+  // cash-out. Tracks THIS WEEK's earnings (money_weekly_cents, reset every
+  // Monday by api/weekly-money-reset.js) — not a lifetime total, which is
+  // what this used to show before the production launch. Lifetime still
+  // exists (money_lifetime_cents) for the Lifetime leaderboard tab and
+  // money-lifetime badges, just no longer displayed in this panel.
+  // displayedWeeklyCents is its own state (not just reading stats
+  // directly) so it can keep showing the OLD balance for the whole reveal
+  // and only tick up right when the coin visually lands — see the sync
+  // effect below and launchCoinToWallet. flyingCoin holds the measured
+  // flight path (null when nothing's mid-flight); floaterAmount drives
+  // the rising "+$X" text at the wallet once it lands.
+  const [displayedWeeklyCents, setDisplayedWeeklyCents] = useState(() => stats?.moneyWeeklyCents ?? 0);
   const [flyingCoin, setFlyingCoin] = useState(null);
   const [floaterAmount, setFloaterAmount] = useState(null);
   // Same "hold the old value until the reveal's had a moment to land"
-  // technique as displayedWalletCents above, applied to the insurance
+  // technique as displayedWeeklyCents above, applied to the insurance
   // status badge (see the render below) — without this, the badge would
   // flip from ARMED to USED THIS WEEK the instant the push response comes
   // back, before the player's even seen the "Insured!" reveal begin.
@@ -226,8 +234,8 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
   // parallels, covering the ~5.7s wait before the coin even launches too.
   // Needed because refreshMoneyStats (called right when the cash-out
   // response comes back, so onMoneyResolved's badge-diff timing lines up
-  // with the reveal sequence's own start) updates `stats.moneyWalletCents`
-  // immediately — this stops that from also jumping displayedWalletCents
+  // with the reveal sequence's own start) updates `stats.moneyWeeklyCents`
+  // immediately — this stops that from also jumping displayedWeeklyCents
   // ahead of the coin-landing animation, same reasoning the `flyingCoin`
   // guard below already documents.
   const suppressWalletSyncRef = useRef(false);
@@ -243,8 +251,8 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
     // suppressWalletSyncRef's own comment for why this is broader than
     // just `flyingCoin` now.
     if (flyingCoin || suppressWalletSyncRef.current) return;
-    setDisplayedWalletCents(stats?.moneyWalletCents ?? 0);
-  }, [stats?.moneyWalletCents, flyingCoin]);
+    setDisplayedWeeklyCents(stats?.moneyWeeklyCents ?? 0);
+  }, [stats?.moneyWeeklyCents, flyingCoin]);
 
   useEffect(() => {
     if (suppressInsuranceSyncRef.current) return;
@@ -448,7 +456,7 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
     );
     timers.current.push(setTimeout(() => setShowWalletPanel(true), walletBack));
     timers.current.push(
-      setTimeout(() => launchCoinToWallet(data.walletCents, data.lifetimeCents, data.earningsCents), coinLaunch)
+      setTimeout(() => launchCoinToWallet(data.walletCents, data.lifetimeCents, data.weeklyCents, data.earningsCents), coinLaunch)
     );
     timers.current.push(setTimeout(() => setRevealing(false), done));
   }
@@ -811,11 +819,11 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
       const { data, error } = await supabase.functions.invoke('money-cashout');
       if (error || !data) throw error ?? new Error('no response');
       setRun({ status: data.status, pushes: run.pushes, earningsCents: data.earningsCents });
-      // Deliberately NOT updating displayedWalletCents here — that happens
+      // Deliberately NOT updating displayedWeeklyCents here — that happens
       // once the coin visually lands (see launchCoinToWallet), so the
       // wallet panel keeps showing the pre-cashout balance for the whole
       // reveal instead of jumping ahead of the animation. refreshMoneyStats
-      // below DOES update the underlying stats.moneyWalletCents right away
+      // below DOES update the underlying stats.moneyWeeklyCents right away
       // (so onMoneyResolved's badge-diff timing lines up with the reveal
       // sequence's own start, not 5.7s late) — suppressWalletSyncRef is
       // what keeps that from leaking into the visible wallet panel early.
@@ -836,7 +844,7 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
       // otherwise the coin would be measuring/flying toward a target that's
       // still mid-slide-in, not its real resting position.
       timers.current.push(
-        setTimeout(() => launchCoinToWallet(data.walletCents, data.lifetimeCents, data.earningsCents), 5700)
+        setTimeout(() => launchCoinToWallet(data.walletCents, data.lifetimeCents, data.weeklyCents, data.earningsCents), 5700)
       );
     } catch (err) {
       console.error('money cash-out failed:', err);
@@ -849,16 +857,19 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
   // screen positions (both position:fixed-friendly viewport coordinates
   // from getBoundingClientRect, so no shared positioned ancestor is
   // needed) and animates a coin between them, then — once it visually
-  // arrives — actually applies the new wallet/lifetime totals and shows
-  // the rising "+$X" confirmation at the wallet.
-  function launchCoinToWallet(walletCents, lifetimeCents, earnedCents) {
+  // arrives — actually applies the new wallet/lifetime/weekly totals and
+  // shows the rising "+$X" confirmation at the wallet. walletCents/
+  // lifetimeCents still get applied to `stats` (they back the Lifetime
+  // leaderboard tab and money-lifetime badges elsewhere) even though this
+  // panel itself only displays weeklyCents now.
+  function launchCoinToWallet(walletCents, lifetimeCents, weeklyCents, earnedCents) {
     const amountEl = amountRef.current;
     const walletEl = walletPanelRef.current;
     if (!amountEl || !walletEl) {
       // Refs not ready for some reason (very unlikely, but money should
       // never just silently vanish because an animation couldn't measure
       // itself) — apply the real update directly instead.
-      setStats((prev) => ({ ...prev, moneyWalletCents: walletCents, moneyLifetimeCents: lifetimeCents }));
+      setStats((prev) => ({ ...prev, moneyWalletCents: walletCents, moneyLifetimeCents: lifetimeCents, moneyWeeklyCents: weeklyCents }));
       suppressWalletSyncRef.current = false;
       return;
     }
@@ -873,7 +884,7 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
       setTimeout(() => {
         setFlyingCoin(null);
         suppressWalletSyncRef.current = false;
-        setStats((prev) => ({ ...prev, moneyWalletCents: walletCents, moneyLifetimeCents: lifetimeCents }));
+        setStats((prev) => ({ ...prev, moneyWalletCents: walletCents, moneyLifetimeCents: lifetimeCents, moneyWeeklyCents: weeklyCents }));
         setFloaterAmount(earnedCents);
         spawnWalletImpact(landX, landY);
         playCoinBank(); // the money actually hitting the bank, not the earlier click
@@ -998,12 +1009,31 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
     }
   }
 
+  // A guest can unlock Money Mode (see Home.jsx's hasPlayedClassic gate —
+  // it reads local classic-mode progress the same way for guests and
+  // logged-in accounts alike) and land here via the header button or
+  // MoneyModeUnlockModal's "Try Money Mode" — but can't actually play it:
+  // there's nowhere for a guest run to bank its earnings. Shown in place
+  // of the game itself, not as an error, so this reads as "one more step"
+  // rather than a dead end.
   if (!user) {
     return (
       <div className="panel spotlight" style={{ textAlign: 'center', padding: 24 }}>
-        <p className="mono" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-          The money variant needs an account — guest runs have nowhere to bank earnings.
+        <div style={{ fontSize: 28, marginBottom: 10 }}>🔒</div>
+        <h3 style={{ fontSize: 16, marginBottom: 8 }}>Money Mode needs an account</h3>
+        <p className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 18 }}>
+          Guest runs have nowhere to bank earnings — create a free account to start playing.
         </p>
+        <button
+          className="btn-ghost"
+          style={{ color: '#ffd45e', borderColor: 'rgba(255,212,94,0.5)', padding: '10px 24px', fontSize: 13 }}
+          onClick={() => {
+            playNav();
+            navigate('/login');
+          }}
+        >
+          Create an account →
+        </button>
       </div>
     );
   }
@@ -1116,10 +1146,16 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
             >
               <img src="/vault.png" width={26} height={26} style={{ display: 'block', margin: '0 auto 6px' }} />
               <div className="mono hover-pop" style={{ fontWeight: 700, fontSize: 28, color: 'var(--neon-green)' }}>
-                {formatCents(displayedWalletCents)}
+                {formatCents(displayedWeeklyCents)}
               </div>
+              {/* Was a bare "bank" — misleading once this switched from a
+                  lifetime-mirroring total to money_weekly_cents (resets
+                  every Monday, see displayedWeeklyCents' own comment
+                  above); "banked this week" makes the reset-on-Monday
+                  nature of the number legible at a glance instead of
+                  reading as a permanent balance. */}
               <div className="mono" style={{ fontSize: 9, letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
-                bank
+                banked this week
               </div>
               {floaterAmount != null && (
                 <div className="money-wallet-floater">+{formatCents(floaterAmount)}</div>

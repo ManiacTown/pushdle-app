@@ -73,6 +73,19 @@ export async function isAdmin(db: ReturnType<typeof createServiceClient>, userId
   return data?.role === 'admin';
 }
 
+// Money mode's progression gate: an account can't play it until it's
+// played classic at least once (see Home.jsx's own client-side copy of
+// this same rule, on the mode-switch button). total_pushes is bumped only
+// by resolve_push (classic) — never by resolve_money_push — so it's a
+// reliable, already-tracked "has this account ever finished a classic
+// push" signal with no new column needed. Checked here (money-push) too,
+// not just client-side, same reasoning as isAdmin above: the button being
+// disabled doesn't stop a direct call to the function.
+export async function hasPlayedClassic(db: ReturnType<typeof createServiceClient>, userId: string) {
+  const { data } = await db.from('profiles').select('total_pushes').eq('id', userId).single();
+  return (data?.total_pushes ?? 0) > 0;
+}
+
 // The daily reset boundary is midnight in the Los Angeles timezone, not
 // UTC — see src/lib/pacificDate.js (client-side twin of this function;
 // Deno can't import that file directly, so it's mirrored here — keep both

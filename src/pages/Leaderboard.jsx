@@ -14,6 +14,24 @@ const RANK_COLORS = ['#ffd45e', '#c9d3e0', '#e8935a'];
 // controls appear below the board.
 const PAGE_SIZE = 50;
 
+// The weekly money leaderboard's real, ongoing life starts here — not at
+// whatever moment this shipped to production. Everything before this
+// date is admin/bot testing (all-zero rows post-grand-reset, a bot-name
+// podium snapshot in money_weekly_resets) that a real visitor has no
+// reason to see. Deliberately a Monday — the existing weekly reset cron
+// (api/weekly-money-reset.js) already fires every Monday, so this lines
+// up with the very first REAL reset with zero schedule changes needed.
+// Once this date arrives, the "This Week" view and podium just render
+// normally with whatever's real in the database — no code changes
+// required at that point, this gate simply stops applying. The first
+// week's podium will naturally show WeeklyPodium's own "No champions
+// yet" empty state (there's no completed week to snapshot from yet) —
+// same code path a genuinely quiet week would already hit, nothing
+// special-cased for "first week" specifically. By the Monday after
+// that (once a real week has actually completed and the cron has run),
+// real champions start showing up there too.
+const WEEKLY_LEADERBOARD_START_DATE = '2026-08-03';
+
 // Same shape as MoneyMode.jsx's identical helper (next-run/next-reset
 // countdowns) — small enough that a shared lib extraction isn't worth it
 // for two call sites.
@@ -104,14 +122,10 @@ function WeeklyPodium({ top3 }) {
 }
 
 export default function Leaderboard() {
-  const { user, isAdmin } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [allRows, setAllRows] = useState([]);
   const [page, setPage] = useState(0);
-  // Money-variant tab — TEMP admin-gated (see the button below), same
-  // rollout plan as the rest of the money variant. Falls back to 'streak'
-  // even if somehow set to 'money' while logged out/non-admin, since the
-  // fetch effect below only ever queries the money branch when isAdmin.
   const [tab, setTab] = useState('streak');
   // Sub-toggle within the money tab only (not a third top-level tab) —
   // 'lifetime' reads money_lifetime_cents (never goes down), 'weekly'
@@ -135,6 +149,10 @@ export default function Leaderboard() {
   // not just on success, so switching tabs after a failure clears the
   // banner instead of leaving a stale error up.
   const [fetchError, setFetchError] = useState(false);
+  // See WEEKLY_LEADERBOARD_START_DATE's own comment — plain string
+  // comparison works here since pacificDateString() and the constant are
+  // both YYYY-MM-DD, which sorts identically to a real date compare.
+  const weeklyLeaderboardLive = pacificDateString() >= WEEKLY_LEADERBOARD_START_DATE;
 
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
@@ -142,7 +160,7 @@ export default function Leaderboard() {
   }, []);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !isAdmin || tab !== 'money') return;
+    if (!isSupabaseConfigured || tab !== 'money' || !weeklyLeaderboardLive) return;
     supabase
       .from('money_weekly_resets')
       .select('top3')
@@ -152,7 +170,7 @@ export default function Leaderboard() {
       .then(({ data }) => {
         setLastWeekTop3(data?.top3 ?? []);
       });
-  }, [tab, isAdmin]);
+  }, [tab, weeklyLeaderboardLive]);
 
   useEffect(() => {
     setPage(0);
@@ -164,7 +182,11 @@ export default function Leaderboard() {
     }
 
     if (tab === 'money') {
-      if (!isAdmin) {
+      // Weekly hasn't actually started yet (see WEEKLY_LEADERBOARD_START_DATE)
+      // — skip the fetch entirely rather than pull a meaningless
+      // all-zero-post-reset row list nobody should see. Lifetime is
+      // unaffected, fetches normally either way.
+      if (moneyPeriod === 'weekly' && !weeklyLeaderboardLive) {
         setAllRows([]);
         return;
       }
@@ -230,7 +252,7 @@ export default function Leaderboard() {
           }))
         );
       });
-  }, [user, tab, moneyPeriod, isAdmin]);
+  }, [user, tab, moneyPeriod, weeklyLeaderboardLive]);
 
   const pageCount = Math.max(1, Math.ceil(allRows.length / PAGE_SIZE));
   const rows = allRows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
@@ -253,15 +275,10 @@ export default function Leaderboard() {
             : 'Lifetime money leaderboard'
           : "Today's leaderboard"}
       </h3>
-      {/* TEMP admin gate — the money variant isn't ready for real players
-          yet, so this tab is hidden rather than showing everyone a
-          permanently-empty board for a mode they can't play. Remove this
-          isAdmin check once it's ready for everyone. The tab row + sub-
-          toggle live in a column on the left; the podium (only in the
-          money tab) sits beside them on the right, not below — that's the
-          "red circled" space from the screenshot. */}
-      {isAdmin && (
-        <div style={{ display: 'flex', gap: 12, marginBottom: 14, alignItems: 'flex-start', justifyContent: 'space-between' }}>
+      {/* Tab row + sub-toggle live in a column on the left; the podium
+          (only in the money tab) sits beside them on the right, not below
+          — that's the "red circled" space from the screenshot. */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 14, alignItems: 'flex-start', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'flex', gap: 8 }}>
               <button
@@ -311,7 +328,7 @@ export default function Leaderboard() {
               </div>
             )}
           </div>
-          {tab === 'money' && (
+          {tab === 'money' && weeklyLeaderboardLive && (
             <div>
               <div
                 className="mono"
@@ -323,16 +340,33 @@ export default function Leaderboard() {
             </div>
           )}
         </div>
-      )}
       <div className="mono" style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 14 }}>
         {!isSupabaseConfigured
           ? 'Accounts aren’t configured on this deployment yet.'
+          : tab === 'money' && moneyPeriod === 'weekly' && !weeklyLeaderboardLive
+          ? 'Starts August 3rd — check back then!'
           : tab === 'money' && moneyPeriod === 'weekly'
           ? 'Resets every Monday — top 3 here earn the Golden Goose badge right before the reset.'
           : tab === 'money'
           ? 'Total money ever cashed out — spending in the shop never lowers this.'
           : 'Real runs from logged-in players — guest runs stay local and never appear here.'}
       </div>
+      {/* Weekly hasn't started yet — see WEEKLY_LEADERBOARD_START_DATE.
+          Replaces the row list/countdown/rank banner entirely (all of
+          which would otherwise just be empty/zero anyway, now that
+          allRows is deliberately never fetched for this case) with a
+          single, unambiguous placeholder instead of a board that LOOKS
+          live but has nothing real in it yet. */}
+      {tab === 'money' && moneyPeriod === 'weekly' && !weeklyLeaderboardLive && (
+        <div
+          className="mono"
+          style={{ fontSize: 12, color: 'var(--text-dim)', textAlign: 'center', padding: '28px 12px' }}
+        >
+          🏆 Weekly leaderboards start <strong style={{ color: 'var(--text)' }}>August 3rd</strong>.
+          <br />
+          Come back then to see who's on top.
+        </div>
+      )}
       {/* Distinct from an empty board — a failed fetch used to render as
           an indistinguishable blank list, with no way to tell "nobody's
           played" from "this broke." */}
@@ -351,7 +385,7 @@ export default function Leaderboard() {
           every second even though it's never read directly here — same
           "force a re-render, recompute the real value fresh" pattern
           MoneyMode.jsx's own countdown uses. */}
-      {tab === 'money' && moneyPeriod === 'weekly' && (
+      {tab === 'money' && moneyPeriod === 'weekly' && weeklyLeaderboardLive && (
         <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 14 }}>
           Resets in <span style={{ color: 'var(--neon-cyan)', fontWeight: 700 }}>{formatCountdown(msUntilNextPacificWeekStart())}</span>
         </div>

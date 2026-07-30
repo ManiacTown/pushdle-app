@@ -4,14 +4,14 @@
 // purchase_diamond_button, not here — this is just the thin HTTP wrapper,
 // same shape as money-push/money-cashout.
 //
-// TEMP: admin-gated for now, same reasoning as money-push/money-cashout —
-// the money variant (and its shop) isn't reachable by real players yet.
-// Remove the isAdmin block below once it's ready for everyone; nothing
-// else here or in schema.sql needs to change.
+// Open to every logged-in account now — see money-push/index.ts's header
+// comment for the money variant's overall access model. Reaching the
+// shop at all already implies money-push's own hasPlayedClassic gate was
+// satisfied, so nothing further needs checking here.
 //
 // Deploy with: supabase functions deploy buy-diamond-button
 
-import { createServiceClient, handlePreflight, isAdmin, json, requireUser } from '../_shared/utils.ts';
+import { createServiceClient, handlePreflight, json, requireUser } from '../_shared/utils.ts';
 
 Deno.serve(async (req) => {
   const preflight = handlePreflight(req);
@@ -21,7 +21,6 @@ Deno.serve(async (req) => {
   if (!user) return json({ error: 'unauthorized' }, 401);
 
   const db = createServiceClient();
-  if (!(await isAdmin(db, user.id))) return json({ error: 'forbidden' }, 403);
 
   const { data, error } = await db.rpc('purchase_diamond_button', { p_user_id: user.id }).single();
   if (error) return json({ error: error.message }, 500);

@@ -87,7 +87,7 @@ function EquipPicker({ items, activeId, onSelect, disabled, renderItem, emptyMes
 }
 
 export default function Profile() {
-  const { user, logout, isAdmin, selectedEmoji, updateSelectedEmoji, stats: authStats, refreshMoneyStats } = useAuth();
+  const { user, logout, selectedEmoji, updateSelectedEmoji, stats: authStats, refreshMoneyStats } = useAuth();
   const location = useLocation();
   const [guestBestStreak, setGuestBestStreak] = useState(0);
   const [guestStats, setGuestStats] = useState({ totalPushes: 0, dayStreak: 0, bustedAtZero: false, bustedAtOne: false });
@@ -110,10 +110,7 @@ export default function Profile() {
   // complexity here).
   const [isTouch] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches);
   // Which achievement grid is showing — see the toggle above the grid
-  // below. The toggle itself only renders for isAdmin, same gate/reasoning
-  // as Leaderboard.jsx's money tab — a real player seeing a "Money" tab at
-  // all would leak that the mode exists before it's ready, even if every
-  // badge behind it reads as locked.
+  // below.
   const [achievementTab, setAchievementTab] = useState('streak');
   // Which tab of the Cosmetics panel is showing — Flair first (see
   // COSMETICS_TABS above), then the three shop-purchased equip categories.
@@ -163,11 +160,7 @@ export default function Profile() {
   }, [user]);
 
   // Logged-in counterpart to the guest fetch above — real rows instead of
-  // local storage. money_runs read is gated behind isAdmin, same as the
-  // achievement tab that shows it at all (see that toggle's own comment) —
-  // a non-admin account has no money_runs row to find anyway (money mode
-  // is gated client- AND server-side), so this just skips a query that
-  // would always come back empty for them.
+  // local storage.
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -188,27 +181,25 @@ export default function Profile() {
         }
         setTodayStreak(data?.streak ?? 0);
       });
-    if (isAdmin) {
-      supabase
-        .from('money_runs')
-        .select('earnings_cents, status')
-        .eq('user_id', user.id)
-        .eq('date', today)
-        .maybeSingle()
-        .then(({ data, error }) => {
-          if (cancelled) return;
-          if (error) {
-            console.error('today money run fetch failed:', error);
-            setTodayFetchError(true);
-            return;
-          }
-          setTodayMoneyRun(data ?? null);
-        });
-    }
+    supabase
+      .from('money_runs')
+      .select('earnings_cents, status')
+      .eq('user_id', user.id)
+      .eq('date', today)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          console.error('today money run fetch failed:', error);
+          setTodayFetchError(true);
+          return;
+        }
+        setTodayMoneyRun(data ?? null);
+      });
     return () => {
       cancelled = true;
     };
-  }, [user, isAdmin]);
+  }, [user]);
 
   // AuthContext merges/holds the server-authoritative copy for logged-in
   // players (see its login-time merge and Home.jsx, which keeps it fresh
@@ -384,7 +375,7 @@ export default function Profile() {
     { label: 'Best Weekly $', value: formatCents(stats.moneyBestWeeklyCents) },
     { label: 'Lifetime $', value: formatCents(stats.moneyLifetimeCents) },
   ];
-  const statTiles = achievementTab === 'money' && isAdmin ? moneyStatTiles : streakStatTiles;
+  const statTiles = achievementTab === 'money' ? moneyStatTiles : streakStatTiles;
 
   // Every emoji an earned badge could show as flair, deduped — a quick-pick
   // row of all of them (see the flair panel below) beats making someone
@@ -568,13 +559,10 @@ export default function Profile() {
         )}
       </div>
 
-      {/* TEMP admin gate, same reasoning as Leaderboard.jsx's money tab —
-          a real player seeing this toggle at all would leak that money
-          mode exists before it's ready, so it doesn't render otherwise.
-          Sits right above the grid it controls ("at the bottom" of the
+      {/* Sits right above the grid it controls ("at the bottom" of the
           page, where the achievement content itself lives), not above the
           Stats/Flair panels — those stay unified across both categories. */}
-      {isAdmin && <AchievementTabToggle tab={achievementTab} onChange={setAchievementTab} />}
+      <AchievementTabToggle tab={achievementTab} onChange={setAchievementTab} />
 
       <BadgeGrid
         gridRef={badgeGridRef}
