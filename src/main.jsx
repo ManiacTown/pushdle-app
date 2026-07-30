@@ -4,8 +4,11 @@ import ReactDOM from 'react-dom/client';
 // before App renders so a crash during the very first render is still
 // caught by the ErrorBoundary below.
 import { Sentry } from './lib/sentry.js';
+import { initPWAUpdates } from './lib/pwaUpdate.js';
 import App from './App.jsx';
 import './styles/global.css';
+
+initPWAUpdates();
 
 function ErrorFallback() {
   return (

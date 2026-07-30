@@ -47,7 +47,9 @@ export default function Login() {
         }
         const data = await signUp(email.trim(), password, username.trim());
         if (data.session) {
-          navigate('/profile');
+          // Home, not Profile — see the sign-in branch's own comment
+          // below for why.
+          navigate('/');
         } else {
           // Project has email confirmation on — no session until they click
           // the link in their inbox.
@@ -55,7 +57,12 @@ export default function Login() {
         }
       } else {
         await signIn(email.trim(), password);
-        navigate('/profile');
+        // Home, not Profile — Home.jsx is where OnboardingModal and
+        // MoneyModeUnlockModal.jsx's trigger effect actually live, so
+        // landing there gives them a chance to fire right after login
+        // instead of only whenever the player happens to navigate to
+        // Home on their own later.
+        navigate('/');
       }
     } catch (err) {
       // Two people signing up with the same username at nearly the same

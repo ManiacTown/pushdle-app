@@ -11,6 +11,16 @@ export default defineConfig({
       // to refresh" prompt to build/wire up, matching how the rest of the
       // site auto-deploys on push.
       registerType: 'autoUpdate',
+      // Manual registration (see src/lib/pwaUpdate.js) instead of the
+      // default auto-injected script — the auto-injected one registers
+      // once on load and otherwise only checks for a new service worker
+      // on a real navigation/reload, so a tab a player just leaves open
+      // could sit on a stale deploy indefinitely. pwaUpdate.js polls
+      // registration.update() on an interval so an idle tab notices a
+      // new deploy too, not just a freshly-loaded one — registerType:
+      // 'autoUpdate' is what makes that silently activate + reload with
+      // no extra wiring once a new worker's found.
+      injectRegister: false,
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
         name: 'Pushdle',
