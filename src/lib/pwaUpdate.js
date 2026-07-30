@@ -20,11 +20,13 @@
 // visual interruption, not lost progress.
 import { registerSW } from 'virtual:pwa-register';
 
-// 20 minutes — frequent enough that a tab left open through a deploy
-// picks it up within a reasonable window, infrequent enough not to be a
-// meaningful battery/network cost for a page most people don't leave
-// open for hours at a stretch anyway.
-const UPDATE_CHECK_INTERVAL_MS = 20 * 60 * 1000;
+// 2 minutes — tight enough that a deploy reaches every already-open tab
+// within a couple minutes of shipping, not just eventually. The request
+// itself is a cheap conditional GET (a byte-for-byte check against the
+// already-cached worker script, not a real asset download most of the
+// time), so this cadence isn't a meaningful cost even for a tab left
+// open for hours.
+const UPDATE_CHECK_INTERVAL_MS = 2 * 60 * 1000;
 
 export function initPWAUpdates() {
   registerSW({

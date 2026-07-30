@@ -13,6 +13,7 @@ function formatDate(dateStr) {
   return `${MONTHS[month - 1]} ${day}, ${year}`;
 }
 
+
 export default function Updates() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>

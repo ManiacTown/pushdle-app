@@ -1572,21 +1572,28 @@ export default function Home() {
           once they've earned it. Once true it stays true (a permanent,
           ever-increasing total_pushes threshold), so this can only ever
           go from hidden to shown, never back. Not persisted across
-          reloads (see uiMode above). Collapses right alongside the header
-          (same class, same shared chromeCollapsed signal) — this row sits
-          above the actual game content in both modes, so it should tuck
-          away during a run same as everything else above it. Also slides
+          reloads (see uiMode above). Only collapses alongside the header
+          while MONEY mode is the active one (chromeCollapsed && uiMode
+          === 'money'), not classic's own chromeCollapsed unconditionally
+          — classic collapses the instant a run goes mid-streak
+          (state.streak > 0), which is the EXACT same moment a brand-new
+          player's unlocking push resolves, so unconditional collapse
+          here made the just-unlocked button disappear before they could
+          ever click it, with no way back short of busting that run
+          (confirmed live: the unlock modal's own "Try Money Mode" button
+          still works since it calls startModeSwitch directly, bypassing
+          this row entirely — clicking the actual header button was what
+          silently failed). Staying visible through a classic run doesn't
+          cost the "focus during a run" effect anything real — the row
+          collapsing was never about the classic game screen itself, just
+          this unrelated switcher tucking away with it. Still slides
           out/in via modeSlotStyle on an actual mode switch, same slot-0
           timing as the streak/run panel(s) right below it, so this row
           rides along with the rest of the page's own switch transition
-          instead of just snapping to its new label/Shop-button state.
-          Safe to combine with the collapse transition above since
-          they're mutually exclusive in practice — the buttons are hidden
-          (0-height, unclickable) any time the header's collapsed, so a
-          switch can only ever START from an already-uncollapsed state. */}
+          instead of just snapping to its new label/Shop-button state. */}
       {hasPlayedClassic && (
       <div
-        className={'header-panel' + (chromeCollapsed ? ' header-panel--collapsed' : '')}
+        className={'header-panel' + (chromeCollapsed && uiMode === 'money' ? ' header-panel--collapsed' : '')}
         style={{ display: 'flex', justifyContent: 'center', gap: MONEY_PANEL_GAP, marginBottom: 12, ...modeSlotStyle(modeTransition, 0) }}
       >
         {/* A shared literal width on both buttons (not their own natural
