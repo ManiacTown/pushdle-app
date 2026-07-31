@@ -11,6 +11,7 @@ export const CHANGELOG = [
     items: [
       'Fixed another case where the shop panel could get cut off at the bottom, this time on mobile.',
       'Fixed a typo in the "How to play" section.',
+      'Added a Discord icon to the nav bar, right next to "How to play" — click it to join the server.',
     ],
   },
   {

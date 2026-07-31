@@ -145,18 +145,30 @@ export default function NavBar() {
           container ever knowing to make room for it). .nav-bar-links being
           flex:1 means it always shrinks to leave these buttons their own
           space, never the other way around. */}
+      {/* Same discord.gg invite as the footer's Discord link (see
+          Footer.jsx) — just an icon-only shortcut up here in the nav. */}
+      <a
+        href="https://discord.gg/6mXxFXM42"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="nav-link nav-mute-btn"
+        title="Join our Discord"
+      >
+        <img src="/discord-logo.png" alt="Join our Discord" width={19} height={14} style={{ display: 'block' }} />
+      </a>
       <NavLink
         to="/about"
         onClick={playNav}
         className={({ isActive }) => 'nav-link nav-mute-btn' + (isActive ? ' active' : '')}
         title="How to play"
       >
-        <img src="/question-mark.png" alt="How to play" width={18} height={18} style={{ display: 'block' }} />
+        <img src="/question-mark.png" alt="How to play" width={16} height={16} style={{ display: 'block' }} />
       </NavLink>
       <button
         className="nav-link nav-mute-btn"
         onClick={() => setSoundMuted(toggleMuted())}
         title={soundMuted ? 'Unmute sound' : 'Mute sound'}
+        style={{ fontSize: 11 }}
       >
         {soundMuted ? '🔇' : '🔊'}
       </button>
