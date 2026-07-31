@@ -6,6 +6,14 @@
 // nobody outside the codebase would ever notice.
 export const CHANGELOG = [
   {
+    date: '2026-07-31',
+    title: 'Shop panel fix and small cleanup',
+    items: [
+      'Fixed another case where the shop panel could get cut off at the bottom, this time on mobile.',
+      'Fixed a typo in the "How to play" section.',
+    ],
+  },
+  {
     date: '2026-07-30',
     title: 'Polish pass',
     items: [

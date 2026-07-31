@@ -1464,50 +1464,10 @@ input:focus{
   animation: screenShake 0.5s ease-out;
 }
 
-/* ---- Bust crack overlay ---- */
-/* Sits on top of the button, same footprint, showing one of four hand-drawn
-   fracture patterns matching the bust's severity (see CRACK_STAGES/
-   crackLevel in Home.jsx) — a streak-2 bust shows a single edge nick, a big
-   one shows the button fully shattered. Persists for the rest of the busted
-   state (cleared in resetBustVisuals, same as the other bust visuals)
-   rather than fading — the button staying visibly cracked while "Busted" is
-   showing reads as the aftermath, not just a passing effect.
-   A dark line (real-glass black) reads as invisible against the button's
-   own near-black resting color (--panel, #101018) — there's no light
-   surface behind it to silhouette against the way there would be on an
-   actual photographed object. Lit from within instead: a bright white-hot
-   core with a red glow halo around it, like the fracture is glowing rather
-   than just cut into the surface. That also reads as more "on brand" for
-   this game's neon look than a literal photoreal crack would. */
-.crack-overlay{
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  /* Clipped to the same circle the button itself is (its own border-radius
-     is 50% on this same 190x190 box) — a hard guarantee no crack can ever
-     render past the button's visible rim onto the page background,
-     independent of whatever the path-generation math in Home.jsx computes.
-     clip-path, not border-radius+overflow:hidden (tried first) — the
-     overflow property on a root <svg> element is unreliable across
-     browsers for this, clip-path isn't. */
-  clip-path: circle(50%);
-}
-.crack-overlay path{
-  fill: none;
-  stroke: #fff3ea;
-  stroke-width: 1.3;
-  stroke-linecap: round;
-  filter: drop-shadow(0 0 2px rgba(255, 60, 60, 0.95)) drop-shadow(0 0 6px rgba(255, 45, 60, 0.65));
-}
-
-/* The visible "Busted" label once the crack overlay is up (see the
-   push-btn-label div in Home.jsx) — kept as its own topmost element rather
-   than the button's own (now-hidden) text, since positioned elements
-   always paint above non-positioned in-flow content, so the crack SVG
-   would otherwise render on top of the button's own text regardless of
-   which comes first in the markup. The radial-gradient halo dims whatever
-   crack lines cross behind it, on top of the text-shadow, so "Busted"
-   reads clearly no matter how dense the fracture pattern gets. */
+/* The diamond push-skin's label (see push-btn-label span in Home.jsx) —
+   its own topmost element with a soft dark halo, since a plain <span>
+   doesn't stay readable over the busier diamond-button image the way it
+   does against the default skin's flat near-black background. */
 .push-btn-label{
   position: absolute;
   inset: 0;

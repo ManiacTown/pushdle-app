@@ -24,7 +24,7 @@ const SHOP_TABS = [...COSMETIC_CATEGORIES.map((c) => ({ id: c.id, label: c.label
 // has its own icon/description), but all THREE still share this exact
 // owned/afford/buying logic — pulled out once here rather than repeated
 // three times.
-function useBuyState({ id, price, owned, diamonds, busyId }) {
+function useBuyState({ id, price, diamonds, busyId }) {
   const canAfford = diamonds >= price;
   const busy = busyId === id;
   return { canAfford, busy };
@@ -71,7 +71,7 @@ function BoughtBadge({ color = DIAMOND_BLUE }) {
 // one place that card layout lives instead of two near-duplicate blocks.
 function CosmeticCard({ id, slot, color, owned, diamonds, busyId, onBuy }) {
   const price = COSMETIC_PRICES[id];
-  const { canAfford, busy } = useBuyState({ id, price, owned, diamonds, busyId });
+  const { canAfford, busy } = useBuyState({ id, price, diamonds, busyId });
   return (
     <div
       className="badge-card"

@@ -79,3 +79,13 @@ export function msUntilNextPacificWeekStart(date = new Date()) {
   const extraDays = FULL_DAYS_AFTER_TODAY[weekday] ?? 0;
   return msUntilNextPacificMidnight(date) + extraDays * 86400000;
 }
+
+// Shared HH:MM:SS formatter for the countdown values above — used by
+// Home.jsx, MoneyMode.jsx, and Leaderboard.jsx.
+export function formatCountdown(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = String(Math.floor(total / 3600)).padStart(2, '0');
+  const m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
+  const s = String(total % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}

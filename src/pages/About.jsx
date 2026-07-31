@@ -46,7 +46,7 @@ export default function About() {
           <p style={{ marginBottom: 12 }}>
             Tap <strong style={{ color: 'var(--text)' }}>Push</strong>. Each press has a{' '}
             {Math.round(SUCCESS_CHANCE * 100)}% chance to keep your streak alive — until it
-            doesn't. Your very first push of the day is guranteed, so nobody busts immediately.
+            doesn't. Your very first push of the day is guaranteed, so nobody busts immediately.
           </p>
           <p style={{ marginBottom: 12 }}>
             Your <strong style={{ color: 'var(--text)' }}>score</strong> is how many presses you

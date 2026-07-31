@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import * as storage from '../lib/storage.js';
-import { pacificDateString, msUntilNextPacificMidnight } from '../lib/pacificDate.js';
+import { pacificDateString, msUntilNextPacificMidnight, formatCountdown } from '../lib/pacificDate.js';
 import {
   rollPush,
   rarityForStreak,
@@ -35,205 +35,6 @@ const DEFAULT_STATS = { totalPushes: 0, dayStreak: 0, lastPlayedDate: null, bust
 // effect below) doesn't start ramping until the streak passes this —
 // early pushes stay at the calm resting baseline the whole way through.
 const INTENSITY_START_STREAK = 15;
-// Off for now (see showCracks below) — parked rather than removed. All of
-// buildCrackGrowth and the crack-overlay/label JSX are still fully intact;
-// flipping this back to true is the only change needed to bring the
-// cracked-button effect back.
-const CRACKS_ENABLED = false;
-
-function formatCountdown(ms) {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const h = String(Math.floor(total / 3600)).padStart(2, '0');
-  const m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
-  const s = String(total % 60).padStart(2, '0');
-  return `${h}:${m}:${s}`;
-}
-
-// The button's crack pattern is now a LIVE, ongoing thing tied directly to
-// the current streak (see buildCrackGrowth) — not something only revealed
-// once you bust. Nothing shows below streak 15 (same floor as the other
-// intensity effects, see INTENSITY_START_STREAK); from there, every 5
-// pushes is a new "milestone": the cracks already on screen each pick up
-// one more branch, and a couple of new small nicks appear at the edge.
-// Busting just freezes state.streak at its final value, which freezes this
-// too, automatically — no separate bust-time computation needed. Uses its
-// own tiny seeded PRNG (not Math.random) so the SAME streak always grows
-// the SAME pattern, rather than reshuffling on every render.
-function crackRng(seed) {
-  let a = seed;
-  return () => {
-    a = (a * 1103515245 + 12345) & 0x7fffffff;
-    return a / 0x7fffffff;
-  };
-}
-
-const CRACK_CENTER = 95;
-const CRACK_EDGE_R = 92;
-// Hard ceiling on how far any INTERIOR crack point can sit from center —
-// the button's own visible edge is 95 (its 190px diameter / 2), so this
-// stays a couple px inside that. Without it, jitter could push a point
-// past 95 and the line would visibly poke outside the circular button onto
-// the page background. Belt-and-suspenders with the CSS clip on
-// .crack-overlay itself (see global.css) — this keeps the math honest,
-// that keeps it foolproof even if the math isn't.
-const CRACK_MAX_R = 93;
-// Where every line's very first point (its origin, right at the button's
-// rim) gets placed — deliberately PAST the true edge rather than aimed at
-// landing on it, because jitter aimed at 95 sometimes fell short and the
-// crack visibly didn't quite reach the edge. Placing it out here instead
-// and letting the CSS clip-path trim it flush guarantees contact every
-// time, rather than hoping the jitter rolls close enough.
-const CRACK_START_R = 99;
-
-function pathFromPoints(points) {
-  return 'M' + points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' L');
-}
-
-function pointsToSegments(points) {
-  const segs = [];
-  for (let i = 0; i < points.length - 1; i++) segs.push([points[i], points[i + 1]]);
-  return segs;
-}
-
-// Standard orientation-based segment intersection test (ignores the
-// degenerate collinear/touching-endpoint cases — fine here, this is only
-// ever used to keep decorative crack lines from visibly crossing, not
-// anything that needs to be mathematically airtight).
-function crossProduct(o, a, b) {
-  return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-}
-function segmentsIntersect(a1, a2, b1, b2) {
-  const d1 = crossProduct(b1, b2, a1);
-  const d2 = crossProduct(b1, b2, a2);
-  const d3 = crossProduct(a1, a2, b1);
-  const d4 = crossProduct(a1, a2, b2);
-  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
-}
-function conflictsWithCommitted(points, committed) {
-  return pointsToSegments(points).some((s) => committed.some((c) => segmentsIntersect(s[0], s[1], c[0], c[1])));
-}
-
-// One jagged line's points, walking from the edge inward to `endR` from
-// center. Each step's radius AND angle both get real jitter (not a gentle
-// taper), so it reads as a lightning-bolt zigzag — sharp direction changes
-// are the whole point of a fracture line, a smooth curve reads as a seam,
-// not a crack. Returns the raw points (not yet a path string) — branches
-// fork off real points on this line, and callers use the points to check
-// for intersections against everything already placed.
-function jaggedRadialPoints(rng, angle, endR, segments) {
-  const points = [];
-  for (let i = 0; i <= segments; i++) {
-    const t = i / segments;
-    const r =
-      i === 0
-        ? CRACK_START_R + (rng() - 0.5) * 4
-        : Math.min(CRACK_MAX_R, CRACK_EDGE_R + (endR - CRACK_EDGE_R) * t + (rng() - 0.5) * 16);
-    const a = angle + (i === 0 || i === segments ? 0 : (rng() - 0.5) * 0.7);
-    points.push([CRACK_CENTER + r * Math.cos(a), CRACK_CENTER + r * Math.sin(a)]);
-  }
-  return points;
-}
-
-// A short offshoot growing from an existing point on a main crack's own
-// line (not the button's edge) — this is what makes the whole thing read
-// as a tree (small branches splitting off bigger ones). Anchored to a real
-// point already on the parent line — a branch computed with fully
-// independent jitter could land somewhere that doesn't actually touch the
-// line it's supposed to be forking off.
-function growBranch(rng, originPoint, originR, angle, endR, segments) {
-  const points = [originPoint];
-  for (let i = 1; i <= segments; i++) {
-    const t = i / segments;
-    const r = Math.min(CRACK_MAX_R, originR + (endR - originR) * t + (rng() - 0.5) * 10);
-    const a = angle + (rng() - 0.5) * 0.6;
-    points.push([CRACK_CENTER + r * Math.cos(a), CRACK_CENTER + r * Math.sin(a)]);
-  }
-  return points;
-}
-
-// No cracking at all below streak 15 — same floor as the rest of the
-// intensity system. From there, every 5 pushes is a new milestone; capped
-// at 9 (streak ~55) so a very long run doesn't keep piling on more and
-// more branches/nicks forever — roughly matches the background glow's own
-// ramp, which tops out around streak 60.
-function milestoneForStreak(streak) {
-  if (streak < 15) return 0;
-  return Math.min(9, Math.floor((streak - 15) / 5) + 1);
-}
-
-const CRACK_GROWTH_SEED = 7;
-const MAX_BRANCHES_PER_MAIN = 4;
-
-// Builds the button's whole crack pattern for a given streak, from
-// scratch, milestone by milestone — not incrementally mutated state, a
-// pure function of streak alone, so the same streak always regrows the
-// exact same pattern (live while playing, or frozen once busted — both
-// just call this with whatever state.streak currently is).
-//
-// Milestone 1 (streak 15): two main cracks appear, roughly opposite each
-// other, plus one small edge nick. Every milestone after that, each main
-// crack still under the branch cap picks up one more branch, and two new
-// small standalone nicks appear at the edge — "a bunch of small cracks
-// branching off some longer ones," per the brief, rather than the earlier
-// spiderweb-of-rings design.
-//
-// Every new line is placed via `place`, which retries with fresh jitter
-// (up to a few times) if the candidate would visibly cross something
-// already on the button, so the pattern stays (almost always) free of
-// self-intersections without needing a perfect geometric guarantee.
-function buildCrackGrowth(streak) {
-  const milestone = milestoneForStreak(streak);
-  if (milestone === 0) return [];
-
-  const rng = crackRng(CRACK_GROWTH_SEED);
-  const committed = [];
-  const mains = [];
-  const paths = [];
-
-  function place(genFn, maxAttempts = 14) {
-    let candidate = null;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      candidate = genFn();
-      if (!conflictsWithCommitted(candidate, committed)) break;
-    }
-    committed.push(...pointsToSegments(candidate));
-    return candidate;
-  }
-
-  const rotationOffset = rng() * Math.PI * 2;
-  for (let i = 0; i < 2; i++) {
-    const baseAngle = rotationOffset + i * Math.PI;
-    const points = place(() => jaggedRadialPoints(rng, baseAngle + (rng() - 0.5) * 0.6, 48, 4));
-    mains.push({ points, branches: 0 });
-    paths.push(pathFromPoints(points));
-  }
-  paths.push(
-    pathFromPoints(place(() => jaggedRadialPoints(rng, rng() * Math.PI * 2, CRACK_EDGE_R - (8 + rng() * 14), 2)))
-  );
-
-  for (let m = 2; m <= milestone; m++) {
-    for (const main of mains) {
-      if (main.branches >= MAX_BRANCHES_PER_MAIN) continue;
-      const points = place(() => {
-        const idx = 1 + Math.floor(rng() * (main.points.length - 2));
-        const origin = main.points[idx];
-        const originR = Math.hypot(origin[0] - CRACK_CENTER, origin[1] - CRACK_CENTER);
-        const originAngle = Math.atan2(origin[1] - CRACK_CENTER, origin[0] - CRACK_CENTER);
-        const branchAngle = originAngle + (rng() - 0.5) * 1.6;
-        const branchEndR = Math.max(10, originR - (14 + rng() * 20));
-        return growBranch(rng, origin, originR, branchAngle, branchEndR, 2);
-      });
-      main.branches += 1;
-      paths.push(pathFromPoints(points));
-    }
-    for (let i = 0; i < 2; i++) {
-      const points = place(() => jaggedRadialPoints(rng, rng() * Math.PI * 2, CRACK_EDGE_R - (8 + rng() * 14), 2));
-      paths.push(pathFromPoints(points));
-    }
-  }
-
-  return paths;
-}
 
 export default function Home() {
   const [state, setState] = useState({ streak: 0, status: 'playing', newBestToday: false });
@@ -248,9 +49,7 @@ export default function Home() {
   const [flashKey, setFlashKey] = useState(0);
   // Bust impact effects — see triggerBust. shaking gates whether the
   // .screen-shake class/animation is applied at all; shakeAmount is its
-  // amplitude in px (read via the --shake-amount CSS var). The crack
-  // pattern itself isn't separate bust-only state anymore — see crackPaths
-  // below, derived straight from state.streak.
+  // amplitude in px (read via the --shake-amount CSS var).
   const [shaking, setShaking] = useState(false);
   const [shakeAmount, setShakeAmount] = useState(6);
   const [tick, setTick] = useState(0);
@@ -419,7 +218,13 @@ export default function Home() {
   // can never clip its own bottom border again (see global.css's old
   // max-height comment history — that approach required re-measuring a
   // "worst case" by hand and clipped for real on more than one occasion
-  // when it drifted out of date).
+  // when it drifted out of date). shopContentRef's own element needs
+  // overflow:hidden (see its render below) so it forms its own block
+  // formatting context — otherwise MoneyShop's marginTop collapses straight
+  // through this plain div and out of it, so scrollHeight silently excludes
+  // that margin and the measured height comes up short by exactly that much,
+  // clipping the panel's own bottom edge the same way the old fixed-guess
+  // approach used to.
   const shopContentRef = useRef(null);
   const [shopContentHeight, setShopContentHeight] = useState(0);
   const { collapsed: chromeCollapsed, setCollapsed } = useChrome();
@@ -531,9 +336,6 @@ export default function Home() {
       setShowBusted(true);
       setBustedSettled(true);
       setBustQuote(getBustQuoteForStreak(s.streak));
-      // No separate crack restoration needed — crackPaths (below) derives
-      // straight from state.streak, which setState(s) just set to the
-      // run's final value, so it's already showing the right pattern.
       if (s.streak > 0) {
         setBustedSlid(true);
         setShowRarity(true);
@@ -1260,10 +1062,7 @@ export default function Home() {
 
     // Same 0-1 curve as the rest of the intensity system (see the effect
     // above) — scales the shake amplitude and how much debris falls/how
-    // far, off how far this run actually got. The crack pattern itself
-    // isn't set here anymore — it's already been growing live throughout
-    // the run (see crackPaths, derived from state.streak) and just stays
-    // exactly as it was at the moment of busting.
+    // far, off how far this run actually got.
     const bustIntensity = Math.min(1, streak / 30);
     setShakeAmount(4 + bustIntensity * 14);
     setShaking(true);
@@ -1503,16 +1302,6 @@ export default function Home() {
   }
 
   const pct = state.status === 'dead' && state.streak > 0 ? rarityForStreak(state.streak) : null;
-  // The crack pattern grows the whole time in the background once the
-  // streak passes 15 (see buildCrackGrowth) — computed off state.streak,
-  // same as the rest of the intensity system — but stays hidden from the
-  // player until the run actually ends, a bust reveal rather than a
-  // visible countdown to one. Memoized since recomputing this is cheap
-  // either way, but it's still a small pile of work (segment-intersection
-  // checks against everything already placed) that doesn't need to redo
-  // itself on renders unrelated to the streak.
-  const crackPaths = useMemo(() => buildCrackGrowth(state.streak), [state.streak]);
-  const showCracks = CRACKS_ENABLED && state.status === 'dead' && crackPaths.length > 0;
   const buttonLabel = state.status === 'dead' ? 'Busted' : rolling ? '…' : 'Push';
   // Shop-unlocked push-button skin (see MoneyShop.jsx/purchase_diamond_button)
   // — classic mode only, guests included (authStats is null while logged
@@ -1659,7 +1448,7 @@ export default function Home() {
           className={'money-shop-wrap' + (showMoneyShop ? '' : ' money-shop-wrap--collapsed')}
           style={{ height: showMoneyShop ? shopContentHeight : 0 }}
         >
-          <div ref={shopContentRef}>
+          <div ref={shopContentRef} style={{ overflow: 'hidden' }}>
             <MoneyShop onClose={() => setShowMoneyShop(false)} />
           </div>
         </div>
@@ -1703,24 +1492,15 @@ export default function Home() {
           </div>
         </div>
 
-        {/* The poke bounce (see pokeBustedButton) lives on THIS wrapper, not
-            just the <button> — it needs to move the button, the crack
-            overlay, and the label all together as one rigid piece. Putting
-            the transform on the button alone left the crack lines (drawn in
-            a separate sibling SVG) sitting still while the button's own
-            edge shrank/rotated under them, so for that ~220ms the cracks
-            visibly detached from the button's edge instead of looking like
-            part of the same cracked surface flinching. */}
         <div className={poking ? 'push-wrap--poke' : ''} style={{ position: 'relative', ...modeSlotStyle(modeTransition, 1) }}>
           {diamondButtonActive ? (
             // Shop-unlocked skin — same handlers/disabled logic as the
             // default button below, just image-based (no border/background
             // box to draw a CSS ring on, see .push-btn-diamond's own
-            // comment). The label still needs .push-btn-label's dark halo
-            // treatment here UNCONDITIONALLY (not just during the crack
-            // overlay, like the default skin below) — a plain <span> reads
-            // fine against the default button's flat near-black
-            // background, but not against this busier image.
+            // comment). The label needs .push-btn-label's dark halo
+            // treatment — a plain <span> reads fine against the default
+            // button's flat near-black background, but not against this
+            // busier image.
             <button
               onClick={push}
               onMouseEnter={() => setButtonHover(true)}
@@ -1735,9 +1515,7 @@ export default function Home() {
               style={{ width: 190, height: 190 }}
             >
               <img src="/diamond-button.png" alt="" width={190} height={190} style={{ display: 'block', pointerEvents: 'none' }} />
-              <span className="push-btn-label" style={{ visibility: showCracks ? 'hidden' : 'visible' }}>
-                {buttonLabel}
-              </span>
+              <span className="push-btn-label">{buttonLabel}</span>
             </button>
           ) : (
             <button
@@ -1766,33 +1544,8 @@ export default function Home() {
                 textTransform: 'uppercase',
               }}
             >
-              {/* Invisible (not removed — a real button still needs real text
-                  for accessibility/click semantics) whenever the crack overlay
-                  is showing. positioned elements always paint above
-                  non-positioned in-flow content in the same stacking context
-                  regardless of DOM order, so crack-overlay (position:absolute)
-                  was rendering on top of this text even though it comes first
-                  in the markup — at high severity the cracks could visually
-                  cross right over the label. The visible label lives in a
-                  separate topmost element below instead. */}
-              <span style={{ visibility: showCracks ? 'hidden' : 'visible' }}>{buttonLabel}</span>
+              {buttonLabel}
             </button>
-          )}
-          {showCracks && (
-            <>
-              <svg className="crack-overlay" viewBox="0 0 190 190">
-                {crackPaths.map((d, i) => (
-                  <path key={i} d={d} />
-                ))}
-              </svg>
-              {/* Sits above the crack overlay (later in the DOM, same
-                  positioned-stacking rules that put the cracks above the
-                  button put this above them) with a soft dark halo behind
-                  it — keeps the label readable no matter how dense the
-                  crack pattern gets. pointer-events:none so it's purely
-                  visual, doesn't block clicks meant for the button under it. */}
-              <div className="push-btn-label">{buttonLabel}</div>
-            </>
           )}
           <div className="particle-field">
             {rings.map((r) => (

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient.js';
-import { pacificDateString, msUntilNextPacificWeekStart } from '../lib/pacificDate.js';
+import { pacificDateString, msUntilNextPacificWeekStart, formatCountdown } from '../lib/pacificDate.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
 import { formatCents } from '../lib/money.js';
@@ -31,17 +31,6 @@ const PAGE_SIZE = 50;
 // that (once a real week has actually completed and the cron has run),
 // real champions start showing up there too.
 const WEEKLY_LEADERBOARD_START_DATE = '2026-08-03';
-
-// Same shape as MoneyMode.jsx's identical helper (next-run/next-reset
-// countdowns) — small enough that a shared lib extraction isn't worth it
-// for two call sites.
-function formatCountdown(ms) {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const h = String(Math.floor(total / 3600)).padStart(2, '0');
-  const m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
-  const s = String(total % 60).padStart(2, '0');
-  return `${h}:${m}:${s}`;
-}
 
 // Last week's top 3 by money_weekly_cents (see api/weekly-money-reset.js,
 // which snapshots this into money_weekly_resets.top3 right before each

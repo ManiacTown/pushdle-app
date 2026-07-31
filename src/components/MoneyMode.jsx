@@ -4,7 +4,7 @@ import { useAuth } from '../lib/AuthContext.jsx';
 import { useChrome } from '../lib/ChromeContext.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { useParticles } from '../lib/useParticles.js';
-import { pacificDateString, msUntilNextPacificMidnight } from '../lib/pacificDate.js';
+import { pacificDateString, msUntilNextPacificMidnight, formatCountdown } from '../lib/pacificDate.js';
 import { MONEY_SUCCESS_CHANCE, MONEY_BONUS_EVERY, formatCents } from '../lib/money.js';
 import {
   playPush,
@@ -40,13 +40,6 @@ import { getMoneyQuote, getMoneyBustQuote, getMoneyBankQuote, getMoneyInsuranceQ
 // exact .bust-busted/.bust-rarity/.bust-reveal-row CSS — just "Busted!"/
 // "Banked!" in place of always "Busted!", and "$X earned" in place of
 // "TOP X%".
-function formatCountdown(ms) {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const h = String(Math.floor(total / 3600)).padStart(2, '0');
-  const m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
-  const s = String(total % 60).padStart(2, '0');
-  return `${h}:${m}:${s}`;
-}
 
 const DEFAULT_RUN = { status: 'loading', pushes: 0, earningsCents: 0 };
 

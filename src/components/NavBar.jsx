@@ -5,7 +5,7 @@ import { useChrome } from '../lib/ChromeContext.jsx';
 import { isMuted, toggleMuted, playNav } from '../lib/sound.js';
 
 export default function NavBar() {
-  const { user, logout, stats } = useAuth();
+  const { user, stats } = useAuth();
   const { collapsed } = useChrome();
   const navRef = useRef(null);
   // The actual page links live in their own inner flex container (see the
@@ -138,9 +138,6 @@ export default function NavBar() {
             Log in
           </NavLink>
         )}
-        {/* {user && (
-          <button className="nav-link" onClick={logout}>Log out</button>
-        )} */}
       </div>
       {/* Real sibling flex items (not absolutely positioned — that was tried
           first, but it doesn't reserve any layout space, so on narrower
