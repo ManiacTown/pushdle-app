@@ -24,6 +24,25 @@ Deno.serve(async (req) => {
   const today = pacificDateString();
 
   if (action === 'force_bust') {
+    // Counts toward real stats/badges on purpose — admin mode here is only
+    // ever the developer testing (see Home.jsx's bust()), not a way for a
+    // real player to cheese badges. The client's bust() needs the full
+    // stats shape back (same as a real push response) so it can update its
+    // badge-diffing state from the server instead of falling back to
+    // localStorage, which is no longer authoritative for logged-in users.
+    //
+    // Fetched up front (not after the bust, like the rest of this stats
+    // read used to be) because the new-run insert below needs pity_count
+    // in hand to set boosted correctly, same as resolve_push's own real-
+    // push path — otherwise an admin who'd just armed the boost via
+    // pity_add_charge and then Force Busts before any real push that day
+    // would get a fresh run silently defaulting to boosted: false.
+    const { data: profile } = await db
+      .from('profiles')
+      .select('best_streak, total_pushes, day_streak, busted_at_zero, busted_at_one, pity_count')
+      .eq('id', user.id)
+      .single();
+
     let { data: run } = await db
       .from('daily_runs')
       .select('*')
@@ -34,7 +53,7 @@ Deno.serve(async (req) => {
     if (!run) {
       const { data } = await db
         .from('daily_runs')
-        .insert({ user_id: user.id, date: today, streak: 0, status: 'playing' })
+        .insert({ user_id: user.id, date: today, streak: 0, status: 'playing', boosted: profile.pity_count >= 3 })
         .select()
         .single();
       run = data;
@@ -45,22 +64,23 @@ Deno.serve(async (req) => {
 
     await db.from('daily_runs').update({ status: 'dead' }).eq('id', run.id);
 
-    // Counts toward real stats/badges on purpose — admin mode here is only
-    // ever the developer testing (see Home.jsx's bust()), not a way for a
-    // real player to cheese badges. The client's bust() needs the full
-    // stats shape back (same as a real push response) so it can update its
-    // badge-diffing state from the server instead of falling back to
-    // localStorage, which is no longer authoritative for logged-in users.
-    const { data: profile } = await db
-      .from('profiles')
-      .select('best_streak, total_pushes, day_streak, busted_at_zero, busted_at_one')
-      .eq('id', user.id)
-      .single();
     const bustedAtZero = profile.busted_at_zero || run.streak === 0;
     const bustedAtOne = profile.busted_at_one || run.streak === 1;
-    if (bustedAtZero !== profile.busted_at_zero || bustedAtOne !== profile.busted_at_one) {
-      await db.from('profiles').update({ busted_at_zero: bustedAtZero, busted_at_one: bustedAtOne }).eq('id', user.id);
+
+    // Comeback Boost pity update (see resolve_push in schema.sql, the
+    // real player-facing path this otherwise entirely bypasses) — without
+    // this, testing the meter via Force Bust would never move it.
+    let pityCount = profile.pity_count;
+    if (run.boosted) {
+      pityCount = 0;
+    } else if (run.streak <= 5) {
+      pityCount = Math.min(pityCount + 1, 3);
     }
+
+    await db
+      .from('profiles')
+      .update({ busted_at_zero: bustedAtZero, busted_at_one: bustedAtOne, pity_count: pityCount })
+      .eq('id', user.id);
 
     return json({
       success: true,
@@ -70,6 +90,8 @@ Deno.serve(async (req) => {
       dayStreak: profile.day_streak,
       bustedAtZero,
       bustedAtOne,
+      pityCount,
+      boosted: run.boosted,
     });
   }
 
@@ -156,6 +178,17 @@ Deno.serve(async (req) => {
   if (action === 'reset_insurance') {
     await db.from('profiles').update({ insurance_used_this_week: false }).eq('id', user.id);
     return json({ success: true });
+  }
+
+  // Dev tool — adds one Comeback Boost pity charge (see profiles.pity_count/
+  // resolve_push in schema.sql), capped at 3 (armed). Real testing
+  // otherwise means 3 genuine early busts, one per day — this lets an
+  // admin arm it in 3 clicks instead of 3 real days.
+  if (action === 'pity_add_charge') {
+    const { data: profile } = await db.from('profiles').select('pity_count').eq('id', user.id).single();
+    const next = Math.min((profile?.pity_count ?? 0) + 1, 3);
+    await db.from('profiles').update({ pity_count: next }).eq('id', user.id);
+    return json({ success: true, pityCount: next });
   }
 
   // Dev tools below mirror what the client already does to its own

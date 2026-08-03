@@ -44,6 +44,15 @@ create table if not exists profiles (
   busted_at_zero    boolean not null default false,
   busted_at_one     boolean not null default false,
 
+  -- Comeback Boost pity counter (classic mode, registered accounts only —
+  -- see resolve_push below). Climbs by 1 on a bust at streak <= 3, capped
+  -- at 3; a bust at streak 4-6 is neutral; reaching 3 arms the NEXT run's
+  -- daily_runs.boosted flag, guaranteeing that run's first 10 presses.
+  -- Cleared to 0 either when a non-armed run clears streak >= 7 on its own
+  -- (the drought already broke), or when an armed run actually resolves
+  -- (spent either way, win or lose — never stacks).
+  pity_count        int not null default 0 check (pity_count >= 0),
+
   -- Set true the first time merge_local_stats successfully runs for this
   -- account, then never again — see merge_local_stats below. Closes off
   -- what was, until 2026-07-24, a real exploit: merge_local_stats trusted
@@ -88,6 +97,14 @@ create table if not exists profiles (
   -- Home.jsx's trigger effect), since money mode itself requires an
   -- account regardless.
   money_unlock_seen boolean not null default false,
+
+  -- Whether this account has seen PityIntroModal.jsx's explainer for the
+  -- Comeback Boost pity mechanic — same one-way semantics and no-
+  -- localStorage-side reasoning as money_unlock_seen above (Comeback Boost
+  -- is registered-accounts-only, see profiles.pity_count). Triggered the
+  -- first time the pity meter's fill-up animation actually plays for this
+  -- account (see Home.jsx's schedulePityFillReveal), not just on login.
+  pity_intro_seen boolean not null default false,
 
   -- Money-variant currency (see money_runs below). money_lifetime_cents
   -- only ever increases, on every cash-out (it's what the Lifetime
@@ -220,7 +237,7 @@ create policy "profiles are publicly readable"
 
 -- A user may only touch their own row, and (per the column-restricted
 -- grant below) only username/selected_emoji/onboarding_seen/
--- money_unlock_seen directly — the
+-- money_unlock_seen/pity_intro_seen directly — the
 -- actual stat columns are written exclusively by resolve_push/
 -- merge_local_stats (security definer, service_role-only), never by a
 -- direct client update.
@@ -233,13 +250,13 @@ create policy "users can update their own profile"
 -- does this for you automatically; raw SQL doesn't, so it has to be explicit.
 grant select on profiles to anon, authenticated;
 -- Column-restricted on purpose: the RLS policy above allows updating the
--- row, but this grant only allows touching these three columns — role/
+-- row, but this grant only allows touching these five columns — role/
 -- stat columns are unreachable from the client even though the row itself
 -- is "theirs", because column-level and row-level privileges are checked
--- independently. onboarding_seen/money_unlock_seen are safe to leave
--- directly client-writable (unlike the stat columns) since they're
--- one-way true flags with no scoring implications either way.
-grant update (username, selected_emoji, onboarding_seen, money_unlock_seen) on profiles to authenticated;
+-- independently. onboarding_seen/money_unlock_seen/pity_intro_seen are
+-- safe to leave directly client-writable (unlike the stat columns) since
+-- they're one-way true flags with no scoring implications either way.
+grant update (username, selected_emoji, onboarding_seen, money_unlock_seen, pity_intro_seen) on profiles to authenticated;
 -- service_role bypasses RLS policies but NOT base object grants — those are
 -- two separate permission layers, and creating a table via raw SQL doesn't
 -- grant either automatically the way the Table Editor UI does.
@@ -278,6 +295,11 @@ create table if not exists daily_runs (
   streak      int not null default 0,
   status      text not null default 'playing' check (status in ('playing', 'dead')),
   created_at  timestamptz not null default now(),
+  -- Set once when this run is created (see resolve_push), from whatever
+  -- profiles.pity_count was at that moment — not re-derived per push, so
+  -- an armed run keeps its guarantee for its whole length even past streak
+  -- 7 (see profiles.pity_count's own comment on the early-clear rule).
+  boosted     boolean not null default false,
 
   unique (user_id, date)
 );
@@ -317,16 +339,23 @@ grant all on daily_runs to service_role;
 -- localStorage tracking every player (including logged-in ones) used before.
 -- See merge_local_stats below for how an existing player's pre-existing
 -- local progress gets folded in rather than silently reset to zero.
+-- Return shape includes out_pity_count/out_boosted (Comeback Boost) —
+-- CREATE OR REPLACE can't change a function's column set, hence the DROP
+-- right before it (see resolve_money_push's own comment on this pattern).
+drop function if exists public.resolve_push(uuid, date);
+
 create or replace function public.resolve_push(p_user_id uuid, p_date date)
 returns table(
   out_streak int, out_status text, out_success boolean,
   out_best_streak int, out_total_pushes int, out_day_streak int,
-  out_busted_at_zero boolean, out_busted_at_one boolean
+  out_busted_at_zero boolean, out_busted_at_one boolean,
+  out_pity_count int, out_boosted boolean
 ) as $$
 declare
   v_id bigint;
   v_streak int;
   v_status text;
+  v_boosted boolean;
   v_chance numeric;
   v_success boolean;
   v_is_new boolean := false;
@@ -337,28 +366,31 @@ declare
   v_busted_zero boolean;
   v_busted_one boolean;
   v_first_run_guaranteed boolean;
+  v_pity_count int;
 begin
-  select id, streak, status into v_id, v_streak, v_status
+  -- Profile locked FIRST now (used to be after daily_runs) — a brand new
+  -- run's own `boosted` flag (set once, at insert, below) needs the
+  -- caller's CURRENT pity_count in hand before that insert happens, not
+  -- after. This is the only function that locks both tables together, so
+  -- reordering here doesn't create any cross-function deadlock risk.
+  select best_streak, total_pushes, day_streak, last_played_date, busted_at_zero, busted_at_one, pity_count
+    into v_best_streak, v_total_pushes, v_day_streak, v_last_played, v_busted_zero, v_busted_one, v_pity_count
+    from profiles where id = p_user_id for update;
+
+  select id, streak, status, boosted into v_id, v_streak, v_status, v_boosted
     from daily_runs
     where user_id = p_user_id and date = p_date
     for update;
 
   if not found then
-    insert into daily_runs (user_id, date, streak, status)
-    values (p_user_id, p_date, 0, 'playing')
-    returning id, streak, status into v_id, v_streak, v_status;
+    insert into daily_runs (user_id, date, streak, status, boosted)
+    values (p_user_id, p_date, 0, 'playing', v_pity_count >= 3)
+    returning id, streak, status, boosted into v_id, v_streak, v_status, v_boosted;
     v_is_new := true;
   end if;
 
-  -- Lock the profile row too, so the stat writes below are part of this
-  -- same atomic transaction (and serialize against a concurrent push the
-  -- same way the daily_runs lock above does).
-  select best_streak, total_pushes, day_streak, last_played_date, busted_at_zero, busted_at_one
-    into v_best_streak, v_total_pushes, v_day_streak, v_last_played, v_busted_zero, v_busted_one
-    from profiles where id = p_user_id for update;
-
   if v_status = 'dead' then
-    return query select v_streak, v_status, false, v_best_streak, v_total_pushes, v_day_streak, v_busted_zero, v_busted_one;
+    return query select v_streak, v_status, false, v_best_streak, v_total_pushes, v_day_streak, v_busted_zero, v_busted_one, v_pity_count, v_boosted;
     return;
   end if;
 
@@ -383,18 +415,50 @@ begin
 
   v_total_pushes := v_total_pushes + 1;
 
-  v_chance := case when v_first_run_guaranteed then 1.0 when v_streak = 0 then 0.999 else 0.9 end;
+  -- Comeback Boost (see profiles.pity_count/daily_runs.boosted): an armed
+  -- run gets the SAME guarantee-through-streak-10 treatment as a genuine
+  -- first-ever run, just gated on v_boosted instead — once streak reaches
+  -- 10 it transparently falls through to the normal 0.9 branch for the
+  -- rest of that same run, no separate boosted-percentage tier. Combined
+  -- into ONE branch with v_first_run_guaranteed (not a separate case ahead
+  -- of the plain v_streak = 0 branch) — an armed run's very first press is
+  -- streak 0 too, and CASE stops at the first match, so checking v_streak
+  -- = 0 -> 0.999 first would silently downgrade an armed run's opening
+  -- press from the guaranteed 1.0 it's supposed to get.
+  v_chance := case
+    when v_first_run_guaranteed or (v_boosted and v_streak < 10) then 1.0
+    when v_streak = 0 then 0.999
+    else 0.9
+  end;
   v_success := random() < v_chance;
 
   if v_success then
     update daily_runs set streak = v_streak + 1 where id = v_id
       returning streak, status into v_streak, v_status;
     v_best_streak := greatest(v_best_streak, v_streak);
+    -- Clear-to-0 early: a still-building (non-armed) run that reaches
+    -- streak 7 wipes the meter on its own, proof the drought already
+    -- broke — but only while not already armed; an armed run keeps
+    -- v_pity_count at 3 until it actually resolves (below), so a
+    -- still-guaranteed run at streak 7-9 doesn't have its pity progress
+    -- wiped before the run's even over.
+    if not v_boosted and v_streak >= 7 then
+      v_pity_count := 0;
+    end if;
   else
     update daily_runs set status = 'dead' where id = v_id
       returning streak, status into v_streak, v_status;
     if v_streak = 0 then v_busted_zero := true; end if;
     if v_streak = 1 then v_busted_one := true; end if;
+    -- Pity update on bust: an armed run that just busted has spent its
+    -- boost, win or lose — always resets, regardless of how far it got.
+    -- A non-armed run only adds a charge for a genuinely unlucky bust
+    -- (streak <= 5); a mid-range bust (6) is neutral, capped at 3.
+    if v_boosted then
+      v_pity_count := 0;
+    elsif v_streak <= 5 then
+      v_pity_count := least(v_pity_count + 1, 3);
+    end if;
   end if;
 
   update profiles set
@@ -403,10 +467,11 @@ begin
     day_streak = v_day_streak,
     last_played_date = v_last_played,
     busted_at_zero = v_busted_zero,
-    busted_at_one = v_busted_one
+    busted_at_one = v_busted_one,
+    pity_count = v_pity_count
   where id = p_user_id;
 
-  return query select v_streak, v_status, v_success, v_best_streak, v_total_pushes, v_day_streak, v_busted_zero, v_busted_one;
+  return query select v_streak, v_status, v_success, v_best_streak, v_total_pushes, v_day_streak, v_busted_zero, v_busted_one, v_pity_count, v_boosted;
 end;
 $$ language plpgsql security definer set search_path = public;
 
@@ -434,6 +499,10 @@ grant execute on function public.resolve_push to service_role;
 -- streak bigger than the total is a logical impossibility regardless of
 -- source). See AuthContext.jsx / sync-stats/index.ts, which layers the
 -- same bounds check on the way in as defense in depth.
+-- Return shape includes out_pity_count (Comeback Boost) — CREATE OR REPLACE
+-- can't change a function's column set, hence the DROP right before it.
+drop function if exists public.merge_local_stats(uuid, int, int, int, date, boolean, boolean, date, int, text);
+
 create or replace function public.merge_local_stats(
   p_user_id uuid,
   p_best_streak int,
@@ -448,15 +517,17 @@ create or replace function public.merge_local_stats(
 )
 returns table(
   out_best_streak int, out_total_pushes int, out_day_streak int,
-  out_last_played_date date, out_busted_at_zero boolean, out_busted_at_one boolean
+  out_last_played_date date, out_busted_at_zero boolean, out_busted_at_one boolean,
+  out_pity_count int
 ) as $$
 declare
   v_already_migrated boolean;
   v_total int;
   v_best int;
   v_day int;
+  v_pity_count int;
 begin
-  select stats_migrated into v_already_migrated from profiles where id = p_user_id for update;
+  select stats_migrated, pity_count into v_already_migrated, v_pity_count from profiles where id = p_user_id for update;
 
   -- Carries a guest's LOCAL run for TODAY into a real daily_runs row —
   -- either still in progress ('playing', so logging in mid-run doesn't
@@ -485,13 +556,13 @@ begin
   -- this), just not reflected in today's own leaderboard entry above 10.
   if p_today_date is not null and p_today_streak is not null and p_today_streak > 0
      and p_today_status in ('playing', 'dead') then
-    insert into daily_runs (user_id, date, streak, status)
-    values (p_user_id, p_today_date, least(p_today_streak, 200), p_today_status)
+    insert into daily_runs (user_id, date, streak, status, boosted)
+    values (p_user_id, p_today_date, least(p_today_streak, 200), p_today_status, v_pity_count >= 3)
     on conflict (user_id, date) do nothing;
   end if;
 
   if v_already_migrated then
-    return query select best_streak, total_pushes, day_streak, last_played_date, busted_at_zero, busted_at_one
+    return query select best_streak, total_pushes, day_streak, last_played_date, busted_at_zero, busted_at_one, pity_count
       from profiles where id = p_user_id;
     return;
   end if;
@@ -519,7 +590,7 @@ begin
     busted_at_one = profiles.busted_at_one or p_busted_one,
     stats_migrated = true
   where id = p_user_id
-  returning best_streak, total_pushes, day_streak, last_played_date, busted_at_zero, busted_at_one;
+  returning best_streak, total_pushes, day_streak, last_played_date, busted_at_zero, busted_at_one, pity_count;
 end;
 $$ language plpgsql security definer set search_path = public;
 

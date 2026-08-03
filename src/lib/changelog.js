@@ -15,7 +15,11 @@ export const CHANGELOG = [
       'Fixed the coin-hitting-the-vault sound not playing on some phones.',
       'The weekly Money Mode leaderboard podium now only ever shows a real, completed week.',
       'Swapped the insurance shield emoji for a proper icon everywhere it shows up.',
-      'New players get a smoother start on their very first classic run.',
+      'Added Comeback Boost — enough bad luck in a row builds up a boost in luck for your next classic run. Registered accounts only, with a new meter on the home screen to track it and a one-time explainer the first time it kicks in.',
+      'Reorganized the About page into tabs — Overview, Money Mode, and Other — with a full rundown of Money Mode and the newer features.',
+      'Fixed a bug where the very first push of a boosted run wasn’t getting its full guaranteed luck.',
+      'Fixed a couple of rare cases where the push button or the Money Mode switch button could get stuck disabled.',
+      'Fixed a bug that could occasionally keep the Comeback Boost meter from showing up after logging in.',
     ],
   },
   {

@@ -9,6 +9,23 @@ export const FIRST_PRESS_SUCCESS_CHANCE = 0.999;
 // standard "new player luck" softener, not an ongoing/hidden mechanic.
 export const FIRST_RUN_GUARANTEE_STREAK = 10;
 
+// Comeback Boost (classic mode, registered accounts only — see resolve_push
+// in schema.sql, the sole place the actual roll happens for logged-in
+// players). Bust at streak <= PITY_BUST_THRESHOLD three times in a row
+// (PITY_CHARGES_NEEDED) arms the NEXT run for the same guarantee-through-
+// streak-10 treatment as FIRST_RUN_GUARANTEE_STREAK above, from press 2
+// onward. Any non-armed run that clears streak >= PITY_CLEAR_THRESHOLD
+// wipes the meter early. Fires once, then resets on that run's resolution
+// regardless of outcome — never stacks. These constants are for DISPLAY
+// only (the odds bar / rarity reveal) — the roll itself is entirely
+// server-side. PITY_GUARANTEE_STREAK is kept as its own constant, separate
+// from FIRST_RUN_GUARANTEE_STREAK, even though both are currently 10 — same
+// value, different trigger, independently tunable rather than coupled.
+export const PITY_BUST_THRESHOLD = 5;
+export const PITY_CLEAR_THRESHOLD = 7;
+export const PITY_CHARGES_NEEDED = 3;
+export const PITY_GUARANTEE_STREAK = 10;
+
 export function rollPush(currentStreak) {
   const chance = currentStreak === 0 ? FIRST_PRESS_SUCCESS_CHANCE : SUCCESS_CHANCE;
   return Math.random() < chance;
@@ -20,8 +37,12 @@ export function formatRarity(pct) {
   return Math.round(pct) + '%';
 }
 
-export function rarityForStreak(streak) {
-  return Math.pow(0.9, streak) * 100;
+// `guaranteedThrough` treats the first N presses as free (0.9^0 = 1, i.e.
+// certain) — used by Comeback Boost's bust-time reveal to correctly score
+// only the streak BEYOND its guarantee window against real 90% odds.
+// Every existing caller keeps its exact old behavior via the default.
+export function rarityForStreak(streak, guaranteedThrough = 0) {
+  return Math.pow(0.9, Math.max(0, streak - guaranteedThrough)) * 100;
 }
 
 // Badges are always derived from stats (bestStreak + lib/storage's

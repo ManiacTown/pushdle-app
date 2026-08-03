@@ -13,6 +13,8 @@ import {
   zeroStatsForAllBadges,
   camelToSnakeFields,
   FIRST_RUN_GUARANTEE_STREAK,
+  PITY_GUARANTEE_STREAK,
+  PITY_CHARGES_NEEDED,
 } from '../lib/game.js';
 import { getQuoteForStreak, getBustQuoteForStreak, getPokeQuip } from '../lib/quotes.js';
 import { MONEY_SUCCESS_CHANCE } from '../lib/money.js';
@@ -27,6 +29,7 @@ import { hasSeenOnboardingLocally } from '../lib/onboarding.js';
 import { hasSeenMoneyUnlockLocally, markMoneyUnlockSeenLocally } from '../lib/moneyUnlock.js';
 import OnboardingModal from '../components/OnboardingModal.jsx';
 import MoneyModeUnlockModal from '../components/MoneyModeUnlockModal.jsx';
+import PityIntroModal from '../components/PityIntroModal.jsx';
 import MoneyMode, { MONEY_BADGE_REVEAL_DELAY_MS, MONEY_PANEL_GAP } from '../components/MoneyMode.jsx';
 import MoneyShop from '../components/MoneyShop.jsx';
 import BadgeToastStack from '../components/BadgeToast.jsx';
@@ -36,6 +39,22 @@ const DEFAULT_STATS = { totalPushes: 0, dayStreak: 0, lastPlayedDate: null, bust
 // effect below) doesn't start ramping until the streak passes this —
 // early pushes stay at the calm resting baseline the whole way through.
 const INTENSITY_START_STREAK = 15;
+// How long the Comeback Boost meter's fill-up animation runs for (see
+// bust() below) — must match .pity-meter-fill's own `transition: width`
+// duration in global.css, since this is also how long interaction stays
+// blocked for (pityFillBlocking) and the spotlight dim stays up, timed to
+// the CSS animation actually finishing rather than an arbitrary guess.
+const PITY_FILL_ANIM_MS = 3200;
+// How long after a bust the fill-reveal waits before starting, for a
+// streak > 0 bust specifically — matches runBustSequence's own final
+// setBustRevealing(false) mark (6850ms), i.e. the exact moment the rest of
+// the chrome finishes un-collapsing, so the meter's own reveal lines up
+// with "the panels have reset" rather than fighting the reveal for
+// attention mid-choreography. A streak-0 bust never collapses chrome in
+// the first place (see runBustSequence), so it uses a short fixed delay
+// instead — just enough to clear the initial bust flash/thud.
+const PITY_FILL_REVEAL_DELAY_STREAK_0_MS = 400;
+const PITY_FILL_REVEAL_DELAY_MS = 6850;
 
 export default function Home() {
   const [state, setState] = useState({ streak: 0, status: 'playing', newBestToday: false });
@@ -67,6 +86,15 @@ export default function Home() {
   // preview dismissal must NOT call markMoneyUnlockSeen, or previewing it
   // would consume a real player's actual one-time unlock moment.
   const [moneyUnlockPreview, setMoneyUnlockPreview] = useState(false);
+  // Explainer modal (see PityIntroModal.jsx) shown once per account, the
+  // first time the Comeback Boost meter's fill animation actually plays —
+  // see schedulePityFillReveal for the real trigger, gated by
+  // profiles.pity_intro_seen.
+  const [showPityIntroModal, setShowPityIntroModal] = useState(false);
+  // Same preview-flag reasoning as moneyUnlockPreview above — an admin
+  // dev-tools summon must NOT call markPityIntroSeen, or previewing it
+  // would consume a real player's actual one-time explainer moment.
+  const [pityIntroPreview, setPityIntroPreview] = useState(false);
   // Money-variant mode switch — open to everyone (see hasPlayedClassic
   // below for the one real requirement). Not persisted across reloads —
   // always starts back on classic.
@@ -147,6 +175,19 @@ export default function Home() {
   const [buttonHover, setButtonHover] = useState(false);
   const [stats, setStats] = useState(DEFAULT_STATS);
   const [earnedAtRunStart, setEarnedAtRunStart] = useState(new Set());
+  // Comeback Boost pity meter's own displayed value — deliberately NOT
+  // read straight off authStats.pityCount. A bust that adds a charge
+  // updates authStats immediately (see bust/recordBustAndCheckBadges), but
+  // the METER shouldn't visibly jump until the bust reveal has fully
+  // settled — see the fill-reveal scheduling in bust() below, which is
+  // the only place this changes for an "add" outcome; every other outcome
+  // (clear/consume/no-op) just syncs it immediately since the meter isn't
+  // even visible mid-run/mid-reveal to notice.
+  const [displayedPityCount, setDisplayedPityCount] = useState(0);
+  // True for exactly the duration of the meter's fill-up animation after a
+  // qualifying bust (see PITY_FILL_ANIM_MS) — blocks interaction so the
+  // player just watches it happen instead of already mashing Push again.
+  const [pityFillBlocking, setPityFillBlocking] = useState(false);
   const [newBadges, setNewBadges] = useState([]);
   const [showBadges, setShowBadges] = useState(false);
   // True for exactly the duration of the toast's exit animation (see
@@ -238,6 +279,8 @@ export default function Home() {
     moneyUnlockSeen,
     markMoneyUnlockSeen,
     onboardingSeen,
+    pityIntroSeen,
+    markPityIntroSeen,
   } = useAuth();
 
   // Money mode's progression gate, computed once here rather than
@@ -275,7 +318,7 @@ export default function Home() {
     if (user) {
       let { data } = await supabase
         .from('daily_runs')
-        .select('streak, status')
+        .select('streak, status, boosted')
         .eq('user_id', user.id)
         .eq('date', today)
         .maybeSingle();
@@ -313,7 +356,7 @@ export default function Home() {
             .catch(() => {}); // best-effort — falls through to a fresh run below either way
           ({ data } = await supabase
             .from('daily_runs')
-            .select('streak, status')
+            .select('streak, status, boosted')
             .eq('user_id', user.id)
             .eq('date', today)
             .maybeSingle());
@@ -321,8 +364,8 @@ export default function Home() {
       }
 
       s = data
-        ? { date: today, streak: data.streak, status: data.status, newBestToday: false }
-        : { date: today, streak: 0, status: 'playing', newBestToday: false };
+        ? { date: today, streak: data.streak, status: data.status, newBestToday: false, boosted: data.boosted }
+        : { date: today, streak: 0, status: 'playing', newBestToday: false, boosted: false };
     } else {
       s = await storage.getTodayState();
     }
@@ -384,16 +427,36 @@ export default function Home() {
     moneyUnlockShownRef.current = false;
   }, [user]);
 
+  // Same reset reasoning as moneyUnlockShownRef above, for
+  // pityIntroShownRef (declared next to schedulePityFillReveal, the effect
+  // that actually reads it).
+  useEffect(() => {
+    pityIntroShownRef.current = false;
+  }, [user]);
+
   useEffect(() => {
     if (user === undefined) return;
     if (statsInitialized.current) return;
 
     async function loadStats() {
       if (user) {
-        // authStats starts null right after login while AuthContext's
-        // merge is still in flight — wait for it rather than flashing
-        // zeroed stats (which would also poison earnedAtRunStart).
-        if (!authStats) return null;
+        // authStats gets built up from TWO independent, unordered async
+        // calls in AuthContext.jsx — refreshMoneyStats' money-only update
+        // and sync-stats' classic-stats response (bestStreak/pityCount/
+        // etc.) — with no fixed resolution order. Checking just "is
+        // authStats truthy yet" locks in whichever one happens to land
+        // first: if refreshMoneyStats wins the race, authStats becomes
+        // non-null with bestStreak/pityCount still undefined, and since
+        // this effect only ever runs its initialization ONCE
+        // (statsInitialized), that stuck-undefined pityCount silently
+        // never gets corrected even once sync-stats' real response lands a
+        // moment later — confirmed live: the pity meter stayed hidden
+        // after a real login despite pity_count being nonzero server-side.
+        // moneyLifetimeCents is never present on sync-stats' own response,
+        // so checking for BOTH markers is what actually guarantees every
+        // field either call could contribute (money AND classic/pity
+        // alike) has landed before this snapshot gets taken.
+        if (authStats?.bestStreak === undefined || authStats?.moneyLifetimeCents === undefined) return null;
         return { best: authStats.bestStreak, s: authStats };
       }
       const [best, s] = await Promise.all([storage.getBestStreak(), storage.getStats()]);
@@ -406,6 +469,7 @@ export default function Home() {
       const { best, s } = result;
       setBestStreakState(best);
       setStats(s);
+      setDisplayedPityCount(s.pityCount ?? 0);
       // Snapshot of what's already earned before this run's pushes count,
       // so a bust/cash-out can later diff against it to find what's newly
       // earned. Explicit field picks, not a wholesale ...s spread — s is
@@ -742,6 +806,12 @@ export default function Home() {
     pokeCountRef.current = 0;
     lastPokeAtRef.current = 0;
     clearTimeout(pokeQuipTimerRef.current);
+    // If a pity fill-reveal's own inner unblock timer was cancelled by the
+    // clearTimers() call that always precedes this (see runBustSequence/
+    // adminResetDay*), nothing else would ever flip this back — the Push
+    // button (and the money-mode switch button) would otherwise stay
+    // disabled for the rest of this Home mount.
+    setPityFillBlocking(false);
   }
 
   async function handleShare() {
@@ -817,6 +887,10 @@ export default function Home() {
 
   function push() {
     if (rolling) return;
+    // Comeback Boost's fill-reveal (see schedulePityFillReveal) is a
+    // deliberately watch-only moment — blocks both a real push and poking
+    // the busted button until the meter's done animating.
+    if (pityFillBlocking) return;
     if (state.status === 'dead') {
       pokeBustedButton();
       return;
@@ -890,6 +964,8 @@ export default function Home() {
         dayStreak: data.dayStreak,
         bustedAtZero: data.bustedAtZero,
         bustedAtOne: data.bustedAtOne,
+        pityCount: data.pityCount,
+        boosted: data.boosted,
       };
 
       if (data.success) {
@@ -919,12 +995,17 @@ export default function Home() {
       setBestStreakState(serverStats.bestStreak);
       setStats((s) => ({ ...s, ...serverStats }));
       setAuthStats((s) => ({ ...s, ...serverStats }));
+      // A success can only ever clear the pity meter early (streak >= 7 on
+      // a non-armed run — see resolve_push), never add to it — no reveal
+      // moment to stage for a clear, the meter just isn't visible mid-run
+      // anyway, so this can sync immediately.
+      if (typeof serverStats.pityCount === 'number') setDisplayedPityCount(serverStats.pityCount);
     } else if (newStreak > bestStreak) {
       newBestToday = true;
       setBestStreakState(newStreak);
       storage.setBestStreak(newStreak);
     }
-    persist({ ...state, streak: newStreak, status: 'playing', newBestToday });
+    persist({ ...state, streak: newStreak, status: 'playing', newBestToday, boosted: serverStats ? serverStats.boosted : state.boosted });
   }
 
   // Shared by a real bust and the admin Force Bust dev tool — admin mode is
@@ -940,8 +1021,72 @@ export default function Home() {
   // wiped out by triggerBust's clearTimers() a moment later, and the badge
   // toast would never fire. triggerBust has to go first.
   function bust(streak, serverStats) {
-    triggerBust(streak);
+    triggerBust(streak, serverStats);
     recordBustAndCheckBadges(streak, serverStats);
+    schedulePityFillReveal(streak, serverStats);
+  }
+
+  // Comeback Boost: only a genuine "add" (this bust was unlucky enough to
+  // build the meter — see resolve_push's pity logic) gets the special
+  // fill-up moment; a reset/consume/no-op just syncs displayedPityCount
+  // immediately with nothing to watch (the meter isn't visible mid-run or
+  // mid-reveal anyway). Deferred until the panels have fully reset —
+  // PITY_FILL_REVEAL_DELAY_MS lines up with runBustSequence's own
+  // setBustRevealing(false) mark — rather than updating the moment the
+  // bust itself resolves, so the player actually SEES the meter climb
+  // instead of just finding it already changed next time they look.
+  // Gates PityIntroModal to fire at most once per session — mirrors
+  // moneyUnlockShownRef exactly, including its [user] reset effect above.
+  const pityIntroShownRef = useRef(false);
+
+  function schedulePityFillReveal(streak, serverStats) {
+    const newPity = serverStats?.pityCount;
+    if (typeof newPity !== 'number') return;
+    if (newPity <= displayedPityCount) {
+      setDisplayedPityCount(newPity);
+      return;
+    }
+    const fillFrom = displayedPityCount;
+    const delay = streak > 0 ? PITY_FILL_REVEAL_DELAY_MS : PITY_FILL_REVEAL_DELAY_STREAK_0_MS;
+    timers.current.push(
+      setTimeout(() => {
+        // Re-checked against the LIVE uiMode (same uiModeRef pattern
+        // revealBadgeToast already uses), not just the mode this bust
+        // happened in — the pity meter/spotlight JSX only exists in the
+        // classic branch, so if the player switched to Money Mode during
+        // this delay (streak-0 busts have a real, if short, window for
+        // that — classic chrome never collapses on a streak-0 bust),
+        // firing the full blocking ceremony here would disable "Back to
+        // classic" for PITY_FILL_ANIM_MS with no visible cause. Apply the
+        // real value directly instead, skip the show.
+        if (uiModeRef.current !== 'classic') {
+          setDisplayedPityCount(newPity);
+          return;
+        }
+        setDisplayedPityCount(fillFrom); // ensure the bar starts from its real pre-bust value
+        setPityFillBlocking(true);
+        // Next frame, not this one — the width transition (see
+        // .pity-meter-fill in global.css) only animates a change from an
+        // already-painted starting value, not the same-frame initial one.
+        requestAnimationFrame(() => setDisplayedPityCount(newPity));
+        timers.current.push(
+          setTimeout(() => {
+            setPityFillBlocking(false);
+            // First-ever activation — explain the mechanic right after the
+            // player's actually SEEN it happen, not before (see
+            // PityIntroModal.jsx). pityIntroSeen === false (strict, not
+            // just falsy) so a still-loading null never triggers this on a
+            // technicality — worst case it just doesn't show this one
+            // time, same "harmless to occasionally skip, not to spam"
+            // posture used elsewhere for these one-time modals.
+            if (pityIntroSeen === false && !pityIntroShownRef.current) {
+              pityIntroShownRef.current = true;
+              setShowPityIntroModal(true);
+            }
+          }, PITY_FILL_ANIM_MS)
+        );
+      }, delay)
+    );
   }
 
   // Shared by recordBustAndCheckBadges (classic) and checkMoneyBadges
@@ -1082,10 +1227,16 @@ export default function Home() {
     revealBadgeToast(newly, MONEY_BADGE_REVEAL_DELAY_MS, 'money');
   }
 
-  function triggerBust(streak) {
+  function triggerBust(streak, serverStats) {
     setFlashKey((k) => k + 1);
     playBust();
-    persist({ ...state, streak, status: 'dead' });
+    // boosted explicitly from serverStats (not just the ...state spread)
+    // to cover the rare case where a run's very first press busts — the
+    // server decides+persists daily_runs.boosted at that same moment
+    // (see resolve_push), before state.boosted (still whatever
+    // loadRunState set, i.e. false) has ever had a successful push to
+    // update it from.
+    persist({ ...state, streak, status: 'dead', boosted: serverStats ? serverStats.boosted : state.boosted });
     // After runBustSequence, not before — it calls resetBustVisuals()
     // internally (clearTimers + a fresh start for this run's reveal
     // sequence), which also clears bustQuote/shaking back to their resting
@@ -1179,6 +1330,8 @@ export default function Home() {
       dayStreak: data.dayStreak,
       bustedAtZero: data.bustedAtZero,
       bustedAtOne: data.bustedAtOne,
+      pityCount: data.pityCount,
+      boosted: data.boosted,
     });
   }
 
@@ -1271,6 +1424,21 @@ export default function Home() {
     refreshMoneyStats();
   }
 
+  // Dev tool — adds one Comeback Boost pity charge (capped at 3, armed).
+  // Real testing otherwise means 3 genuine early busts, one per day.
+  async function adminAddPityCharge() {
+    const { data, error } = await supabase.functions.invoke('admin', { body: { action: 'pity_add_charge' } });
+    if (error || !data?.success) {
+      console.error('add pity charge failed:', error ?? data);
+      return;
+    }
+    setAuthStats((s) => ({ ...s, pityCount: data.pityCount }));
+    // authStats alone doesn't drive the visible meter — displayedPityCount
+    // does (see schedulePityFillReveal), so without this the bar wouldn't
+    // actually move until the next real push/login re-synced it.
+    setDisplayedPityCount(data.pityCount);
+  }
+
   // Shares the classic "Force bust" button (see the onClick branch below)
   // rather than a separate button. Deliberately NOT a remount (unlike
   // adminResetMoneyDay above) — a remount would load MoneyMode fresh from
@@ -1354,8 +1522,22 @@ export default function Home() {
     }
   }
 
-  const pct = state.status === 'dead' && state.streak > 0 ? rarityForStreak(state.streak) : null;
+  // Comeback Boost's guaranteed presses count as free (100%) toward this
+  // run's real odds of getting this far — see rarityForStreak's own
+  // guaranteedThrough param — so the "TOP X%" reveal only scores whatever
+  // streak this run reached BEYOND the guarantee window against genuine
+  // 90% odds, same honesty requirement as the boost's visible odds bar.
+  const pct =
+    state.status === 'dead' && state.streak > 0
+      ? rarityForStreak(state.streak, state.boosted ? PITY_GUARANTEE_STREAK : 0)
+      : null;
   const buttonLabel = state.status === 'dead' ? 'Busted' : rolling ? '…' : 'Push';
+  // Home-screen only — hidden the instant a run goes mid-streak or while
+  // the bust reveal is still choreographing itself, same condition that
+  // already drives chrome's own collapse (classicCollapsed, declared
+  // above) — reappears the moment the board's actually back at rest.
+  // (Registered-only gate lives at the JSX mount point below, not here.)
+  const pityMeterVisible = (displayedPityCount > 0 || pityFillBlocking) && !classicCollapsed;
   // Shop-unlocked push-button skin (see MoneyShop.jsx/purchase_diamond_button)
   // — classic mode only, guests included (authStats is null while logged
   // out, so this is just false for them, same as any other money-mode
@@ -1397,6 +1579,12 @@ export default function Home() {
           className={'mono odds-text' + (uiMode === 'money' ? ' odds-text--money' : ' odds-text--classic')}
           style={{ fontSize: 11, letterSpacing: '0.18em', textTransform: 'uppercase', marginBottom: 8 }}
         >
+          {/* Comeback Boost's real guaranteed-through-streak-10 window
+              (state.boosted) deliberately does NOT change this text or add
+              any badge — kept at the same plain 90%/10% for consistency,
+              same silent treatment as the first-run guarantee (see
+              FIRST_RUN_GUARANTEE_STREAK in game.js). The pity meter below
+              is the only visible sign of the mechanic now. */}
           {uiMode === 'money'
             ? `${Math.round(MONEY_SUCCESS_CHANCE * 100)}% you live · ${100 - Math.round(MONEY_SUCCESS_CHANCE * 100)}% you don't`
             : "90% you live · 10% you don't"}
@@ -1460,7 +1648,7 @@ export default function Home() {
         <button
           className="btn-ghost btn-money-mode"
           onClick={() => startModeSwitch(uiMode === 'classic' ? 'money' : 'classic')}
-          disabled={!!modeTransition}
+          disabled={!!modeTransition || pityFillBlocking}
           title={uiMode === 'classic' ? 'Try money mode' : 'Back to classic'}
           style={{ width: 140, textAlign: 'center' }}
         >
@@ -1553,6 +1741,46 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Comeback Boost pity meter — registered accounts only (see
+            profiles.pity_count in schema.sql; guests have no server-tracked
+            pity state at all), always mounted once logged in (not
+            conditionally on pityMeterVisible) so the collapse/reveal below
+            gets a real transition instead of an instant pop — same
+            always-mounted, class-toggled .header-panel/.header-panel--
+            collapsed technique the money-mode switch row already uses,
+            reused as-is. Home-screen only (pityMeterVisible, declared
+            above) — hidden mid-run and through the whole bust reveal,
+            reappearing once the board's actually back at rest, which is
+            also the exact moment a qualifying bust's fill-up animation
+            (see schedulePityFillReveal) is timed to start.
+
+            While pityFillBlocking, .pity-meter-spotlight's own huge
+            box-shadow (see global.css) dims the ENTIRE rest of the page —
+            not a separate overlay element, which would need its own
+            z-index fight against every transformed ancestor this row
+            already has (modeSlotStyle) — a box-shadow is part of this
+            element's own paint, so position:relative + one z-index here is
+            enough to guarantee it (and everything the shadow covers) sits
+            above the rest of the page regardless of ancestor transforms. */}
+        {user && (
+          <div
+            className={'header-panel' + (!pityMeterVisible ? ' header-panel--collapsed' : '')}
+            style={{ marginBottom: 16, ...modeSlotStyle(modeTransition, 0) }}
+          >
+            <div className={'pity-meter' + (pityFillBlocking ? ' pity-meter-spotlight' : '')}>
+              <div className="pity-meter-track">
+                <div
+                  className={'pity-meter-fill' + (displayedPityCount >= PITY_CHARGES_NEEDED ? ' pity-meter-fill--armed' : '')}
+                  style={{ width: `${Math.min(100, (displayedPityCount / PITY_CHARGES_NEEDED) * 100)}%` }}
+                />
+              </div>
+              <div className="mono pity-meter-label">
+                {displayedPityCount >= PITY_CHARGES_NEEDED ? 'Comeback Boost armed for this run' : 'Comeback Boost building'}
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className={poking ? 'push-wrap--poke' : ''} style={{ position: 'relative', ...modeSlotStyle(modeTransition, 1) }}>
           {diamondButtonActive ? (
             // Shop-unlocked skin — same handlers/disabled logic as the
@@ -1566,7 +1794,7 @@ export default function Home() {
               onClick={push}
               onMouseEnter={() => setButtonHover(true)}
               onMouseLeave={() => setButtonHover(false)}
-              disabled={rolling}
+              disabled={rolling || pityFillBlocking}
               className={
                 'push-btn-diamond' +
                 (state.status === 'dead' ? ' push-btn-diamond--dead' : ' push-btn-diamond--playing') +
@@ -1586,7 +1814,7 @@ export default function Home() {
               // Not disabled once busted anymore — see pokeBustedButton, push
               // now routes dead-state clicks there instead of the real push
               // logic, rather than the button just doing nothing.
-              disabled={rolling}
+              disabled={rolling || pityFillBlocking}
               className={
                 'push-btn' +
                 (state.status === 'dead' ? ' push-btn--dead' : ' push-btn--playing') +
@@ -1703,6 +1931,20 @@ export default function Home() {
             />
           )}
 
+          {showPityIntroModal && (
+            <PityIntroModal
+              onDismiss={() => {
+                setShowPityIntroModal(false);
+                // A preview dismissal never marks it seen — see
+                // pityIntroPreview's own declaration comment. Registered
+                // accounts only (see PityIntroModal.jsx), so no guest-local
+                // fallback branch needed the way MoneyModeUnlockModal has.
+                if (pityIntroPreview) setPityIntroPreview(false);
+                else markPityIntroSeen();
+              }}
+            />
+          )}
+
           {/* Gated strictly by role now the site is actually public — this
               used to also show for guests (no account = no role to check),
               since that was the only way to dev-test the local/guest game
@@ -1801,6 +2043,7 @@ export default function Home() {
               <button className="btn-ghost" onClick={adminResetInsurance}>
                 <img src="/shield.png" alt="" width={12} height={12} style={{ display: 'inline-block', verticalAlign: 'middle', marginRight: 4 }} /> Reset insurance timer
               </button>
+              <button className="btn-ghost" onClick={adminAddPityCharge}>🍀 Add pity charge</button>
               <button className="btn-ghost" onClick={resetBestStreak}>↺ Reset best streak</button>
               <button className="btn-ghost" onClick={adminResetBadges}>🏅 Reset all badges</button>
               <button className="btn-ghost" onClick={adminClaimAllBadges}>🏆 Claim all badges</button>
@@ -1813,6 +2056,15 @@ export default function Home() {
                 }}
               >
                 🎉 Preview money unlock
+              </button>
+              <button
+                className="btn-ghost"
+                onClick={() => {
+                  setPityIntroPreview(true);
+                  setShowPityIntroModal(true);
+                }}
+              >
+                🍀 Preview pity intro
               </button>
             </div>
           )}

@@ -24,6 +24,10 @@ export function AuthProvider({ children }) {
   // announcement — same null-while-unknown convention as onboardingSeen
   // above, but no localStorage side (see the modal's own comment on why).
   const [moneyUnlockSeen, setMoneyUnlockSeenState] = useState(null);
+  // Whether THIS account has seen PityIntroModal.jsx's Comeback Boost
+  // explainer — same null-while-unknown/no-localStorage-side reasoning as
+  // moneyUnlockSeen above (registered-accounts-only feature).
+  const [pityIntroSeen, setPityIntroSeenState] = useState(null);
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
@@ -64,6 +68,7 @@ export function AuthProvider({ children }) {
       setStats(null);
       setOnboardingSeenState(null);
       setMoneyUnlockSeenState(null);
+      setPityIntroSeenState(null);
       return;
     }
     supabase
@@ -157,14 +162,45 @@ export function AuthProvider({ children }) {
         }
       });
 
+    // Same defensive separate-query reasoning as onboarding_seen/
+    // money_unlock_seen above (a not-yet-migrated database missing this
+    // column can't take role/flair or the others down with it). No
+    // localStorage/guest carry-over needed at all here, unlike either of
+    // those — Comeback Boost is registered-accounts-only from the start
+    // (see profiles.pity_count), so there's no pre-login local dismissal
+    // that could ever exist to carry over.
+    supabase
+      .from('profiles')
+      .select('pity_intro_seen')
+      .eq('id', user.id)
+      .single()
+      .then(({ data, error }) => {
+        // Defaults to false (not yet seen) on error, same reasoning as
+        // money_unlock_seen's own fallback — showing it an extra time is
+        // harmless, silently never showing it at all isn't.
+        setPityIntroSeenState(error ? false : data?.pity_intro_seen ?? false);
+      });
+
     // Money-variant wallet/lifetime totals (see MoneyMode.jsx). Same
     // reasoning as the onboarding_seen query above:
     // kept separate from role/selected_emoji so a not-yet-migrated
     // database (missing these columns) can't take that query down too —
     // this one just silently no-ops, leaving the fields undefined, until
     // the migration's run. See refreshMoneyStats below — this is just its
-    // login-time call.
-    refreshMoneyStats();
+    // login-time call. Home.jsx's loadStats effect waits on
+    // moneyLifetimeCents specifically (alongside bestStreak) as its signal
+    // that BOTH login-time queries have landed before taking its one-time
+    // stats/earnedAtRunStart/pity-meter snapshot — refreshMoneyStats
+    // itself silently no-ops on error (returns null, touches no state),
+    // so a single transient failure here would otherwise leave that
+    // marker undefined forever, permanently blocking that snapshot for
+    // the rest of the session (nothing else re-calls this for a player
+    // who never opens Money Mode). Falling back to a safe 0 on failure is
+    // what keeps that from being a silent, permanent dead end — a later
+    // real visit to Money Mode still refreshes it properly regardless.
+    refreshMoneyStats().then((result) => {
+      if (!result) setStats((prev) => ({ ...prev, moneyLifetimeCents: prev?.moneyLifetimeCents ?? 0 }));
+    });
 
     // Merges any locally-tracked progress (from before stats were
     // server-authoritative, or from guest play on this device pre-login)
@@ -339,6 +375,16 @@ export function AuthProvider({ children }) {
     if (error) console.error('failed to sync money_unlock_seen:', error);
   }
 
+  // Called by Home.jsx when PityIntroModal.jsx is dismissed for real (not
+  // the admin dev-tools preview) — same optimistic-update shape as
+  // markMoneyUnlockSeen above.
+  async function markPityIntroSeen() {
+    if (!user) return;
+    setPityIntroSeenState(true);
+    const { error } = await supabase.from('profiles').update({ pity_intro_seen: true }).eq('id', user.id);
+    if (error) console.error('failed to sync pity_intro_seen:', error);
+  }
+
   return (
     <AuthContext.Provider
       value={{
@@ -362,6 +408,8 @@ export function AuthProvider({ children }) {
         markOnboardingSeen,
         moneyUnlockSeen,
         markMoneyUnlockSeen,
+        pityIntroSeen,
+        markPityIntroSeen,
         signUp,
         signIn,
         logout,

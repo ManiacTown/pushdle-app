@@ -2,8 +2,19 @@ import { SUCCESS_CHANCE } from '../lib/game.js';
 
 // Shared by About.jsx and OnboardingModal.jsx — a literal proportional bar
 // (not just "90%" as text) so the risk is felt at a glance before reading
-// a word. `caption`, if given, renders as a small line underneath.
-export default function OddsBar({ caption }) {
+// a word. `caption`, if given, renders as a small line underneath. Every
+// prop besides `caption` defaults to classic mode's own numbers/colors, so
+// every existing caller's behavior is unchanged — About.jsx's Money Mode
+// tab is the only caller that overrides them (green tint, MONEY_SUCCESS_
+// CHANCE, "you keep it" instead of "you live", matching how that mode's
+// own in-game odds text/palette differ from classic's).
+export default function OddsBar({
+  caption,
+  chance = SUCCESS_CHANCE,
+  liveLabel = 'you live',
+  liveColor = 'var(--neon-cyan)',
+  liveBg = 'rgba(34,229,255,0.18)',
+}) {
   return (
     <>
       <div
@@ -18,9 +29,9 @@ export default function OddsBar({ caption }) {
         <div
           className="mono"
           style={{
-            flex: SUCCESS_CHANCE,
-            background: 'rgba(34,229,255,0.18)',
-            color: 'var(--neon-cyan)',
+            flex: chance,
+            background: liveBg,
+            color: liveColor,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -28,12 +39,12 @@ export default function OddsBar({ caption }) {
             fontWeight: 700,
           }}
         >
-          {Math.round(SUCCESS_CHANCE * 100)}% you live
+          {Math.round(chance * 100)}% {liveLabel}
         </div>
         <div
           className="mono"
           style={{
-            flex: 1 - SUCCESS_CHANCE,
+            flex: 1 - chance,
             background: 'rgba(255,59,92,0.18)',
             color: '#ff3b5c',
             display: 'flex',
@@ -43,7 +54,7 @@ export default function OddsBar({ caption }) {
             fontWeight: 700,
           }}
         >
-          {Math.round((1 - SUCCESS_CHANCE) * 100)}%
+          {Math.round((1 - chance) * 100)}%
         </div>
       </div>
       {caption && (

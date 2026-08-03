@@ -105,5 +105,6 @@ Deno.serve(async (req) => {
     lastPlayedDate: data.out_last_played_date,
     bustedAtZero: data.out_busted_at_zero,
     bustedAtOne: data.out_busted_at_one,
+    pityCount: data.out_pity_count,
   });
 });

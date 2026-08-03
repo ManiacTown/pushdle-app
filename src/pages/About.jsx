@@ -1,20 +1,25 @@
+import { useState } from 'react';
 import { spotlightMove } from '../lib/spotlight.js';
 import OddsBar from '../components/OddsBar.jsx';
+import CosmeticTabs from '../components/CosmeticTabs.jsx';
 import {
   SUCCESS_CHANCE,
-  FIRST_PRESS_SUCCESS_CHANCE,
-  rarityForStreak,
-  formatRarity,
   RARITY_META,
   BADGE_CATEGORIES,
   BADGES,
+  PITY_BUST_THRESHOLD,
+  PITY_CHARGES_NEEDED,
 } from '../lib/game.js';
+import { MONEY_SUCCESS_CHANCE, MONEY_BONUS_EVERY, MONEY_BONUS_MIN_CENTS, MONEY_BONUS_MAX_CENTS, formatCents } from '../lib/money.js';
+import { AURA_COLORS, ROW_STYLE_COLORS, COSMETIC_LABELS, COSMETIC_PRICES, INSURANCE_PRICE_DIAMONDS } from '../lib/cosmetics.js';
 
-// A few representative milestones rather than every possible streak — just
-// enough to make "the odds get brutal fast" concrete without turning this
-// into a spreadsheet. Pulled from the real rarityForStreak formula, not
-// hand-typed, so this can never drift out of sync with actual gameplay.
-const EXAMPLE_STREAKS = [5, 10, 20, 30, 50, 100];
+const DIAMOND_BUTTON_COST = 10; // mirrors MoneyShop.jsx's own display-only mirror of purchase_diamond_button's price
+
+const ABOUT_TABS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'money', label: 'Money Mode' },
+  { id: 'other', label: 'Other' },
+];
 
 function SectionHeader({ icon, title }) {
   return (
@@ -24,25 +29,43 @@ function SectionHeader({ icon, title }) {
   );
 }
 
-export default function About() {
+// Small labeled swatch — reused for both the Name Color and Row Background
+// shop categories below, same "one shape, two color sets" reasoning
+// CosmeticCard in MoneyShop.jsx itself already follows.
+function ColorSwatch({ label, color, price }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div className="panel spotlight" onMouseMove={spotlightMove} style={{ textAlign: 'center' }}>
-        <h2 className="gradient-title" style={{ fontSize: 26, marginBottom: 8 }}>About Pushdle</h2>
-        <p className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 18 }}>
-          A daily push-your-luck game. Tap the button, keep your streak alive, don't get greedy.
-        </p>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 4,
+        background: '#06060a',
+        border: `1px solid ${color}40`,
+        borderRadius: 10,
+        padding: '10px 8px',
+      }}
+    >
+      <div style={{ width: 18, height: 18, borderRadius: '50%', background: color }} />
+      <span className="mono" style={{ fontSize: 10, color: 'var(--text)' }}>{label}</span>
+      <span className="mono" style={{ fontSize: 9, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 3 }}>
+        <img src="/diamond.png" alt="" width={9} height={9} style={{ display: 'block' }} />
+        {price}
+      </span>
+    </div>
+  );
+}
 
-        {/* Same OddsBar component the first-visit onboarding modal uses
-            (src/components/OnboardingModal.jsx) — a literal proportional
-            bar instead of just text, so the risk is felt at a glance
-            before reading a word. */}
-        <OddsBar caption="Every push after your first rolls these odds — survive one more, or bust and start over tomorrow." />
-      </div>
-
+function OverviewTab() {
+  return (
+    <>
       <div className="panel spotlight" onMouseMove={spotlightMove}>
         <SectionHeader icon="🎯" title="How to play" />
-        <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8 }}>
+        <OddsBar
+          caption="Every push after your first rolls these odds — survive one more, or bust and start over tomorrow."
+          chance={SUCCESS_CHANCE}
+        />
+        <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8, marginTop: 16 }}>
           <p style={{ marginBottom: 12 }}>
             Tap <strong style={{ color: 'var(--text)' }}>Push</strong>. Each press has a{' '}
             {Math.round(SUCCESS_CHANCE * 100)}% chance to keep your streak alive — until it
@@ -88,7 +111,7 @@ export default function About() {
             slack left to distribute). This reflows to a single column
             once there isn't enough width for two, rather than squeezing. */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 18 }}>
-          {BADGE_CATEGORIES.map((cat) => {
+          {BADGE_CATEGORIES.filter((cat) => !cat.id.startsWith('money')).map((cat) => {
             const count = BADGES.filter((b) => b.category === cat.id).length;
             return (
               <div
@@ -130,12 +153,254 @@ export default function About() {
           up next to your name for everyone else to see.
         </div>
       </div>
+    </>
+  );
+}
 
+function MoneyModeTab() {
+  return (
+    <>
       <div className="panel spotlight" onMouseMove={spotlightMove} style={{ textAlign: 'center' }}>
-        <p className="mono" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-          Stay tuned for more updates!
+        <h2 className="gradient-title" style={{ fontSize: 24, marginBottom: 6 }}>
+          💰 Money Mode
+        </h2>
+        <p className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 18 }}>
+          Same nerve as classic. Real stakes.
+        </p>
+        <OddsBar
+          chance={MONEY_SUCCESS_CHANCE}
+          liveLabel="you keep it"
+          liveColor="var(--neon-green)"
+          liveBg="rgba(57,255,143,0.18)"
+          caption="Every push rolls these odds — survive to keep pushing, or bust and lose whatever this run hasn't banked yet."
+        />
+      </div>
+
+      <div className="panel spotlight" onMouseMove={spotlightMove}>
+        <SectionHeader icon="💵" title="How it works" />
+        <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8 }}>
+          <p style={{ marginBottom: 12 }}>
+            Same push-your-luck pressure as classic — except every push is worth{' '}
+            <strong style={{ color: 'var(--text)' }}>$1</strong>, and you can{' '}
+            <strong style={{ color: 'var(--text)' }}>cash out any time</strong> to bank it for good.
+          </p>
+          <p>
+            Bust and you only lose what THIS run hasn't banked yet — every dollar you've already
+            cashed out stays yours no matter what. Requires an account; there's no guest path for
+            Money Mode.
+          </p>
+        </div>
+      </div>
+
+      <div className="panel spotlight" onMouseMove={spotlightMove}>
+        <SectionHeader icon="💎" title="Diamonds & the combo bar" />
+        <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8, marginBottom: 16 }}>
+          <p style={{ marginBottom: 12 }}>
+            Every {MONEY_BONUS_EVERY}th successful push fills the combo bar and pays out — either
+            a random <strong style={{ color: 'var(--text)' }}>{formatCents(MONEY_BONUS_MIN_CENTS)}–{formatCents(MONEY_BONUS_MAX_CENTS)}</strong>{' '}
+            cash bonus, or a rarer <strong style={{ color: 'var(--text)' }}>diamond</strong> instead.
+          </p>
+          <p>Diamonds are a separate currency from your dollar earnings — spend them in the shop below.</p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 18 }}>
+          <img src="/coin-transparent.png" alt="" width={36} height={36} style={{ display: 'block' }} />
+          <span className="mono" style={{ fontSize: 16, color: 'var(--text-dim)' }}>or</span>
+          <img src="/diamond.png" alt="" width={36} height={36} style={{ display: 'block' }} />
+        </div>
+      </div>
+
+      <div className="panel spotlight" onMouseMove={spotlightMove}>
+        <SectionHeader icon="🛍" title="The shop" />
+        <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8, marginBottom: 16 }}>
+          Spend diamonds on cosmetics — purely visual, nothing here changes your odds:
+        </div>
+        <div className="mono" style={{ fontSize: 11, color: 'var(--text)', marginBottom: 8, fontWeight: 700 }}>
+          Push Button Skin
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
+          <img src="/diamond-button.png" alt="" width={40} height={40} style={{ display: 'block' }} />
+          <span className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 4 }}>
+            Diamond Button — <img src="/diamond.png" alt="" width={10} height={10} style={{ display: 'block' }} /> {DIAMOND_BUTTON_COST}
+          </span>
+        </div>
+        <div className="mono" style={{ fontSize: 11, color: 'var(--text)', marginBottom: 8, fontWeight: 700 }}>
+          Name Color
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(70px, 1fr))', gap: 8, marginBottom: 18 }}>
+          {Object.entries(AURA_COLORS).map(([id, color]) => (
+            <ColorSwatch key={id} label={COSMETIC_LABELS[id]} color={color} price={COSMETIC_PRICES[id]} />
+          ))}
+        </div>
+        <div className="mono" style={{ fontSize: 11, color: 'var(--text)', marginBottom: 8, fontWeight: 700 }}>
+          Row Background
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(70px, 1fr))', gap: 8 }}>
+          {Object.entries(ROW_STYLE_COLORS).map(([id, color]) => (
+            <ColorSwatch key={id} label={COSMETIC_LABELS[id]} color={color} price={COSMETIC_PRICES[id]} />
+          ))}
+        </div>
+        <div className="mono onboarding-note" style={{ marginTop: 18 }}>
+          🛡️ The shop's Upgrades tab also has Weekly Bust Insurance — see the Other tab for what
+          that does.
+        </div>
+      </div>
+
+      <div className="panel spotlight" onMouseMove={spotlightMove}>
+        <SectionHeader icon="🏆" title="Weekly leaderboard" />
+        <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8, marginBottom: 14 }}>
+          Bank runs all week to climb it — top 3 win prizes. It tracks what you've banked{' '}
+          <strong style={{ color: 'var(--text)' }}>this week only</strong>, and resets fresh every
+          Monday.
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 14, fontSize: 26 }}>
+          <span>🥇</span>
+          <span>🥈</span>
+          <span>🥉</span>
+        </div>
+      </div>
+
+      <div className="panel spotlight" onMouseMove={spotlightMove}>
+        <SectionHeader icon="🏅" title="Money badges" />
+        <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8, marginBottom: 16 }}>
+          Money Mode has its own badge categories, tracked separately from classic's:
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
+          {BADGE_CATEGORIES.filter((cat) => cat.id.startsWith('money')).map((cat) => {
+            const count = BADGES.filter((b) => b.category === cat.id).length;
+            return (
+              <div
+                key={cat.id}
+                style={{
+                  background: '#06060a',
+                  border: '1px solid var(--line)',
+                  borderRadius: 10,
+                  padding: '10px 12px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: 10,
+                }}
+              >
+                <span className="mono" style={{ fontSize: 12, color: 'var(--text)' }}>{cat.label}</span>
+                <span className="mono" style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{count} badges</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function OtherTab() {
+  return (
+    <>
+      <div className="panel spotlight" onMouseMove={spotlightMove} style={{ textAlign: 'center' }}>
+        <h2 className="gradient-title" style={{ fontSize: 24, marginBottom: 6 }}>
+          🍀 Comeback Boost
+        </h2>
+        <p className="mono" style={{ fontSize: 12, color: 'var(--neon-green)', marginBottom: 4 }}>
+          A little help when luck isn't on your side.
         </p>
       </div>
+
+      <div className="panel spotlight" onMouseMove={spotlightMove}>
+        <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8, marginBottom: 18 }}>
+          <p style={{ marginBottom: 10 }}>
+            Bust at streak <strong style={{ color: 'var(--text)' }}>{PITY_BUST_THRESHOLD} or under</strong>,{' '}
+            {PITY_CHARGES_NEEDED} times in a row, and a meter builds up a{' '}
+            <strong style={{ color: 'var(--text)' }}>Comeback Boost</strong> for your next classic
+            run.
+          </p>
+          <p>
+            Once it's full, that next run gets a{' '}
+            <strong style={{ color: 'var(--text)' }}>boost in luck</strong> to help you get back on
+            track — just play it out. It only fires once, then resets on its own. Classic mode,
+            registered accounts only.
+          </p>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <div className="pity-meter">
+            <div className="pity-meter-track">
+              <div className="pity-meter-fill pity-meter-fill--armed" style={{ width: '100%' }} />
+            </div>
+            <div className="mono pity-meter-label">Comeback Boost armed for this run</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel spotlight" onMouseMove={spotlightMove} style={{ textAlign: 'center' }}>
+        <h2 className="gradient-title" style={{ fontSize: 24, marginBottom: 6 }}>
+          🛡️ Weekly Bust Insurance
+        </h2>
+        <p className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 4 }}>
+          A safety net for one bad Money Mode run a week.
+        </p>
+      </div>
+
+      <div className="panel spotlight" onMouseMove={spotlightMove}>
+        <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8, marginBottom: 18 }}>
+          <p style={{ marginBottom: 10 }}>
+            Once a week, a Money Mode bust banks{' '}
+            <strong style={{ color: 'var(--text)' }}>half this run's earnings</strong> instead of
+            losing all of it. Buy it in the shop's Upgrades tab for{' '}
+            <img src="/diamond.png" alt="" width={11} height={11} style={{ display: 'inline-block', verticalAlign: 'middle' }} />{' '}
+            <strong style={{ color: 'var(--text)' }}>{INSURANCE_PRICE_DIAMONDS}</strong>, and it
+            re-arms automatically once used.
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14 }}>
+          <img src="/shield.png" alt="" width={32} height={32} style={{ display: 'block' }} />
+          <span
+            className="mono"
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              color: 'var(--neon-green)',
+              border: '1px solid rgba(57,255,143,0.4)',
+              borderRadius: 20,
+              padding: '5px 12px',
+            }}
+          >
+            Insurance armed
+          </span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+export default function About() {
+  const [activeTab, setActiveTab] = useState('overview');
+
+  function changeTab(id) {
+    if (id === activeTab) return;
+    setActiveTab(id);
+    // "Money Mode"/"Other" are each several panels tall — jumping back to
+    // the top on every switch is what makes this read as "go to that
+    // section" rather than leaving a reader who scrolled halfway through
+    // Overview stranded mid-scroll in whatever the new tab's content
+    // happens to have at that same pixel offset.
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div className="panel spotlight" onMouseMove={spotlightMove} style={{ textAlign: 'center' }}>
+        <h2 className="gradient-title" style={{ fontSize: 26, marginBottom: 8 }}>About Pushdle</h2>
+        <p className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 16 }}>
+          A daily push-your-luck game. Tap the button, keep your streak alive, don't get greedy.
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <CosmeticTabs tabs={ABOUT_TABS} active={activeTab} onChange={changeTab} />
+        </div>
+      </div>
+
+      {activeTab === 'overview' && <OverviewTab />}
+      {activeTab === 'money' && <MoneyModeTab />}
+      {activeTab === 'other' && <OtherTab />}
     </div>
   );
 }

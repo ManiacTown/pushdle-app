@@ -610,6 +610,87 @@ input:focus{
   animation: oddsFlashToClassic 0.7s ease-out forwards;
 }
 
+/* Comeback Boost — the pity meter (a fill bar, not discrete pips) shown
+   below the streak panel once a player's built up any charge. Reuses the
+   same --neon-green accent as the streak number itself, since this is the
+   same "good news" register. The run's actual guaranteed window
+   (state.boosted) is otherwise silent — no header text change, no badge —
+   same treatment as the first-run guarantee; this meter is the only
+   visible sign of the mechanic. */
+/* Home-screen only (see Home.jsx's classicCollapsed-driven visibility) —
+   same always-mounted, class-toggled .header-panel/.header-panel--collapsed
+   technique the money-mode switch row already uses, reused as-is rather
+   than duplicated, so hiding mid-run and reappearing once the board
+   settles both get a real transition instead of an instant pop.
+   position:relative + the (empty, at rest) box-shadow declared here — not
+   just added by the spotlight modifier below — so toggling
+   .pity-meter-spotlight animates smoothly via this same transition in
+   BOTH directions (fade in AND fade out), rather than the modifier's own
+   box-shadow just snapping in with nothing to interpolate from. */
+.pity-meter{
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  padding: 14px 24px;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: 0 0 0 0 rgba(8,8,12,0);
+  transition: background 0.35s ease, box-shadow 0.35s ease;
+}
+/* The bust-reveal fill-up moment (see pityFillBlocking/schedulePityFillReveal
+   in Home.jsx) — a spotlight, not a separate dimming overlay element: a
+   single huge box-shadow spread (9999px) on this element's own box covers
+   the entire rest of the page, however large the viewport actually is,
+   without needing a second element to coordinate z-index against every
+   transformed ancestor this row already has (modeSlotStyle). The z-index
+   here is what lets that shadow (and this card itself) actually paint
+   above the rest of the page's own normal-flow content. */
+.pity-meter-spotlight{
+  z-index: 500;
+  background: var(--panel);
+  box-shadow: 0 0 0 9999px rgba(8,8,12,0.82), 0 0 30px rgba(57,255,143,0.35);
+}
+.pity-meter-track{
+  width: 180px;
+  height: 8px;
+  border-radius: 6px;
+  background: #06060a;
+  border: 1px solid var(--line);
+  /* NOT overflow:hidden — both the fill and the track share the same
+     border-radius, so the fill's own edges never actually need clipping
+     regardless of its width, and overflow:hidden here was silently
+     clipping the armed pulse's whole glow (a box-shadow, which always
+     paints OUTSIDE its element's own box) down to nothing. */
+}
+.pity-meter-fill{
+  height: 100%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, rgba(57,255,143,0.5), var(--neon-green));
+  box-shadow: 0 0 8px rgba(57,255,143,0.6);
+  /* Width itself is what animates (see displayedPityCount/PITY_FILL_ANIM_MS
+     in Home.jsx) — a plain React state change to this value is what the
+     bust-reveal fill-up moment rides on, no separate JS interpolation. */
+  transition: width 3.2s ease;
+}
+/* Fully armed (see PITY_CHARGES_NEEDED) — a slow, steady pulse for as long
+   as the meter reads 3/3, not just during the fill-reveal moment, so an
+   already-armed meter still reads as "live" on a plain page load too. */
+@keyframes pityMeterPulse{
+  0%, 100%{ box-shadow: 0 0 8px rgba(57,255,143,0.6); }
+  50%{ box-shadow: 0 0 20px rgba(57,255,143,1), 0 0 34px rgba(57,255,143,0.65); }
+}
+.pity-meter-fill--armed{
+  animation: pityMeterPulse 1.6s ease-in-out infinite;
+}
+.pity-meter-label{
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
 /* Classic <-> money mode-switch transition — see src/lib/modeTransition.js
    for the timing/direction logic that picks which of these four plays on
    a given element and when. Small horizontal travel (36px) + fade, same

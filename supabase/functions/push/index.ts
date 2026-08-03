@@ -41,5 +41,7 @@ Deno.serve(async (req) => {
     dayStreak: data.out_day_streak,
     bustedAtZero: data.out_busted_at_zero,
     bustedAtOne: data.out_busted_at_one,
+    pityCount: data.out_pity_count,
+    boosted: data.out_boosted,
   });
 });
