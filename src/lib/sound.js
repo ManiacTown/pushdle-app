@@ -81,6 +81,7 @@ function tone({ freq, duration, type = 'sine', gain = 0.14, freqEnd, delay = 0 }
 // physically responded to the press rather than waiting on the network/
 // suspense delay to react at all.
 export function playPush() {
+  unlockFiles();
   tone({ freq: 190, freqEnd: 150, duration: 0.07, type: 'sine', gain: 0.1 });
 }
 
@@ -179,6 +180,37 @@ function playFile(path, volume = 0.4) {
   }
   audio.volume = volume;
   audio.play().catch(() => {});
+}
+
+// Mobile WebKit (iOS Safari) only allows a given HTMLMediaElement's play()
+// to succeed once THAT SPECIFIC element has been played as a direct,
+// synchronous consequence of a user gesture at least once — after that,
+// it stays "unlocked" for the rest of the page's session, gesture or not.
+// playCoinBank fires ~6s after the Cash Out click (via launchCoinToWallet's
+// own setTimeout chain in MoneyMode.jsx), which is far enough removed from
+// the original tap that WebKit can silently swallow it — this is what was
+// actually reported as "the coin-hitting-the-vault sound doesn't play on
+// phone." Priming both sampled files here, called from playPush (which —
+// per this file's own top comment — always runs synchronously inside a
+// real click handler, on literally every push in both modes), unlocks
+// them well before playCoinBank's own much later call ever needs to fire.
+let filesUnlocked = false;
+function unlockFiles() {
+  if (filesUnlocked) return;
+  filesUnlocked = true;
+  for (const path of ['/coin_collect.mp3', '/coin_bank.mp3']) {
+    const audio = new Audio(path);
+    fileCache[path] = audio;
+    audio.volume = 0;
+    audio
+      .play()
+      .then(() => {
+        audio.pause();
+        audio.currentTime = 0;
+        audio.volume = 0.4;
+      })
+      .catch(() => {});
+  }
 }
 
 // A successful push's coin popping out of the bag (see popCoin/MoneyMode.jsx).

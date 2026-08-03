@@ -6,6 +6,19 @@
 // nobody outside the codebase would ever notice.
 export const CHANGELOG = [
   {
+    date: '2026-08-03',
+    title: 'Money Mode buff and a round of bug fixes',
+    items: [
+      'Money Mode odds are now a real, better 97% you live · 3% you don’t.',
+      'The Money Mode switch button now steps out of the way while a classic run is in progress, and slides back in smoothly once it’s over.',
+      'Fixed badge pop-ups showing badges you’d already earned as if they were brand new — this hit Money Mode especially hard.',
+      'Fixed the coin-hitting-the-vault sound not playing on some phones.',
+      'The weekly Money Mode leaderboard podium now only ever shows a real, completed week.',
+      'Swapped the insurance shield emoji for a proper icon everywhere it shows up.',
+      'New players get a smoother start on their very first classic run.',
+    ],
+  },
+  {
     date: '2026-07-31',
     title: 'Shop panel fix and small cleanup',
     items: [

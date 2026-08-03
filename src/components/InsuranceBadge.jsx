@@ -31,7 +31,7 @@ export default function InsuranceBadge({ owns }) {
         color: 'var(--text-dim)',
       }}
     >
-      <span style={{ fontSize: 14, lineHeight: 1 }}>🛡️</span>
+      <img src="/shield.png" alt="" width={14} height={14} style={{ display: 'block' }} />
       {showLabel && <span>Insurance Upgrade</span>}
     </div>
   );

@@ -349,7 +349,7 @@ export default function MoneyShop({ onClose }) {
               textAlign: 'center',
             }}
           >
-            <div style={{ fontSize: 20, marginBottom: 4 }}>🛡️</div>
+            <img src="/shield.png" alt="" width={20} height={20} style={{ display: 'block', marginBottom: 4 }} />
             <div className="mono" style={{ fontSize: 11, color: 'var(--text)', marginBottom: 3 }}>
               Weekly Bust Insurance
             </div>

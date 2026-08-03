@@ -1198,7 +1198,8 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
               ...modeSlotStyle(modeTransition, 0),
             }}
           >
-            🛡️ {displayedInsuranceUsed ? 'Insurance used this week' : 'Insurance armed'}
+            <img src="/shield.png" alt="" width={9} height={9} style={{ display: 'block' }} />
+            {displayedInsuranceUsed ? 'Insurance used this week' : 'Insurance armed'}
           </div>
         )}
 
@@ -1421,7 +1422,7 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
             '--fly-dy': `${flyingShield.dy}px`,
           }}
         >
-          🛡️
+          <img src="/shield.png" alt="" width={22} height={22} style={{ display: 'block' }} />
         </div>
       )}
 

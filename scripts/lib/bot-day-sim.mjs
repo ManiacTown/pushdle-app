@@ -153,16 +153,25 @@ async function simulateBot(api, today, username, userId) {
 // careful to avoid (see DECISIONS.md's stat-tampering incident writeup).
 // "Roughly half" tolerates the resulting slop; a guaranteed-exact split
 // would not have been an honest roll.
-const MONEY_BANKER_TARGET_MIN_CENTS = 500; // $5
-const MONEY_BANKER_TARGET_RANGE_CENTS = 3000; // up to +$30, so $5-35 total
-// Greedy bots are capped well short of $100 unbanked (worst case at 40
-// pushes: 40 base + 8 combo fills x $5 max bonus = $80) so a bust here can
-// never trigger the legendary "Too Greedy" badge — bots are being kept off
-// that one specifically (unlike most legendary badges, which they ARE
-// allowed to earn naturally, e.g. via money-lifetime/money-run thresholds
-// reached over many real days). A greedy bot that survives all 40 pushes
-// without busting just cashes out whatever it has instead of being forced
-// to keep going — see the loop below.
+// Hard ceiling on what any single bot can walk away with in one day, either
+// strategy — the shared source of truth both MONEY_BANKER_TARGET_RANGE_CENTS
+// below and the greedy loop's own earnings check derive from, so the two
+// strategies can't quietly drift apart from each other. The loop below
+// breaks the moment earnings CROSS this (not before), so an individual
+// push's bonus can carry a run slightly past it — same "roughly," not
+// pedantically exact, tolerance this file already applies to the banker
+// target split above, not a new inconsistency.
+const MONEY_BOT_MAX_DAILY_CENTS = 1500; // $15
+const MONEY_BANKER_TARGET_MIN_CENTS = 300; // $3
+const MONEY_BANKER_TARGET_RANGE_CENTS = MONEY_BOT_MAX_DAILY_CENTS - MONEY_BANKER_TARGET_MIN_CENTS; // up to $15 total
+// Greedy bots are capped well short of MONEY_BOT_MAX_DAILY_CENTS unbanked —
+// the earnings check inside the loop below stops pushing (and cashes out)
+// the instant earnings reach the cap, same shape as a banker hitting its
+// own target — so a bust here can never trigger the legendary "Too Greedy"
+// badge either (unlike most legendary badges, which they ARE allowed to
+// earn naturally, e.g. via money-lifetime/money-run thresholds reached over
+// many real days). The push-count cap below is now just a secondary safety
+// bound on run length, not the thing actually limiting earnings.
 const MONEY_GREEDY_PUSH_CAP = 40;
 // Generous safety net for banker bots, not a real exposure path — the
 // target-reached check inside the loop below stops pushing (and cashes
@@ -219,6 +228,7 @@ async function simulateMoneyBot(api, today, username, userId) {
   while (last.out_pushes < cap) {
     last = await pushOnce();
     if (!last.out_success) break; // a real bust — never forced/retried
+    if (greedy && last.out_earnings_cents >= MONEY_BOT_MAX_DAILY_CENTS) break; // hit the daily ceiling, go bank it
     if (!greedy && last.out_earnings_cents >= targetCents) break; // hit target, go bank it
   }
 

@@ -336,6 +336,7 @@ declare
   v_last_played date;
   v_busted_zero boolean;
   v_busted_one boolean;
+  v_first_run_guaranteed boolean;
 begin
   select id, streak, status into v_id, v_streak, v_status
     from daily_runs
@@ -369,9 +370,20 @@ begin
     v_last_played := p_date;
   end if;
 
+  -- Mirrors the client's own guest-side derivation (see
+  -- FIRST_RUN_GUARANTEE_STREAK in src/lib/game.js): on an uninterrupted
+  -- first-ever run, lifetime total_pushes and this run's streak-so-far are
+  -- always exactly equal (every push so far succeeded, both started at 0
+  -- and climbed together) — read BEFORE the increment below, same as the
+  -- client reads `stats.totalPushes` before incrementing it. No new column
+  -- needed: the moment this stops holding, either it isn't the very first
+  -- run, or this run's already past the guarantee window, both of which
+  -- correctly fall back to the normal roll.
+  v_first_run_guaranteed := v_total_pushes = v_streak and v_streak < 10;
+
   v_total_pushes := v_total_pushes + 1;
 
-  v_chance := case when v_streak = 0 then 0.999 else 0.9 end;
+  v_chance := case when v_first_run_guaranteed then 1.0 when v_streak = 0 then 0.999 else 0.9 end;
   v_success := random() < v_chance;
 
   if v_success then
@@ -657,7 +669,7 @@ begin
     return;
   end if;
 
-  v_chance := case when v_pushes = 0 then 1.0 else 0.95 end;
+  v_chance := case when v_pushes = 0 then 1.0 else 0.97 end;
   v_success := random() < v_chance;
 
   if v_success then

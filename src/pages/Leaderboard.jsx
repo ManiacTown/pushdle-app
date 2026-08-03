@@ -150,9 +150,24 @@ export default function Leaderboard() {
 
   useEffect(() => {
     if (!isSupabaseConfigured || tab !== 'money' || !weeklyLeaderboardLive) return;
+    // .gt (not .gte!) week_start matters here, not just weeklyLeaderboardLive
+    // above — that only gates whether this fetch runs at all, it doesn't
+    // touch WHICH money_weekly_resets row comes back. Pre-launch admin/bot
+    // testing already left at least one bot-name podium snapshot in this
+    // table (see this file's own comment above on WEEKLY_LEADERBOARD_START_DATE),
+    // and nothing else filters those rows out — confirmed live: the reset
+    // that fires exactly ON WEEKLY_LEADERBOARD_START_DATE itself snapshots
+    // the PRECEDING week (that's what a weekly reset does), which was
+    // entirely pre-launch bot activity — its week_start still lands ON the
+    // start date, so a >= filter doesn't exclude it. Only a reset dated
+    // STRICTLY AFTER the start date reflects a full week of real,
+    // post-launch play. This is what actually guarantees a real visitor can
+    // only ever see a genuine completed week here, correctly falling back
+    // to the "No champions yet" empty state until one exists.
     supabase
       .from('money_weekly_resets')
       .select('top3')
+      .gt('week_start', WEEKLY_LEADERBOARD_START_DATE)
       .order('week_start', { ascending: false })
       .limit(1)
       .maybeSingle()

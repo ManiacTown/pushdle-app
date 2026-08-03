@@ -12,6 +12,7 @@ import {
   maxStatsForAllBadges,
   zeroStatsForAllBadges,
   camelToSnakeFields,
+  FIRST_RUN_GUARANTEE_STREAK,
 } from '../lib/game.js';
 import { getQuoteForStreak, getBustQuoteForStreak, getPokeQuip } from '../lib/quotes.js';
 import { MONEY_SUCCESS_CHANCE } from '../lib/money.js';
@@ -406,14 +407,16 @@ export default function Home() {
       setBestStreakState(best);
       setStats(s);
       // Snapshot of what's already earned before this run's pushes count,
-      // so a bust can later diff against it to find what's newly earned.
-      // Explicit field picks, not a wholesale ...s spread — s is authStats
-      // for logged-in players, which also carries moneyWalletCents/
-      // moneyLifetimeCents (see AuthContext.jsx) now that the money
-      // variant exists. No badge check reads those today, but streak
-      // badges are classic-mode only by design (see BADGES in game.js) —
-      // picking fields explicitly keeps that true by construction instead
-      // of by coincidence.
+      // so a bust/cash-out can later diff against it to find what's newly
+      // earned. Explicit field picks, not a wholesale ...s spread — s is
+      // authStats for logged-in players, which also carries fields no
+      // badge reads (moneyWalletCents, etc. — see AuthContext.jsx). Must
+      // include every field ANY badge reads, classic AND money alike (see
+      // BADGES in game.js) — omitting the money-* fields here used to make
+      // every already-earned money badge look "not yet earned" in this
+      // baseline, so checkMoneyBadges' diff against it treated ALL of them
+      // as newly earned on every single money-mode bust/cash-out, not just
+      // genuinely new ones.
       setEarnedAtRunStart(
         new Set(
           earnedBadges({
@@ -422,6 +425,12 @@ export default function Home() {
             dayStreak: s.dayStreak,
             bustedAtZero: s.bustedAtZero,
             bustedAtOne: s.bustedAtOne,
+            moneyBestBankStreak: s.moneyBestBankStreak,
+            moneyLifetimeCents: s.moneyLifetimeCents,
+            moneyBestRunCents: s.moneyBestRunCents,
+            moneyBankedAfterOnePush: s.moneyBankedAfterOnePush,
+            moneyReachedTop3Weekly: s.moneyReachedTop3Weekly,
+            moneyBustedOver100: s.moneyBustedOver100,
           }).map((b) => b.id)
         )
       );
@@ -831,7 +840,18 @@ export default function Home() {
 
   function pushLocal() {
     setTimeout(async () => {
-      const success = rollPush(state.streak);
+      // A guest's very first-ever run (no prior push, ever) gets every press
+      // forced to succeed while streak is still below the guarantee — see
+      // FIRST_RUN_GUARANTEE_STREAK's own comment in game.js. Re-derived
+      // fresh on every press rather than a persisted flag: on an
+      // uninterrupted first-ever run, lifetime totalPushes and this run's
+      // streak are always exactly equal (every push so far is a success,
+      // both start at 0 and climb together) — the moment that stops being
+      // true, either this isn't the first run, or the guarantee window's
+      // already closed for this one, both correctly falling back to normal
+      // odds with no separate state to keep in sync.
+      const firstRunGuaranteed = stats.totalPushes === state.streak && state.streak < FIRST_RUN_GUARANTEE_STREAK;
+      const success = firstRunGuaranteed || rollPush(state.streak);
       setRolling(false);
       const updatedStats = await storage.incrementTotalPushes();
       setStats(updatedStats);
@@ -964,6 +984,20 @@ export default function Home() {
       // Force Bust, or now that switching modes makes multiple busts in
       // one sitting normal).
       setEarnedAtRunStart((prev) => new Set([...prev, ...newly.map((b) => b.id)]));
+      // Classic mode persists its newly-earned badge IDs (see
+      // recordBustAndCheckBadges' saveTodayNewBadges call) so loadRunState
+      // can restore an interrupted reveal after a remount/reload — but
+      // nothing else ever clears that persisted list once the toast has
+      // actually been SHOWN, so without this, navigating away and back (or
+      // reloading) any number of times for the rest of that Pacific day
+      // replayed the exact same "new badge" toast for badges the player
+      // already saw and dismissed. Clearing it right here, the moment it
+      // actually reveals, is what stops that — scoped to 'classic' only
+      // since money mode (checkMoneyBadges) never writes this list in the
+      // first place; clearing it unconditionally here would risk wiping a
+      // classic toast that was persisted but hasn't shown yet (e.g. one
+      // still-pending when a money-mode toast happens to reveal first).
+      if (forMode === 'classic') storage.saveTodayNewBadges([]);
       // Auto-dismiss 5s after the toast actually appears, on top of
       // whatever dismisses it early (mode switch, admin reset, a new run) —
       // dismissBadgeToast is a no-op once showBadges is already false, so
@@ -1158,6 +1192,14 @@ export default function Home() {
       console.error('reset day failed:', error);
       return;
     }
+    // Also wipe any local guest run state, not just the server row above —
+    // loadRunState's own login-carry-over logic (see its comment) treats
+    // "no server row for today" as "maybe this device has a guest run to
+    // adopt," and silently resurrects one via sync-stats if it finds it.
+    // Without this, any leftover local run (e.g. from testing as a guest
+    // earlier the same day, before logging in) would immediately undo this
+    // reset the moment loadRunState below re-queries and finds nothing.
+    await storage.resetTodayState();
     await storage.saveTodayNewBadges([]);
     await loadRunState();
   }
@@ -1280,16 +1322,27 @@ export default function Home() {
     // automatically enough to make "claim all badges" grant it too,
     // nothing here needs updating by hand.
     const maxedAll = maxStatsForAllBadges();
-    const localMaxed = {
-      totalPushes: maxedAll.totalPushes,
-      dayStreak: maxedAll.dayStreak,
-      lastPlayedDate: pacificDateString(),
-      bustedAtZero: maxedAll.bustedAtZero,
-      bustedAtOne: maxedAll.bustedAtOne,
-    };
-    await storage.saveStats(localMaxed);
-    await storage.setBestStreak(maxedAll.bestStreak);
-    setStats(localMaxed);
+    // Local guest storage only gets written for an actual guest — for a
+    // logged-in admin, authStats (below) is the real source of truth, and
+    // leaving MAXED values sitting in local storage would risk a future
+    // guest-carry-over merge (see loadRunState's own comment on that path)
+    // resurrecting them into the real profile later, e.g. after some other
+    // future reset-day. resetBestStreak/adminResetBadges avoid this same
+    // trap by only ever writing SAFE (zeroed) values to local storage
+    // regardless of login state — this is the one tool that used to write
+    // real (maxed) values unconditionally instead.
+    if (!user) {
+      const localMaxed = {
+        totalPushes: maxedAll.totalPushes,
+        dayStreak: maxedAll.dayStreak,
+        lastPlayedDate: pacificDateString(),
+        bustedAtZero: maxedAll.bustedAtZero,
+        bustedAtOne: maxedAll.bustedAtOne,
+      };
+      await storage.saveStats(localMaxed);
+      await storage.setBestStreak(maxedAll.bestStreak);
+      setStats(localMaxed);
+    }
     setBestStreakState(maxedAll.bestStreak);
     setEarnedAtRunStart(new Set(earnedBadges(maxedAll).map((b) => b.id)));
     if (user) {
@@ -1372,17 +1425,25 @@ export default function Home() {
           (confirmed live: the unlock modal's own "Try Money Mode" button
           still works since it calls startModeSwitch directly, bypassing
           this row entirely — clicking the actual header button was what
-          silently failed). Staying visible through a classic run doesn't
-          cost the "focus during a run" effect anything real — the row
-          collapsing was never about the classic game screen itself, just
-          this unrelated switcher tucking away with it. Still slides
-          out/in via modeSlotStyle on an actual mode switch, same slot-0
-          timing as the streak/run panel(s) right below it, so this row
-          rides along with the rest of the page's own switch transition
+          silently failed). Also collapses (not just while MONEY mode is
+          active) for as long as classicCollapsed is true — a mid-run
+          switch invite competes with the actual run for attention, and
+          popping back in mid-reveal (before the rest of the chrome has
+          settled back to normal) read as it jumping the gun. Reusing the
+          same always-mounted/class-toggled .header-panel--collapsed this
+          row already uses for the money-mode case (rather than
+          conditionally mounting the row at all) is what gives this a real
+          collapse/reveal transition instead of a straight pop-in the
+          instant it busts — it only actually reappears once
+          classicCollapsed itself goes false, i.e. the same moment the rest
+          of the chrome (nav bar/header) finishes un-collapsing. Still
+          slides out/in via modeSlotStyle on an actual mode switch, same
+          slot-0 timing as the streak/run panel(s) right below it, so this
+          row rides along with the rest of the page's own switch transition
           instead of just snapping to its new label/Shop-button state. */}
       {hasPlayedClassic && (
       <div
-        className={'header-panel' + (chromeCollapsed && uiMode === 'money' ? ' header-panel--collapsed' : '')}
+        className={'header-panel' + ((chromeCollapsed && uiMode === 'money') || (uiMode === 'classic' && classicCollapsed) ? ' header-panel--collapsed' : '')}
         style={{ display: 'flex', justifyContent: 'center', gap: MONEY_PANEL_GAP, marginBottom: 12, ...modeSlotStyle(modeTransition, 0) }}
       >
         {/* A shared literal width on both buttons (not their own natural
@@ -1737,7 +1798,9 @@ export default function Home() {
               <button className="btn-ghost" onClick={adminForceMoneyDiamond}>💎 Force diamond next</button>
               <button className="btn-ghost" onClick={adminAddDiamonds}>💎 +1000 diamonds</button>
               <button className="btn-ghost" onClick={adminDrainDiamonds}>💎 Drain diamonds</button>
-              <button className="btn-ghost" onClick={adminResetInsurance}>🛡️ Reset insurance timer</button>
+              <button className="btn-ghost" onClick={adminResetInsurance}>
+                <img src="/shield.png" alt="" width={12} height={12} style={{ display: 'inline-block', verticalAlign: 'middle', marginRight: 4 }} /> Reset insurance timer
+              </button>
               <button className="btn-ghost" onClick={resetBestStreak}>↺ Reset best streak</button>
               <button className="btn-ghost" onClick={adminResetBadges}>🏅 Reset all badges</button>
               <button className="btn-ghost" onClick={adminClaimAllBadges}>🏆 Claim all badges</button>

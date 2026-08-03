@@ -1,5 +1,13 @@
 export const SUCCESS_CHANCE = 0.9;
 export const FIRST_PRESS_SUCCESS_CHANCE = 0.999;
+// A player's very first-ever classic run (guest or logged-in, see Home.jsx's
+// pushLocal/pushServer) forces every press to succeed while streak is below
+// this — guaranteeing at least a 10-streak on the run that's most likely to
+// otherwise turn someone off the game for good. Odds display stays at the
+// normal 90%/10% throughout (kept silent, unlike Comeback Boost's later
+// planned mechanic, which is deliberately visible) — a one-time, industry-
+// standard "new player luck" softener, not an ongoing/hidden mechanic.
+export const FIRST_RUN_GUARANTEE_STREAK = 10;
 
 export function rollPush(currentStreak) {
   const chance = currentStreak === 0 ? FIRST_PRESS_SUCCESS_CHANCE : SUCCESS_CHANCE;
