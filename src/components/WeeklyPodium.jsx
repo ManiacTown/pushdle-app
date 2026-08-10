@@ -15,8 +15,17 @@ export const RANK_COLORS = ['#ffd45e', '#c9d3e0', '#e8935a'];
 // AND MoneyWeeklyResultsModal.jsx's own podium graphic — one component, so
 // both places render literally the same graphic rather than two versions
 // that can drift apart.
-export default function WeeklyPodium({ top3 }) {
+//
+// `size="sm"` (default) is Leaderboard.jsx's own tight sidebar spot —
+// fixed 50px columns, username truncates with an ellipsis if it doesn't
+// fit. `size="lg"` is MoneyWeeklyResultsModal.jsx's roomier centered
+// spot — columns flex/shrink instead of a fixed width, and the username
+// wraps onto a second line instead of ever truncating, so a full-length
+// (up to 20-char) username always shows completely regardless of how
+// long it is.
+export default function WeeklyPodium({ top3, size = 'sm' }) {
   const navigate = useNavigate();
+  const large = size === 'lg';
   if (!top3 || top3.length === 0) {
     return (
       <div className="mono" style={{ fontSize: 9, color: 'var(--text-dim)', textAlign: 'center', alignSelf: 'center', maxWidth: 140 }}>
@@ -25,13 +34,13 @@ export default function WeeklyPodium({ top3 }) {
     );
   }
   const order = [1, 0, 2];
-  const heights = [64, 46, 34];
+  const heights = large ? [76, 56, 42] : [64, 46, 34];
   const medals = ['🥇', '🥈', '🥉'];
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: large ? 10 : 6, width: large ? '100%' : undefined, justifyContent: large ? 'center' : undefined }}>
       {order.map((rankIdx) => {
         const entry = top3[rankIdx];
-        if (!entry) return <div key={rankIdx} style={{ width: 50 }} />;
+        if (!entry) return <div key={rankIdx} style={large ? { flex: '0 1 110px', minWidth: 0 } : { width: 50 }} />;
         // Same navigation as the regular row list below (playNav + push to
         // the read-only PublicProfile route) — entry.userId is a real
         // profiles.id either way, bot or real account, so this always
@@ -54,10 +63,20 @@ export default function WeeklyPodium({ top3 }) {
               e.preventDefault();
               goToProfile();
             }}
-            style={{ width: 50, textAlign: 'center', cursor: 'pointer' }}
+            style={
+              large
+                ? { flex: '0 1 110px', minWidth: 0, textAlign: 'center', cursor: 'pointer' }
+                : { width: 50, textAlign: 'center', cursor: 'pointer' }
+            }
           >
-            <div style={{ fontSize: 15, marginBottom: 2 }}>{entry.emoji || ''}</div>
-            <div style={{ fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>
+            <div style={{ fontSize: large ? 18 : 15, marginBottom: 2 }}>{entry.emoji || ''}</div>
+            <div
+              style={
+                large
+                  ? { fontSize: 10, color: 'var(--text)', whiteSpace: 'normal', overflowWrap: 'break-word', lineHeight: 1.3, padding: '0 2px' }
+                  : { fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }
+              }
+            >
               {entry.username}
             </div>
             <div
@@ -75,8 +94,8 @@ export default function WeeklyPodium({ top3 }) {
                 gap: 2,
               }}
             >
-              <div style={{ fontSize: 13 }}>{medals[rankIdx]}</div>
-              <div style={{ fontSize: 9, fontWeight: 700, color: RANK_COLORS[rankIdx] }}>{formatCents(entry.scoreCents)}</div>
+              <div style={{ fontSize: large ? 15 : 13 }}>{medals[rankIdx]}</div>
+              <div style={{ fontSize: large ? 10 : 9, fontWeight: 700, color: RANK_COLORS[rankIdx] }}>{formatCents(entry.scoreCents)}</div>
             </div>
           </div>
         );

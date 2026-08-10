@@ -78,14 +78,14 @@ export default function MoneyWeeklyResultsModal({ rank, scoreCents, diamondsAwar
   }
 
   const madeTop3 = rank != null && rank <= 3;
-  const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : null;
-  // diamondsAwarded is passed straight through from what
-  // finalize_money_week actually credited (schema.sql) — never
-  // re-derived here, so this always matches what really landed in the
-  // account's wallet even if the tiers below ever change in some future
-  // week. diamondsForWeeklyRank is only used for the infographic's own
-  // display tiers, not this number.
-  const wonDiamonds = diamondsAwarded > 0;
+  // Rank, not diamondsAwarded > 0, is the authoritative "did this account
+  // place in the prize zone" signal — every rank 1-10 tier pays a nonzero
+  // amount (see diamondsForWeeklyRank), so the two should always agree,
+  // but deciding off rank directly means a caller passing a stale/demo
+  // diamondsAwarded (e.g. Home.jsx's admin preview) can't produce a
+  // contradictory "Rank #2" + "outside the top 10" combination the way an
+  // earlier version of this component could.
+  const inTop10 = rank != null && rank <= 10;
 
   return (
     <div
@@ -103,8 +103,8 @@ export default function MoneyWeeklyResultsModal({ rank, scoreCents, diamondsAwar
           <h2 className="gradient-title" style={{ fontSize: 28, marginBottom: 6 }}>
             🏆 Weekly Results
           </h2>
-          <p className="mono" style={{ fontSize: 20, fontWeight: 700, color: medal ? '#ffd45e' : 'var(--neon-cyan)', marginBottom: 4 }}>
-            {medal ? `${medal} #${rank}` : `#${rank}`}
+          <p className="mono" style={{ fontSize: 20, fontWeight: 700, color: madeTop3 ? '#ffd45e' : 'var(--neon-cyan)', marginBottom: 4 }}>
+            Rank: #{rank}
           </p>
           <p className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 8 }}>
             You banked <strong style={{ color: 'var(--text)' }}>{formatCents(scoreCents)}</strong> this week
@@ -135,7 +135,7 @@ export default function MoneyWeeklyResultsModal({ rank, scoreCents, diamondsAwar
         )}
 
         <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8, marginBottom: 16, textAlign: 'center' }}>
-          {wonDiamonds ? (
+          {inTop10 ? (
             <p>
               You earned{' '}
               <strong style={{ color: 'var(--text)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -157,7 +157,7 @@ export default function MoneyWeeklyResultsModal({ rank, scoreCents, diamondsAwar
             Last week's champions
           </div>
           <div style={{ display: 'flex', justifyContent: 'center' }}>
-            <WeeklyPodium top3={top3} />
+            <WeeklyPodium top3={top3} size="lg" />
           </div>
         </div>
 
@@ -188,7 +188,11 @@ export default function MoneyWeeklyResultsModal({ rank, scoreCents, diamondsAwar
             className="mono onboarding-link"
             onClick={() => {
               playNav();
-              navigate('/leaderboard');
+              // Lands on the money tab's own "Last Week" sub-tab (see
+              // Leaderboard.jsx's location.state handling) — the live
+              // "This Week" view would just show a freshly-reset board,
+              // not the results this modal is actually about.
+              navigate('/leaderboard', { state: { tab: 'money', moneyPeriod: 'lastweek' } });
               beginClose();
             }}
           >

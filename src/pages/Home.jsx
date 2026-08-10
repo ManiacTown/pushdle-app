@@ -2145,13 +2145,20 @@ export default function Home() {
                 className="btn-ghost"
                 onClick={async () => {
                   // Uses this account's own real last-week snapshot if it
-                  // has one (authStats.moneyLastWeekRank), same numbers a
-                  // real trigger would show — falls back to a fixed demo
-                  // rank (2nd place, so the Golden Goose banner and a
-                  // real diamond count both render) for an admin account
-                  // that's never actually ranked, so this stays useful
-                  // for testing on a fresh/never-played admin login too.
-                  const rank = authStats?.moneyLastWeekRank ?? 2;
+                  // has one, same numbers a real trigger would show —
+                  // falls back to a fixed demo (2nd place, so the Golden
+                  // Goose banner and a real diamond count both render)
+                  // for an admin account that's never actually ranked, so
+                  // this stays useful for testing on a fresh/never-played
+                  // admin login too. All three fields come from the SAME
+                  // branch, never mixed — moneyLastWeekScoreCents/
+                  // moneyLastWeekDiamondsAwarded both default to a real 0
+                  // (not null) on an unranked account, so falling back
+                  // field-by-field with `??` used to pair a demo rank
+                  // with real (zeroed) score/diamonds and show a
+                  // self-contradictory "Rank #2, $0, outside the top 10".
+                  const hasRealRank = authStats?.moneyLastWeekRank != null;
+                  const rank = hasRealRank ? authStats.moneyLastWeekRank : 2;
                   const { data } = await supabase
                     .from('money_weekly_resets')
                     .select('top3')
@@ -2160,8 +2167,8 @@ export default function Home() {
                     .maybeSingle();
                   setMoneyWeeklyResultsData({
                     rank,
-                    scoreCents: authStats?.moneyLastWeekScoreCents ?? 15000,
-                    diamondsAwarded: authStats?.moneyLastWeekDiamondsAwarded ?? diamondsForWeeklyRank(rank),
+                    scoreCents: hasRealRank ? authStats.moneyLastWeekScoreCents : 15000,
+                    diamondsAwarded: hasRealRank ? authStats.moneyLastWeekDiamondsAwarded : diamondsForWeeklyRank(rank),
                     top3: data?.top3 ?? [],
                   });
                   setMoneyWeeklyResultsPreview(true);

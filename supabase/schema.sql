@@ -1181,7 +1181,18 @@ create table if not exists money_weekly_resets (
   -- fewer than 3 Golden Goose grants, forever, with the next scheduled run
   -- (or a manual retry) short-circuiting on the 409/existing row instead
   -- of resuming.
-  completed_at timestamptz
+  completed_at timestamptz,
+  -- Every ranked participant that week (not just the top 3 above) —
+  -- [{userId, username, emoji, scoreCents, rank, diamondsAwarded}, ...],
+  -- ordered by rank. Powers Leaderboard.jsx's "Last Week" money sub-tab, a
+  -- read-only snapshot distinct from the live "This Week"/"Lifetime" views
+  -- (which read straight off profiles and can't show a week that's
+  -- already been reset to 0). Same snapshot-not-live-join reasoning as
+  -- top3 above — deliberately NOT reconstructed from
+  -- profiles.money_last_week_rank at read time, since that column gets
+  -- overwritten the following week for anyone who ranks again, and would
+  -- silently drop anyone who ranked last week but hasn't played since.
+  full_board jsonb
 );
 
 alter table money_weekly_resets enable row level security;
@@ -1203,11 +1214,12 @@ grant all on money_weekly_resets to service_role;
 -- overwrite-with-same-value can be repeated harmlessly; `money_diamonds +
 -- prize` cannot, it would double-pay). That guard works specifically
 -- because this function does EVERYTHING in one transaction, including
--- writing the top3 result into money_weekly_resets itself (the last line
--- below) — so a resumed run's `existing[0].top3` check at the top of the
--- handler can tell a prior successful call already happened and skip
--- calling this again, with no window where the diamond credit could have
--- committed while the top3 write didn't (or vice versa).
+-- writing the top3/full_board results into money_weekly_resets itself
+-- (the last statement below) — so a resumed run's `existing[0].top3`
+-- check at the top of the handler can tell a prior successful call
+-- already happened and skip calling this again, with no window where the
+-- diamond credit could have committed while the snapshot write didn't (or
+-- vice versa).
 --
 -- Ranks every profile that earned anything this week (money_weekly_cents >
 -- 0 — a 0-cents week was never in the running, same filter the old
@@ -1223,6 +1235,14 @@ grant all on money_weekly_resets to service_role;
 -- order — matters more here than it used to, now that the tied accounts'
 -- ranks feed real diamond payouts, not just a display-only top3 list.
 --
+-- The UPDATE's own RETURNING (via the `updated` CTE) is what both
+-- top3/full_board get built from, rather than two more SELECTs against
+-- profiles afterward — profiles.money_weekly_cents hasn't been zeroed yet
+-- at this point (that's a separate step later in weekly-money-reset.js),
+-- so a fresh re-query would technically still work, but re-deriving the
+-- same ranking twice is pure waste when RETURNING already hands back
+-- every column both snapshots need.
+--
 -- src/lib/money.js's diamondsForWeeklyRank() mirrors this CASE for
 -- display (the modal's prize infographic, the admin preview tool) — this
 -- function is still the one real source of truth; keep both in sync if
@@ -1231,6 +1251,7 @@ create or replace function public.finalize_money_week(p_week_start date)
 returns jsonb as $$
 declare
   v_top3 jsonb;
+  v_full_board jsonb;
 begin
   with ranked as (
     select id, money_weekly_cents,
@@ -1248,30 +1269,31 @@ begin
         else 0
       end as prize
     from ranked
+  ),
+  updated as (
+    update profiles p set
+      money_diamonds = p.money_diamonds + prized.prize,
+      money_reached_top3_weekly = p.money_reached_top3_weekly or (prized.rnk <= 3),
+      money_last_week_rank = prized.rnk,
+      money_last_week_score_cents = prized.money_weekly_cents,
+      money_last_week_diamonds_awarded = prized.prize,
+      money_weekly_results_seen = false
+    from prized
+    where p.id = prized.id
+    returning p.id, p.username, p.selected_emoji, prized.money_weekly_cents as score_cents, prized.rnk, prized.prize
   )
-  update profiles p set
-    money_diamonds = p.money_diamonds + prized.prize,
-    money_reached_top3_weekly = p.money_reached_top3_weekly or (prized.rnk <= 3),
-    money_last_week_rank = prized.rnk,
-    money_last_week_score_cents = prized.money_weekly_cents,
-    money_last_week_diamonds_awarded = prized.prize,
-    money_weekly_results_seen = false
-  from prized
-  where p.id = prized.id;
+  select
+    coalesce(jsonb_agg(jsonb_build_object(
+      'userId', id, 'username', username, 'emoji', selected_emoji, 'scoreCents', score_cents
+    ) order by score_cents desc, id asc) filter (where rnk <= 3), '[]'::jsonb),
+    coalesce(jsonb_agg(jsonb_build_object(
+      'userId', id, 'username', username, 'emoji', selected_emoji, 'scoreCents', score_cents,
+      'rank', rnk, 'diamondsAwarded', prize
+    ) order by rnk), '[]'::jsonb)
+  into v_top3, v_full_board
+  from updated;
 
-  select coalesce(jsonb_agg(jsonb_build_object(
-      'userId', id, 'username', username, 'emoji', selected_emoji, 'scoreCents', money_weekly_cents
-    ) order by money_weekly_cents desc, id asc), '[]'::jsonb)
-    into v_top3
-  from (
-    select id, username, selected_emoji, money_weekly_cents
-    from profiles
-    where money_weekly_cents > 0
-    order by money_weekly_cents desc, id asc
-    limit 3
-  ) t;
-
-  update money_weekly_resets set top3 = v_top3 where week_start = p_week_start;
+  update money_weekly_resets set top3 = v_top3, full_board = v_full_board where week_start = p_week_start;
 
   return v_top3;
 end;

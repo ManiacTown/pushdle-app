@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient.js';
 import { pacificDateString, msUntilNextPacificWeekStart, formatCountdown } from '../lib/pacificDate.js';
@@ -34,16 +34,28 @@ const WEEKLY_LEADERBOARD_START_DATE = '2026-08-03';
 export default function Leaderboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  // Only ever set by MoneyWeeklyResultsModal.jsx's "View full leaderboard"
+  // link ({ tab: 'money', moneyPeriod: 'lastweek' }) — lazy-initialized
+  // (not a separate effect, unlike Profile.jsx's scrollToBadges) since
+  // this only needs to pick the right values before the first render,
+  // not perform an imperative action after it.
+  const location = useLocation();
   const [allRows, setAllRows] = useState([]);
   const [page, setPage] = useState(0);
-  const [tab, setTab] = useState('streak');
+  const [tab, setTab] = useState(() => (location.state?.tab === 'money' ? 'money' : 'streak'));
   // Sub-toggle within the money tab only (not a third top-level tab) —
   // 'lifetime' reads money_lifetime_cents (never goes down), 'weekly'
   // reads money_weekly_cents (reset by api/weekly-money-reset.js every
   // Monday — see that file and game.js's "Golden Goose" badge, which
   // snapshots the top 3 here into something permanent right before the
-  // reset happens).
-  const [moneyPeriod, setMoneyPeriod] = useState('weekly');
+  // reset happens), 'lastweek' reads a frozen snapshot of the most
+  // recently COMPLETED week from money_weekly_resets.full_board — the
+  // only one of the three that isn't a live read off profiles, since a
+  // completed week's profiles.money_weekly_cents has already been reset
+  // to 0 by the time anyone could view it live.
+  const [moneyPeriod, setMoneyPeriod] = useState(() =>
+    location.state?.moneyPeriod === 'lastweek' || location.state?.moneyPeriod === 'lifetime' ? location.state.moneyPeriod : 'weekly'
+  );
   // Last week's champions (see WeeklyPodium above) — fetched once per
   // visit to the money tab, independent of moneyPeriod (it's always "last
   // week," regardless of which period you're currently browsing).
@@ -107,6 +119,50 @@ export default function Leaderboard() {
     }
 
     if (tab === 'money') {
+      // A frozen snapshot, not a live profiles read — see moneyPeriod's
+      // own comment above for why. Same WEEKLY_LEADERBOARD_START_DATE gate
+      // and .gt (not .gte) reasoning as the lastWeekTop3 podium fetch
+      // below: only a week dated strictly after launch reflects a full
+      // week of real, post-launch play.
+      if (moneyPeriod === 'lastweek') {
+        if (!weeklyLeaderboardLive) {
+          setAllRows([]);
+          return;
+        }
+        supabase
+          .from('money_weekly_resets')
+          .select('full_board')
+          .gt('week_start', WEEKLY_LEADERBOARD_START_DATE)
+          .order('week_start', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+          .then(({ data, error }) => {
+            if (error) {
+              console.error('leaderboard last-week fetch failed:', error);
+              setFetchError(true);
+              setAllRows([]);
+              return;
+            }
+            // Already rank-ordered server-side (finalize_money_week's own
+            // `order by rnk` — see schema.sql), so no client-side re-sort
+            // needed. No aura/rowStyle — those are live personalization,
+            // not part of the frozen snapshot (see full_board's own
+            // comment in schema.sql); the row list below just renders
+            // without that flourish for this one view.
+            setAllRows(
+              (data?.full_board ?? []).map((row) => ({
+                userId: row.userId,
+                name: row.username ?? 'Unknown',
+                emoji: row.emoji ?? null,
+                aura: null,
+                rowStyle: null,
+                score: row.scoreCents,
+                me: user ? row.userId === user.id : false,
+              }))
+            );
+          });
+        return;
+      }
       // Weekly hasn't actually started yet (see WEEKLY_LEADERBOARD_START_DATE)
       // — skip the fetch entirely rather than pull a meaningless
       // all-zero-post-reset row list nobody should see. Lifetime is
@@ -197,6 +253,8 @@ export default function Leaderboard() {
         {tab === 'money'
           ? moneyPeriod === 'weekly'
             ? "This week's money leaderboard"
+            : moneyPeriod === 'lastweek'
+            ? "Last week's money leaderboard"
             : 'Lifetime money leaderboard'
           : "Today's leaderboard"}
       </h3>
@@ -242,6 +300,17 @@ export default function Leaderboard() {
                 <button
                   className="btn-ghost"
                   style={
+                    moneyPeriod === 'lastweek'
+                      ? { borderColor: 'rgba(139,92,246,0.7)', color: 'var(--text)', fontSize: 11 }
+                      : { fontSize: 11 }
+                  }
+                  onClick={() => setMoneyPeriod('lastweek')}
+                >
+                  Last Week
+                </button>
+                <button
+                  className="btn-ghost"
+                  style={
                     moneyPeriod === 'lifetime'
                       ? { borderColor: 'rgba(139,92,246,0.7)', color: 'var(--text)', fontSize: 11 }
                       : { fontSize: 11 }
@@ -272,6 +341,10 @@ export default function Leaderboard() {
           ? 'Starts August 3rd — check back then!'
           : tab === 'money' && moneyPeriod === 'weekly'
           ? 'Resets every Monday — top 3 here earn the Golden Goose badge right before the reset.'
+          : tab === 'money' && moneyPeriod === 'lastweek' && allRows.length === 0
+          ? 'No snapshot yet — check back after the next Monday reset.'
+          : tab === 'money' && moneyPeriod === 'lastweek'
+          ? "A frozen snapshot of last week's final standings — 1st-10th earned real diamond prizes."
           : tab === 'money'
           ? 'Total money ever cashed out — spending in the shop never lowers this.'
           : 'Real runs from logged-in players — guest runs stay local and never appear here.'}
