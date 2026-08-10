@@ -11,6 +11,23 @@
 // registration.update() is what triggers that check; this just calls it
 // periodically so an idle tab eventually notices too.
 //
+// The interval alone is NOT enough on its own, though — confirmed as the
+// real cause of a report that a deploy sat unpicked-up for someone until
+// they were told to hard-refresh. Mobile browsers (this is a phone-first
+// game) aggressively suspend timers on a backgrounded/locked tab, so the
+// interval simply doesn't fire while it's backgrounded; reopening it later
+// often restores the page from a frozen bfcache snapshot rather than a
+// real reload, so nothing re-checks for an update at that point either —
+// a tab can sit backgrounded through several deploys and never once
+// actually run registration.update() until it happens to still be in the
+// foreground when a 2-minute tick lands. The visibilitychange/pageshow
+// listeners below close that gap by forcing an immediate check the moment
+// a tab comes back to the foreground (backgrounding a tab and returning
+// to it later is the normal way anyone actually uses a phone game, far
+// more than staring at one continuously-foregrounded tab for 2+ minutes
+// straight), on top of the interval still covering a tab that's genuinely
+// foregrounded and idle the whole time.
+//
 // No user-visible prompt/banner by design, matching the "no update
 // available, click to refresh" choice already made for the service
 // worker itself — a reload can land mid-push/mid-reveal, but nothing is
@@ -57,7 +74,25 @@ export function initPWAUpdates() {
     onNeedReload: hardReload,
     onRegisteredSW(_swUrl, registration) {
       if (!registration) return;
+      // Immediately on registration, not just once the first interval
+      // tick lands — closes the gap where a tab that opens, sits idle for
+      // under 2 minutes, then gets backgrounded, never gets a single
+      // check in before the visibility-driven checks below take over.
+      registration.update();
       setInterval(() => registration.update(), UPDATE_CHECK_INTERVAL_MS);
+      // The real fix for the "backgrounded tab misses every deploy"
+      // failure mode (see this file's header comment) — check the moment
+      // a tab actually becomes visible again, instead of only on a fixed
+      // timer that a backgrounded tab can't reliably run.
+      // visibilitychange covers switching back to this tab/foregrounding
+      // the app; pageshow with event.persisted covers a bfcache restore
+      // specifically, which visibilitychange doesn't always accompany.
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') registration.update();
+      });
+      window.addEventListener('pageshow', (event) => {
+        if (event.persisted) registration.update();
+      });
     },
   });
 }
