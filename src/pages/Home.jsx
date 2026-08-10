@@ -17,7 +17,7 @@ import {
   PITY_CHARGES_NEEDED,
 } from '../lib/game.js';
 import { getQuoteForStreak, getBustQuoteForStreak, getPokeQuip } from '../lib/quotes.js';
-import { MONEY_SUCCESS_CHANCE } from '../lib/money.js';
+import { MONEY_SUCCESS_CHANCE, diamondsForWeeklyRank } from '../lib/money.js';
 import { modeSlotStyle, MODE_TRANSITION_PHASE_MS } from '../lib/modeTransition.js';
 import { playPush, playSuccess, playBust, playBadge, playNav, playReveal, playPoke, playShopOpen, playShopClose } from '../lib/sound.js';
 import { spotlightMove } from '../lib/spotlight.js';
@@ -30,6 +30,7 @@ import { hasSeenMoneyUnlockLocally, markMoneyUnlockSeenLocally } from '../lib/mo
 import OnboardingModal from '../components/OnboardingModal.jsx';
 import MoneyModeUnlockModal from '../components/MoneyModeUnlockModal.jsx';
 import PityIntroModal from '../components/PityIntroModal.jsx';
+import MoneyWeeklyResultsModal from '../components/MoneyWeeklyResultsModal.jsx';
 import MoneyMode, { MONEY_BADGE_REVEAL_DELAY_MS, MONEY_PANEL_GAP } from '../components/MoneyMode.jsx';
 import MoneyShop from '../components/MoneyShop.jsx';
 import BadgeToastStack from '../components/BadgeToast.jsx';
@@ -95,6 +96,20 @@ export default function Home() {
   // dev-tools summon must NOT call markPityIntroSeen, or previewing it
   // would consume a real player's actual one-time explainer moment.
   const [pityIntroPreview, setPityIntroPreview] = useState(false);
+  // Weekly results modal (see MoneyWeeklyResultsModal.jsx) — shown once
+  // per completed week to any account finalize_money_week actually
+  // ranked, gated by profiles.money_weekly_results_seen. moneyWeeklyResultsData
+  // holds the {rank, scoreCents, diamondsAwarded, top3} snapshot for
+  // whichever trigger (real or admin preview) opened it — set right
+  // before setShowMoneyWeeklyResultsModal(true) either way, so the modal
+  // itself never has to know which path populated it.
+  const [showMoneyWeeklyResultsModal, setShowMoneyWeeklyResultsModal] = useState(false);
+  const [moneyWeeklyResultsData, setMoneyWeeklyResultsData] = useState(null);
+  // Same preview-flag reasoning as moneyUnlockPreview/pityIntroPreview
+  // above — an admin dev-tools summon must NOT call
+  // markMoneyWeeklyResultsSeen, or previewing it would consume this
+  // account's own real unseen-results moment.
+  const [moneyWeeklyResultsPreview, setMoneyWeeklyResultsPreview] = useState(false);
   // Money-variant mode switch — open to everyone (see hasPlayedClassic
   // below for the one real requirement). Not persisted across reloads —
   // always starts back on classic.
@@ -281,6 +296,8 @@ export default function Home() {
     onboardingSeen,
     pityIntroSeen,
     markPityIntroSeen,
+    moneyWeeklyResultsSeen,
+    markMoneyWeeklyResultsSeen,
   } = useAuth();
 
   // Money mode's progression gate, computed once here rather than
@@ -720,6 +737,48 @@ export default function Home() {
     timers.current.push(timer);
     return () => clearTimeout(timer);
   }, [user, onboardingSeen, moneyUnlockSeen, hasPlayedClassic]);
+
+  // Announces last week's money-mode weekly-leaderboard results (see
+  // MoneyWeeklyResultsModal.jsx) the first time a ranked account logs in
+  // after the Monday reset. Gated on profiles.money_weekly_results_seen
+  // (flipped to false by finalize_money_week ONLY for accounts it
+  // actually ranked that week — see that function's own comment in
+  // schema.sql) AND authStats.moneyLastWeekRank actually being set (still
+  // null means either the login-time fetch hasn't landed yet, or this
+  // account has never once ranked — either way, nothing to show). No
+  // guest path at all, unlike the money-unlock trigger above — a rank is
+  // inherently a registered-account concept.
+  const moneyWeeklyResultsShownRef = useRef(false);
+  useEffect(() => {
+    if (!user) return;
+    if (moneyWeeklyResultsSeen !== false) return; // null (still loading) or already true
+    if (authStats?.moneyLastWeekRank == null) return; // not loaded yet, or never ranked
+    if (moneyWeeklyResultsShownRef.current) return;
+    moneyWeeklyResultsShownRef.current = true;
+    const timer = setTimeout(async () => {
+      // Same "last completed week" query Leaderboard.jsx's own podium
+      // uses, minus its WEEKLY_LEADERBOARD_START_DATE display gate — that
+      // gate exists to hide pre-launch bot data from a casual visitor
+      // browsing the leaderboard; this modal only ever fires for an
+      // account finalize_money_week just genuinely ranked, so there's
+      // nothing pre-launch left to hide from it by the time it can fire.
+      const { data } = await supabase
+        .from('money_weekly_resets')
+        .select('top3')
+        .order('week_start', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      setMoneyWeeklyResultsData({
+        rank: authStats.moneyLastWeekRank,
+        scoreCents: authStats.moneyLastWeekScoreCents ?? 0,
+        diamondsAwarded: authStats.moneyLastWeekDiamondsAwarded ?? 0,
+        top3: data?.top3 ?? [],
+      });
+      setShowMoneyWeeklyResultsModal(true);
+    }, 1400);
+    timers.current.push(timer);
+    return () => clearTimeout(timer);
+  }, [user, moneyWeeklyResultsSeen, authStats?.moneyLastWeekRank]);
 
   // Once busted, tick every second so the "next run" countdown is live,
   // and re-check the date so the run auto-resets the moment it rolls over.
@@ -1945,6 +2004,22 @@ export default function Home() {
             />
           )}
 
+          {showMoneyWeeklyResultsModal && moneyWeeklyResultsData && (
+            <MoneyWeeklyResultsModal
+              rank={moneyWeeklyResultsData.rank}
+              scoreCents={moneyWeeklyResultsData.scoreCents}
+              diamondsAwarded={moneyWeeklyResultsData.diamondsAwarded}
+              top3={moneyWeeklyResultsData.top3}
+              onDismiss={() => {
+                setShowMoneyWeeklyResultsModal(false);
+                // A preview dismissal never marks it seen — see
+                // moneyWeeklyResultsPreview's own declaration comment.
+                if (moneyWeeklyResultsPreview) setMoneyWeeklyResultsPreview(false);
+                else markMoneyWeeklyResultsSeen();
+              }}
+            />
+          )}
+
           {/* Gated strictly by role now the site is actually public — this
               used to also show for guests (no account = no role to check),
               since that was the only way to dev-test the local/guest game
@@ -2065,6 +2140,35 @@ export default function Home() {
                 }}
               >
                 🍀 Preview pity intro
+              </button>
+              <button
+                className="btn-ghost"
+                onClick={async () => {
+                  // Uses this account's own real last-week snapshot if it
+                  // has one (authStats.moneyLastWeekRank), same numbers a
+                  // real trigger would show — falls back to a fixed demo
+                  // rank (2nd place, so the Golden Goose banner and a
+                  // real diamond count both render) for an admin account
+                  // that's never actually ranked, so this stays useful
+                  // for testing on a fresh/never-played admin login too.
+                  const rank = authStats?.moneyLastWeekRank ?? 2;
+                  const { data } = await supabase
+                    .from('money_weekly_resets')
+                    .select('top3')
+                    .order('week_start', { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
+                  setMoneyWeeklyResultsData({
+                    rank,
+                    scoreCents: authStats?.moneyLastWeekScoreCents ?? 15000,
+                    diamondsAwarded: authStats?.moneyLastWeekDiamondsAwarded ?? diamondsForWeeklyRank(rank),
+                    top3: data?.top3 ?? [],
+                  });
+                  setMoneyWeeklyResultsPreview(true);
+                  setShowMoneyWeeklyResultsModal(true);
+                }}
+              >
+                🐔 Preview weekly results
               </button>
             </div>
           )}

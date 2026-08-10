@@ -8,18 +8,22 @@
 // not a wall-clock "is it exactly Monday midnight" check — same pattern
 // the daily bot-seeding cron already established.
 //
-// Does four things once per Pacific week: snapshots whoever is in the top
-// 3 by money_weekly_cents into a permanent money_reached_top3_weekly flag
+// Does five things once per Pacific week, the first four via a single
+// finalize_money_week RPC call (schema.sql) below: ranks everyone who
+// earned anything this week, pays out 20/15/10/5 diamonds for 1st/2nd/3rd/
+// 4th-10th, and snapshots each ranked account's own placement (rank/score/
+// diamonds awarded) for MoneyWeeklyResultsModal.jsx to show on their next
+// login; grants a permanent money_reached_top3_weekly flag to the top 3
 // (see game.js's "Golden Goose" badge — live rank isn't a stable thing to
 // derive a badge from, so this is the one moment that rank gets turned
 // into something permanent); writes that same top 3 (username/emoji/score
 // AS OF right now) into this week's money_weekly_resets row, which is what
-// Leaderboard.jsx's "last week's champions" podium reads back; resets
-// money_weekly_cents to 0 for the new week; and re-arms weekly bust
-// insurance for everyone who used their charge this past week (see
-// insurance_used_this_week's own comment in schema.sql — "once a week"
-// means the same week the money leaderboard itself uses, so it resets in
-// this same pass).
+// Leaderboard.jsx's "last week's champions" podium reads back. Separately,
+// this handler also resets money_weekly_cents to 0 for the new week; and
+// re-arms weekly bust insurance for everyone who used their charge this
+// past week (see insurance_used_this_week's own comment in schema.sql —
+// "once a week" means the same week the money leaderboard itself uses, so
+// it resets in this same pass).
 //
 // SB_URL/SB_SERVICE_KEY/CRON_SECRET — same env vars, same reasoning, as
 // api/simulate-bot-day.js.
@@ -96,31 +100,17 @@ export default async function handler(req, res) {
     }
 
     if (!top3Snapshot) {
-      const top3 = await api(
-        url,
-        serviceKey,
-        '/rest/v1/profiles?money_weekly_cents=gt.0&order=money_weekly_cents.desc&limit=3&select=id,username,selected_emoji,money_weekly_cents'
-      );
-      for (const { id } of top3) {
-        await api(url, serviceKey, `/rest/v1/profiles?id=eq.${id}`, {
-          method: 'PATCH',
-          headers: { Prefer: 'return=minimal' },
-          body: JSON.stringify({ money_reached_top3_weekly: true }),
-        });
-      }
-
-      // Snapshotted now (username/emoji as of THIS moment), not looked up
-      // live later — see top3's own column comment in schema.sql for why.
-      top3Snapshot = top3.map((r) => ({
-        userId: r.id,
-        username: r.username,
-        emoji: r.selected_emoji,
-        scoreCents: r.money_weekly_cents,
-      }));
-      await api(url, serviceKey, `/rest/v1/money_weekly_resets?week_start=eq.${weekStart}`, {
-        method: 'PATCH',
-        headers: { Prefer: 'return=minimal' },
-        body: JSON.stringify({ top3: top3Snapshot }),
+      // finalize_money_week (schema.sql) does the rank computation, the
+      // Golden Goose grant, the 1st-10th diamond payout, AND the top3
+      // write into money_weekly_resets — all in one transaction. That's
+      // what makes this whole block safe to guard with just
+      // `if (!top3Snapshot)`: a resumed run sees the write already landed
+      // (via the existing[0].top3 check above) and skips calling this
+      // again, so the diamond credit — unlike every other step in this
+      // handler — never risks double-paying on retry.
+      top3Snapshot = await api(url, serviceKey, '/rest/v1/rpc/finalize_money_week', {
+        method: 'POST',
+        body: JSON.stringify({ p_week_start: weekStart }),
       });
     }
 

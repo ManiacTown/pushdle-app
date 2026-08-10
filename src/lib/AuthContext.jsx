@@ -28,6 +28,13 @@ export function AuthProvider({ children }) {
   // explainer — same null-while-unknown/no-localStorage-side reasoning as
   // moneyUnlockSeen above (registered-accounts-only feature).
   const [pityIntroSeen, setPityIntroSeenState] = useState(null);
+  // Whether MoneyWeeklyResultsModal.jsx has been dismissed for the CURRENT
+  // money_last_week_rank snapshot — same null-while-unknown convention as
+  // pityIntroSeen above, but this one flips back to false on its OWN
+  // (by finalize_money_week, every time a new week completes with this
+  // account ranked), not just once ever — see that column's own comment
+  // in schema.sql.
+  const [moneyWeeklyResultsSeen, setMoneyWeeklyResultsSeenState] = useState(null);
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
@@ -69,6 +76,7 @@ export function AuthProvider({ children }) {
       setOnboardingSeenState(null);
       setMoneyUnlockSeenState(null);
       setPityIntroSeenState(null);
+      setMoneyWeeklyResultsSeenState(null);
       return;
     }
     supabase
@@ -179,6 +187,22 @@ export function AuthProvider({ children }) {
         // money_unlock_seen's own fallback — showing it an extra time is
         // harmless, silently never showing it at all isn't.
         setPityIntroSeenState(error ? false : data?.pity_intro_seen ?? false);
+      });
+
+    // Same defensive separate-query reasoning as onboarding_seen/
+    // money_unlock_seen/pity_intro_seen above. No localStorage/guest
+    // carry-over needed, same reasoning as pity_intro_seen (money mode is
+    // registered-accounts-only). Defaults to true (not false) on error —
+    // unlike the others, silently showing this an extra time isn't
+    // harmless (it would re-announce a stale week's placement), so a
+    // failed fetch fails toward "don't show" rather than "show".
+    supabase
+      .from('profiles')
+      .select('money_weekly_results_seen')
+      .eq('id', user.id)
+      .single()
+      .then(({ data, error }) => {
+        setMoneyWeeklyResultsSeenState(error ? true : data?.money_weekly_results_seen ?? true);
       });
 
     // Money-variant wallet/lifetime totals (see MoneyMode.jsx). Same
@@ -309,7 +333,8 @@ export function AuthProvider({ children }) {
         'money_wallet_cents, money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
           'money_weekly_cents, money_best_weekly_cents, money_diamonds, owns_diamond_button, ' +
           'owned_cosmetics, active_push_skin, active_aura, active_row_style, owns_insurance, insurance_used_this_week, ' +
-          'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100'
+          'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100, ' +
+          'money_last_week_rank, money_last_week_score_cents, money_last_week_diamonds_awarded'
       )
       .eq('id', user.id)
       .single();
@@ -351,6 +376,13 @@ export function AuthProvider({ children }) {
       // moneyWeeklyCents (see api/weekly-money-reset.js).
       ownsInsurance: !!data?.owns_insurance,
       insuranceUsedThisWeek: !!data?.insurance_used_this_week,
+      // This account's placement in the most recently completed money
+      // week (see MoneyWeeklyResultsModal.jsx and finalize_money_week's
+      // own comment in schema.sql) — moneyLastWeekRank stays null until
+      // this account has ranked in at least one completed week.
+      moneyLastWeekRank: data?.money_last_week_rank ?? null,
+      moneyLastWeekScoreCents: data?.money_last_week_score_cents ?? 0,
+      moneyLastWeekDiamondsAwarded: data?.money_last_week_diamonds_awarded ?? 0,
     };
     setStats((prev) => ({ ...prev, ...next }));
     return next;
@@ -385,6 +417,19 @@ export function AuthProvider({ children }) {
     if (error) console.error('failed to sync pity_intro_seen:', error);
   }
 
+  // Called by Home.jsx when MoneyWeeklyResultsModal.jsx is dismissed for
+  // real (not the admin dev-tools preview) — same optimistic-update shape
+  // as markPityIntroSeen above, except this flag is one-way-PER-WEEK, not
+  // one-way-forever (see money_weekly_results_seen's own comment in
+  // schema.sql — finalize_money_week flips it back to false every time
+  // this account ranks in a newly-completed week).
+  async function markMoneyWeeklyResultsSeen() {
+    if (!user) return;
+    setMoneyWeeklyResultsSeenState(true);
+    const { error } = await supabase.from('profiles').update({ money_weekly_results_seen: true }).eq('id', user.id);
+    if (error) console.error('failed to sync money_weekly_results_seen:', error);
+  }
+
   return (
     <AuthContext.Provider
       value={{
@@ -410,6 +455,8 @@ export function AuthProvider({ children }) {
         markMoneyUnlockSeen,
         pityIntroSeen,
         markPityIntroSeen,
+        moneyWeeklyResultsSeen,
+        markMoneyWeeklyResultsSeen,
         signUp,
         signIn,
         logout,

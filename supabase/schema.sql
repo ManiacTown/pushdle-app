@@ -225,7 +225,38 @@ create table if not exists profiles (
   -- per-field exceptions (an earlier version of this column WAS
   -- money_busted_over_100, which broke that; see this file's git history
   -- and game.js's camelToSnakeFields comment).
-  money_busted_over100           boolean not null default false
+  money_busted_over100           boolean not null default false,
+
+  -- This account's placement in the most recently COMPLETED money week —
+  -- written exclusively by finalize_money_week (see below), which runs
+  -- once as part of api/weekly-money-reset.js's Monday pass, right before
+  -- money_weekly_cents gets zeroed for the new week. Null forever for an
+  -- account that has never once earned money in a week that completed
+  -- (never touched by finalize_money_week — a 0-cents week isn't ranked at
+  -- all, mirroring the old top3 query's own `money_weekly_cents=gt.0`
+  -- filter). Stays at its LAST real value between weeks — nothing clears
+  -- it back to null — since money_weekly_results_seen below is what
+  -- actually gates whether it's still "new" to show, not this column
+  -- itself.
+  money_last_week_rank             int check (money_last_week_rank is null or money_last_week_rank >= 1),
+  money_last_week_score_cents      int not null default 0 check (money_last_week_score_cents >= 0),
+  -- What finalize_money_week actually credited to money_diamonds for that
+  -- placement (20/15/10/5/0 — see that function's own comment for the
+  -- tier table) — stored per-account rather than re-derived from rank on
+  -- read, so MoneyWeeklyResultsModal.jsx shows exactly what was credited
+  -- even if the prize tiers themselves change in some future week.
+  money_last_week_diamonds_awarded int not null default 0 check (money_last_week_diamonds_awarded >= 0),
+  -- Whether MoneyWeeklyResultsModal.jsx has been dismissed for the
+  -- CURRENT money_last_week_rank snapshot — same one-way-until-reset
+  -- pattern as insurance_used_this_week (not onboarding_seen/
+  -- money_unlock_seen, which are one-way FOREVER): finalize_money_week
+  -- flips this back to false for every ranked account on every completed
+  -- week, and the modal's own onDismiss flips it back to true, so it
+  -- shows again next week for anyone who ranks again. Defaults to true
+  -- (not false) so this ships without retroactively popping the modal for
+  -- every existing account on their next login — only an account
+  -- finalize_money_week actually touches ever sees it flip to false.
+  money_weekly_results_seen        boolean not null default true
 );
 
 alter table profiles enable row level security;
@@ -256,7 +287,16 @@ grant select on profiles to anon, authenticated;
 -- independently. onboarding_seen/money_unlock_seen/pity_intro_seen are
 -- safe to leave directly client-writable (unlike the stat columns) since
 -- they're one-way true flags with no scoring implications either way.
-grant update (username, selected_emoji, onboarding_seen, money_unlock_seen, pity_intro_seen) on profiles to authenticated;
+-- money_weekly_results_seen joins this list for the same reason
+-- money_unlock_seen/pity_intro_seen already are — it's a one-way-per-week
+-- ack flag with no scoring implications, flipped by
+-- MoneyWeeklyResultsModal.jsx's own dismiss handler (see AuthContext.jsx's
+-- markMoneyWeeklyResultsSeen). The rank/score/diamonds-awarded columns
+-- next to it stay OUT of this grant on purpose — those are only ever
+-- written by finalize_money_week (service_role), same "never trust the
+-- client with a scoring/currency field" posture every other money_* column
+-- above already follows.
+grant update (username, selected_emoji, onboarding_seen, money_unlock_seen, pity_intro_seen, money_weekly_results_seen) on profiles to authenticated;
 -- service_role bypasses RLS policies but NOT base object grants — those are
 -- two separate permission layers, and creating a table via raw SQL doesn't
 -- grant either automatically the way the Table Editor UI does.
@@ -1154,3 +1194,88 @@ create policy "money weekly resets are publicly readable"
   using (true);
 grant select on money_weekly_resets to anon, authenticated;
 grant all on money_weekly_resets to service_role;
+
+-- The real work of the Monday reset (see api/weekly-money-reset.js), called
+-- exactly once per week from inside that handler's own
+-- `if (!top3Snapshot)` guard — which is what makes this safe to treat as
+-- run-at-most-once despite the diamond credit below NOT being idempotent
+-- the way the rest of that handler's steps are (a boolean OR / an
+-- overwrite-with-same-value can be repeated harmlessly; `money_diamonds +
+-- prize` cannot, it would double-pay). That guard works specifically
+-- because this function does EVERYTHING in one transaction, including
+-- writing the top3 result into money_weekly_resets itself (the last line
+-- below) — so a resumed run's `existing[0].top3` check at the top of the
+-- handler can tell a prior successful call already happened and skip
+-- calling this again, with no window where the diamond credit could have
+-- committed while the top3 write didn't (or vice versa).
+--
+-- Ranks every profile that earned anything this week (money_weekly_cents >
+-- 0 — a 0-cents week was never in the running, same filter the old
+-- hand-written top3 query used), pays out 20/15/10 diamonds for 1st/2nd/
+-- 3rd and 5 for 4th-10th (0 beyond that), grants the permanent Golden
+-- Goose flag for top 3 (money_reached_top3_weekly, an OR so re-earning it
+-- a later week is a no-op), and snapshots each ranked account's own
+-- placement into money_last_week_rank/score_cents/diamonds_awarded for
+-- MoneyWeeklyResultsModal.jsx to read on that account's next login —
+-- flipping money_weekly_results_seen back to false is what actually makes
+-- the modal fire again (see that column's own comment). `id asc` as the
+-- tiebreak (the old query had none) makes an exact-cents tie a total
+-- order — matters more here than it used to, now that the tied accounts'
+-- ranks feed real diamond payouts, not just a display-only top3 list.
+--
+-- src/lib/money.js's diamondsForWeeklyRank() mirrors this CASE for
+-- display (the modal's prize infographic, the admin preview tool) — this
+-- function is still the one real source of truth; keep both in sync if
+-- the tiers ever change.
+create or replace function public.finalize_money_week(p_week_start date)
+returns jsonb as $$
+declare
+  v_top3 jsonb;
+begin
+  with ranked as (
+    select id, money_weekly_cents,
+           row_number() over (order by money_weekly_cents desc, id asc) as rnk
+    from profiles
+    where money_weekly_cents > 0
+  ),
+  prized as (
+    select id, money_weekly_cents, rnk,
+      case
+        when rnk = 1 then 20
+        when rnk = 2 then 15
+        when rnk = 3 then 10
+        when rnk <= 10 then 5
+        else 0
+      end as prize
+    from ranked
+  )
+  update profiles p set
+    money_diamonds = p.money_diamonds + prized.prize,
+    money_reached_top3_weekly = p.money_reached_top3_weekly or (prized.rnk <= 3),
+    money_last_week_rank = prized.rnk,
+    money_last_week_score_cents = prized.money_weekly_cents,
+    money_last_week_diamonds_awarded = prized.prize,
+    money_weekly_results_seen = false
+  from prized
+  where p.id = prized.id;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'userId', id, 'username', username, 'emoji', selected_emoji, 'scoreCents', money_weekly_cents
+    ) order by money_weekly_cents desc, id asc), '[]'::jsonb)
+    into v_top3
+  from (
+    select id, username, selected_emoji, money_weekly_cents
+    from profiles
+    where money_weekly_cents > 0
+    order by money_weekly_cents desc, id asc
+    limit 3
+  ) t;
+
+  update money_weekly_resets set top3 = v_top3 where week_start = p_week_start;
+
+  return v_top3;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+revoke execute on function public.finalize_money_week from public, anon, authenticated;
+grant execute on function public.finalize_money_week to service_role;

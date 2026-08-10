@@ -7,9 +7,8 @@ import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
 import { formatCents } from '../lib/money.js';
 import { ROW_STYLE_COLORS, auraStyle } from '../lib/cosmetics.js';
+import WeeklyPodium, { RANK_COLORS } from '../components/WeeklyPodium.jsx';
 
-// Gold / silver / bronze accents for the top 3 ranks.
-const RANK_COLORS = ['#ffd45e', '#c9d3e0', '#e8935a'];
 // Rows per page — once the merged real+bot list exceeds this, pagination
 // controls appear below the board.
 const PAGE_SIZE = 50;
@@ -31,84 +30,6 @@ const PAGE_SIZE = 50;
 // that (once a real week has actually completed and the cron has run),
 // real champions start showing up there too.
 const WEEKLY_LEADERBOARD_START_DATE = '2026-08-03';
-
-// Last week's top 3 by money_weekly_cents (see api/weekly-money-reset.js,
-// which snapshots this into money_weekly_resets.top3 right before each
-// Monday reset) — rendered 2nd/1st/3rd left-to-right, classic podium
-// order, with block height tracking rank. Real graphics can swap in for
-// these plain CSS blocks later; the data/layout underneath won't change.
-function WeeklyPodium({ top3 }) {
-  // Its own useNavigate(), not a prop drilled down from Leaderboard — this
-  // is rendered as a real component (<WeeklyPodium .../>), so it's free to
-  // call hooks directly, same as any other component in this file.
-  const navigate = useNavigate();
-  if (!top3 || top3.length === 0) {
-    return (
-      <div className="mono" style={{ fontSize: 9, color: 'var(--text-dim)', textAlign: 'center', alignSelf: 'center', maxWidth: 140 }}>
-        No champions yet — check back after the first weekly reset.
-      </div>
-    );
-  }
-  const order = [1, 0, 2];
-  const heights = [64, 46, 34];
-  const medals = ['🥇', '🥈', '🥉'];
-  return (
-    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
-      {order.map((rankIdx) => {
-        const entry = top3[rankIdx];
-        if (!entry) return <div key={rankIdx} style={{ width: 50 }} />;
-        // Same navigation as the regular row list below (playNav + push to
-        // the read-only PublicProfile route) — entry.userId is a real
-        // profiles.id either way, bot or real account, so this always
-        // resolves. Snapshotted username/emoji still display even if
-        // that account has since renamed/changed flair; only the
-        // navigation itself uses the live id.
-        const goToProfile = () => {
-          playNav();
-          navigate(`/player/${entry.userId}`);
-        };
-        return (
-          <div
-            key={rankIdx}
-            className="mono podium-entry"
-            onClick={goToProfile}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key !== 'Enter' && e.key !== ' ') return;
-              e.preventDefault();
-              goToProfile();
-            }}
-            style={{ width: 50, textAlign: 'center', cursor: 'pointer' }}
-          >
-            <div style={{ fontSize: 15, marginBottom: 2 }}>{entry.emoji || ''}</div>
-            <div style={{ fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>
-              {entry.username}
-            </div>
-            <div
-              style={{
-                marginTop: 4,
-                height: heights[rankIdx],
-                borderRadius: '6px 6px 0 0',
-                background: `${RANK_COLORS[rankIdx]}22`,
-                border: `1px solid ${RANK_COLORS[rankIdx]}66`,
-                borderBottom: 'none',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 2,
-              }}
-            >
-              <div style={{ fontSize: 13 }}>{medals[rankIdx]}</div>
-              <div style={{ fontSize: 9, fontWeight: 700, color: RANK_COLORS[rankIdx] }}>{formatCents(entry.scoreCents)}</div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 export default function Leaderboard() {
   const { user } = useAuth();

@@ -21,3 +21,16 @@ export const MONEY_BONUS_EVERY = 5;
 export function formatCents(cents) {
   return `$${Math.round((cents ?? 0) / 100)}`;
 }
+
+// Weekly money-leaderboard prize tiers — mirrors finalize_money_week's own
+// CASE in schema.sql purely for display (MoneyWeeklyResultsModal.jsx's
+// prize infographic, Home.jsx's admin preview tool). The RPC is the one
+// real source of truth for what actually gets credited; keep both in sync
+// if the tiers ever change.
+export function diamondsForWeeklyRank(rank) {
+  if (rank === 1) return 20;
+  if (rank === 2) return 15;
+  if (rank === 3) return 10;
+  if (rank != null && rank <= 10) return 5;
+  return 0;
+}

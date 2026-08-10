@@ -253,3 +253,48 @@ There's still no automated anomaly alerting (a scheduled query flagging
 implausible jumps, e.g.) — this incident was caught by manually looking at
 the table editor, not tooling. Worth adding if this class of bug matters
 enough to want to catch it faster next time.
+
+## Weekly money-leaderboard results modal (2026-08-09)
+
+The Monday weekly reset (`api/weekly-money-reset.js`) previously zeroed
+`money_weekly_cents` and granted the Golden Goose badge to the top 3
+completely silently — no player was ever told their rank, and nobody
+outside the top 3 got anything at all for a strong week. Added a real
+prize structure and an announcement modal on top of the existing reset:
+
+- **Prizes are real, not cosmetic**: 1st/2nd/3rd place get 20/15/10
+  diamonds, 4th-10th get 5 each, credited straight to `money_diamonds`.
+  `finalize_money_week` (new RPC, `schema.sql`) does the rank computation
+  and the payout in one SQL statement.
+- **Idempotency was the hard part.** Every other step in the weekly-reset
+  handler is safe to retry (a boolean OR, an overwrite with the same
+  value) — `money_diamonds = money_diamonds + prize` is not; retrying it
+  would double-pay. Fixed by having `finalize_money_week` write its own
+  `top3` result into `money_weekly_resets` as its last statement, in the
+  SAME transaction as the diamond credit — so the handler's existing
+  resume check (`existing[0].top3` already set) correctly detects a prior
+  successful run and skips calling the RPC again, with no window where
+  the credit could land without the write, or vice versa. Don't split
+  those two writes back into separate calls without re-solving this.
+- **New per-account snapshot columns** (`profiles.money_last_week_rank`/
+  `money_last_week_score_cents`/`money_last_week_diamonds_awarded`) —
+  written only by `finalize_money_week`, read by
+  `MoneyWeeklyResultsModal.jsx`. `money_weekly_results_seen` gates the
+  modal itself — same one-way-flag shape as `money_unlock_seen`/
+  `pity_intro_seen`, except this one flips back to `false` every time
+  `finalize_money_week` ranks that account again in a newly-completed
+  week (it's a once-PER-WEEK ack, not once-ever).
+- **Only ranked accounts ever see the modal** — `finalize_money_week` only
+  touches profiles with `money_weekly_cents > 0` that week, so an account
+  that didn't play money mode at all last week never has its
+  `money_weekly_results_seen` flipped and the modal never triggers for it.
+- **`WeeklyPodium` was extracted** out of `Leaderboard.jsx` into its own
+  `src/components/WeeklyPodium.jsx` so the modal's podium graphic and the
+  leaderboard page's "last week's champions" panel are the literal same
+  component, not two copies that can drift apart.
+- **Admin dev-tools preview** ("🐔 Preview weekly results" in Home.jsx's
+  admin panel) uses the admin's own real last-week snapshot if they have
+  one, falling back to a fixed 2nd-place demo otherwise — lets this be
+  tested end-to-end (Golden Goose banner, podium, prize infographic) from
+  a fresh admin account that's never actually ranked, same as the other
+  preview dev-tools buttons never mutate the real seen-flag.
