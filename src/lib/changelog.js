@@ -6,6 +6,25 @@
 // nobody outside the codebase would ever notice.
 export const CHANGELOG = [
   {
+    date: '2026-08-11',
+    title: 'Top 3 tag and win badges',
+    items: [
+      'Added a gold "$ Top 3" tag next to your name — nav bar, leaderboard, and profile — for as long as you’re in last week’s Money Mode top 3. Rotates fresh every Monday.',
+      'Added a "🥇 x N" badge under your profile showing how many times you’ve finished #1 on the weekly Money Mode leaderboard.',
+      'The Golden Goose badge now uses an actual goose 🪿 instead of a chicken.',
+      'Updated the "This Week" leaderboard blurb to mention earning diamonds for finishing in the top 10.',
+    ],
+  },
+  {
+    date: '2026-08-09',
+    title: 'Weekly Money Mode results and diamond prizes',
+    items: [
+      'The Monday reset now actually tells you how you did — a results screen pops up with your rank, a podium, and real diamond prizes (20/15/10 for 1st/2nd/3rd, 5 for 4th-10th).',
+      'Added a "Last Week" tab to the money leaderboard so you can always see exactly how last week’s board finished.',
+      'The site now checks for updates the moment you switch back to an already-open tab, not just every couple minutes — fixes cases where reopening an old tab left you stuck on a stale version.',
+    ],
+  },
+  {
     date: '2026-08-03',
     title: 'Money Mode buff and a round of bug fixes',
     items: [

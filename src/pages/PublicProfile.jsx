@@ -12,6 +12,8 @@ import StatTilesPanel from '../components/StatTilesPanel.jsx';
 import AchievementTabToggle from '../components/AchievementTabToggle.jsx';
 import BadgeGrid from '../components/BadgeGrid.jsx';
 import InsuranceBadge from '../components/InsuranceBadge.jsx';
+import MoneyWinsBadge from '../components/MoneyWinsBadge.jsx';
+import TopThreeTag from '../components/TopThreeTag.jsx';
 
 // Read-only counterpart to Profile.jsx — same stats/badge-grid look, but
 // for viewing *someone else's* profile from the leaderboard (see the
@@ -93,7 +95,7 @@ export default function PublicProfile() {
         .from('profiles')
         .select(
           'money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
-            'money_weekly_cents, money_best_weekly_cents, ' +
+            'money_weekly_cents, money_best_weekly_cents, money_currently_top3, money_weekly_wins, ' +
             'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100'
         )
         .eq('id', userId)
@@ -229,6 +231,7 @@ export default function PublicProfile() {
       <div className="panel spotlight" onMouseMove={spotlightMove} style={{ marginBottom: 20 }}>
         <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            {!!moneyStats?.money_currently_top3 && <TopThreeTag />}
             <h2
               className="gradient-title"
               style={{
@@ -246,7 +249,10 @@ export default function PublicProfile() {
               <span style={{ fontSize: 20, flexShrink: 0 }}>{profile.selected_emoji}</span>
             )}
           </div>
-          <InsuranceBadge owns={!!profile.owns_insurance} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <InsuranceBadge owns={!!profile.owns_insurance} />
+            <MoneyWinsBadge wins={moneyStats?.money_weekly_wins ?? 0} />
+          </div>
         </div>
         {todayRun && (
           <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 8 }}>

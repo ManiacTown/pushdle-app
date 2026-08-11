@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '../lib/AuthContext.jsx';
 import { useChrome } from '../lib/ChromeContext.jsx';
 import { isMuted, toggleMuted, playNav } from '../lib/sound.js';
+import TopThreeTag from './TopThreeTag.jsx';
 
 export default function NavBar() {
   const { user, stats } = useAuth();
@@ -20,6 +21,7 @@ export default function NavBar() {
   // — reading it straight from context means this updates live wherever
   // it's rendered, not just on the next route change.
   const dayStreak = stats?.dayStreak ?? 0;
+  const isTopThreeLastWeek = !!stats?.moneyCurrentlyTop3;
 
   // The bar must never wrap to a second line — rather than trying to keep
   // everything fitted (impossible for an arbitrarily long username), a
@@ -118,6 +120,7 @@ export default function NavBar() {
       <div className="nav-bar-links" ref={linksRef}>
         {user && (
           <span className="user-bar-name">
+            {!usernameHidden && isTopThreeLastWeek && <TopThreeTag />}
             {!usernameHidden && (user.user_metadata?.username || user.email)}
             <span className="user-bar-streak" title="Daily play streak">
               🔥<span className="user-bar-streak-num">{dayStreak}</span>

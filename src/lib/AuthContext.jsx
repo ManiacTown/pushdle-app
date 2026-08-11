@@ -334,7 +334,8 @@ export function AuthProvider({ children }) {
           'money_weekly_cents, money_best_weekly_cents, money_diamonds, owns_diamond_button, ' +
           'owned_cosmetics, active_push_skin, active_aura, active_row_style, owns_insurance, insurance_used_this_week, ' +
           'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100, ' +
-          'money_last_week_rank, money_last_week_score_cents, money_last_week_diamonds_awarded'
+          'money_last_week_rank, money_last_week_score_cents, money_last_week_diamonds_awarded, ' +
+          'money_weekly_wins, money_currently_top3'
       )
       .eq('id', user.id)
       .single();
@@ -383,6 +384,13 @@ export function AuthProvider({ children }) {
       moneyLastWeekRank: data?.money_last_week_rank ?? null,
       moneyLastWeekScoreCents: data?.money_last_week_score_cents ?? 0,
       moneyLastWeekDiamondsAwarded: data?.money_last_week_diamonds_awarded ?? 0,
+      // Lifetime #1-finish count (see MoneyWinsBadge.jsx) — never reset,
+      // unlike moneyLastWeekRank above.
+      moneyWeeklyWins: data?.money_weekly_wins ?? 0,
+      // Backs TopThreeTag.jsx — deliberately NOT derived from
+      // moneyLastWeekRank <= 3 above (that column is sticky and doesn't
+      // reset for an inactive account, see its own schema.sql comment).
+      moneyCurrentlyTop3: !!data?.money_currently_top3,
     };
     setStats((prev) => ({ ...prev, ...next }));
     return next;

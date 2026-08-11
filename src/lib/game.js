@@ -238,6 +238,6 @@ export const BADGE_EMOJI = {
   'money-run-50': '💵',
   'money-run-100': '🙌',
   'money-run-250': '🤑',
-  'money-rank-top3': '🐔',
+  'money-rank-top3': '🪿',
   'money-style-greedy': '😵',
 };

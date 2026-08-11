@@ -13,6 +13,8 @@ import StatTilesPanel from '../components/StatTilesPanel.jsx';
 import AchievementTabToggle from '../components/AchievementTabToggle.jsx';
 import CosmeticTabs from '../components/CosmeticTabs.jsx';
 import InsuranceBadge from '../components/InsuranceBadge.jsx';
+import MoneyWinsBadge from '../components/MoneyWinsBadge.jsx';
+import TopThreeTag from '../components/TopThreeTag.jsx';
 import BadgeGrid from '../components/BadgeGrid.jsx';
 
 // Username's own natural (unshrunk) size and the floor it can shrink to
@@ -133,6 +135,7 @@ export default function Profile() {
   const headerRowRef = useRef(null);
   const nameRef = useRef(null);
   const emojiRef = useRef(null);
+  const topTagRef = useRef(null);
   const logoutBtnRef = useRef(null);
   const badgeGridRef = useRef(null);
 
@@ -237,6 +240,10 @@ export default function Profile() {
   // so their flair is purely a local preview — logged-in players' flair is
   // the one that actually shows up for other people.
   const currentEmoji = user ? selectedEmoji : guestEmoji;
+  // Guests never rank on a real weekly leaderboard (moneyCurrentlyTop3
+  // lives on authStats, false while logged out) — same "nothing to show"
+  // reasoning as currentEmoji's own guest fallback above.
+  const isTopThreeLastWeek = !!authStats?.moneyCurrentlyTop3;
   // Guests can't own shop cosmetics (see cosmetics.js) — everything below
   // is null/empty for them, same "authStats is null while logged out"
   // reasoning every other money-mode field already follows. The
@@ -249,6 +256,9 @@ export default function Profile() {
   const ownedPushSkins = user && authStats?.ownsDiamondButton ? ['diamond_button'] : [];
   // Guests can't buy shop upgrades either — see InsuranceBadge's own gate.
   const ownsInsurance = user ? !!authStats?.ownsInsurance : false;
+  // Guests never rank on a real weekly leaderboard — see MoneyWinsBadge's
+  // own gate.
+  const moneyWeeklyWins = user ? authStats?.moneyWeeklyWins ?? 0 : 0;
   const ownedAuras = ownedCosmetics.filter((id) => id.startsWith('aura_'));
   const ownedRowStyles = ownedCosmetics.filter((id) => id.startsWith('row_'));
 
@@ -279,6 +289,9 @@ export default function Profile() {
       // ever accounted for the outer row's gap/button before flair could
       // show here at all.
       const emojiWidth = emojiRef.current ? emojiRef.current.getBoundingClientRect().width + 10 : 0;
+      // Same reasoning as emojiWidth just above — the "$ Top 3" tag shares
+      // that same inner flex wrapper/gap whenever it's showing.
+      const topTagWidth = topTagRef.current ? topTagRef.current.getBoundingClientRect().width + 10 : 0;
       const outerGap = 12; // matches the row's own gap
       // text-overflow:ellipsis is a threshold effect, not a gradual one —
       // even a fraction of a px of shortfall (sub-pixel rounding between
@@ -290,7 +303,7 @@ export default function Profile() {
       const nameNaturalWidth = name.scrollWidth;
       name.style.fontSize = priorSize; // just a probe — state (below) owns the real value
 
-      const availableForName = rowWidth - btnWidth - emojiWidth - outerGap - safetyMargin;
+      const availableForName = rowWidth - btnWidth - emojiWidth - topTagWidth - outerGap - safetyMargin;
       let next = USERNAME_BASE_FONT_SIZE;
       if (availableForName > 0 && availableForName < nameNaturalWidth) {
         const scale = Math.max(availableForName / nameNaturalWidth, USERNAME_MIN_FONT_SIZE / USERNAME_BASE_FONT_SIZE);
@@ -305,7 +318,10 @@ export default function Profile() {
     return () => ro.disconnect();
     // currentEmoji: re-measure when flair is set/cleared — its own width
     // needs to be re-subtracted from the name's available space either way.
-  }, [user, currentEmoji]);
+    // isTopThreeLastWeek: same reasoning — authStats loads asynchronously
+    // after mount, so the tag (and the width it needs) can appear on a
+    // later render than this effect's first run.
+  }, [user, currentEmoji, isTopThreeLastWeek]);
 
   // Shared by both ways to change flair — the quick-pick row above the
   // badge grid (including its "no flair" option) and clicking a badge card
@@ -390,6 +406,11 @@ export default function Profile() {
         <div ref={headerRowRef} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
           <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+              {isTopThreeLastWeek && (
+                <span ref={topTagRef}>
+                  <TopThreeTag />
+                </span>
+              )}
               {/* No streak badge here anymore — it's redundant with the nav
                   bar (always visible there regardless of page), and removing
                   it buys back exactly the width that was causing a max-length
@@ -418,7 +439,10 @@ export default function Profile() {
                 </span>
               )}
             </div>
-            <InsuranceBadge owns={ownsInsurance} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <InsuranceBadge owns={ownsInsurance} />
+              <MoneyWinsBadge wins={moneyWeeklyWins} />
+            </div>
           </div>
           {user && (
             <button

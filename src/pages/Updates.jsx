@@ -25,7 +25,8 @@ export default function Updates() {
       </div>
 
       {CHANGELOG.map((entry) => (
-        <div key={entry.date} className="panel spotlight" onMouseMove={spotlightMove}>
+        <div key={entry.date}
+         className="panel spotlight" onMouseMove={spotlightMove}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
             <h3 style={{ fontSize: 16 }}>{entry.title}</h3>
             <span className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>

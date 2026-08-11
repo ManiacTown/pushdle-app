@@ -8,6 +8,7 @@ import { playNav } from '../lib/sound.js';
 import { formatCents } from '../lib/money.js';
 import { ROW_STYLE_COLORS, auraStyle } from '../lib/cosmetics.js';
 import WeeklyPodium, { RANK_COLORS } from '../components/WeeklyPodium.jsx';
+import TopThreeTag from '../components/TopThreeTag.jsx';
 
 // Rows per page — once the merged real+bot list exceeds this, pagination
 // controls appear below the board.
@@ -158,6 +159,10 @@ export default function Leaderboard() {
                 rowStyle: null,
                 score: row.scoreCents,
                 me: user ? row.userId === user.id : false,
+                // This snapshot IS last week's board, so its own rank column
+                // (rather than profiles.money_last_week_rank, which this
+                // view never fetches) is what decides the tag here.
+                topThreeLastWeek: row.rank <= 3,
               }))
             );
           });
@@ -179,7 +184,7 @@ export default function Leaderboard() {
       const scoreColumn = moneyPeriod === 'weekly' ? 'money_weekly_cents' : 'money_lifetime_cents';
       supabase
         .from('profiles')
-        .select(`id, username, selected_emoji, active_aura, active_row_style, ${scoreColumn}`)
+        .select(`id, username, selected_emoji, active_aura, active_row_style, money_currently_top3, ${scoreColumn}`)
         .order(scoreColumn, { ascending: false })
         .limit(1000)
         .then(({ data, error }) => {
@@ -198,6 +203,7 @@ export default function Leaderboard() {
               rowStyle: row.active_row_style ?? null,
               score: row[scoreColumn],
               me: user ? row.id === user.id : false,
+              topThreeLastWeek: !!row.money_currently_top3,
             }))
           );
         });
@@ -210,7 +216,7 @@ export default function Leaderboard() {
     // player's row in this same query, no separate merge needed.
     supabase
       .from('daily_runs')
-      .select('user_id, streak, profiles(username, selected_emoji, active_aura, active_row_style)')
+      .select('user_id, streak, profiles(username, selected_emoji, active_aura, active_row_style, money_currently_top3)')
       .eq('date', today)
       .order('streak', { ascending: false })
       .limit(1000)
@@ -230,6 +236,7 @@ export default function Leaderboard() {
             rowStyle: row.profiles?.active_row_style ?? null,
             score: row.streak,
             me: user ? row.user_id === user.id : false,
+            topThreeLastWeek: !!row.profiles?.money_currently_top3,
           }))
         );
       });
@@ -340,7 +347,7 @@ export default function Leaderboard() {
           : tab === 'money' && moneyPeriod === 'weekly' && !weeklyLeaderboardLive
           ? 'Starts August 3rd — check back then!'
           : tab === 'money' && moneyPeriod === 'weekly'
-          ? 'Resets every Monday — top 3 here earn the Golden Goose badge right before the reset.'
+          ? 'Resets every Monday — earn diamonds by finishing in the top 10.'
           : tab === 'money' && moneyPeriod === 'lastweek' && allRows.length === 0
           ? 'No snapshot yet — check back after the next Monday reset.'
           : tab === 'money' && moneyPeriod === 'lastweek'
@@ -507,6 +514,7 @@ export default function Leaderboard() {
                   client-side list), could still in principle be long enough
                   to break this row's layout. Truncates gracefully instead
                   of wrapping or pushing the score column around. */}
+              {row.topThreeLastWeek && <TopThreeTag />}
               <span
                 style={{
                   minWidth: 0,

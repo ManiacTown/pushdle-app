@@ -130,7 +130,7 @@ export default function MoneyWeeklyResultsModal({ rank, scoreCents, diamondsAwar
               textAlign: 'center',
             }}
           >
-            🐔 Golden Goose achievement unlocked!
+            🪿 Golden Goose achievement unlocked!
           </div>
         )}
 

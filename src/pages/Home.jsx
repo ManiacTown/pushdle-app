@@ -2175,7 +2175,7 @@ export default function Home() {
                   setShowMoneyWeeklyResultsModal(true);
                 }}
               >
-                🐔 Preview weekly results
+                🪿 Preview weekly results
               </button>
             </div>
           )}

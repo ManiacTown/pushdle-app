@@ -78,7 +78,7 @@ create table if not exists profiles (
   -- src/lib/game.js's BADGE_EMOJI.
   selected_emoji    text check (selected_emoji is null or selected_emoji in
                        ('⭐','🌀','🍀','🎲','🎲💯🎲','💀','🔥','⚡','🚀','🟢','🔴','💥',
-                        '🧓','🏦','💰','💵','🙌','🤑','🐔','😵')),
+                        '🧓','🏦','💰','💵','🙌','🤑','🪿','😵')),
 
   -- Whether this player has dismissed the first-visit "how to play" modal
   -- (see OnboardingModal.jsx) on ANY device — only ever set true, never
@@ -239,6 +239,30 @@ create table if not exists profiles (
   -- actually gates whether it's still "new" to show, not this column
   -- itself.
   money_last_week_rank             int check (money_last_week_rank is null or money_last_week_rank >= 1),
+  -- Whether this account is in the top 3 as of the MOST RECENTLY COMPLETED
+  -- week specifically — deliberately its own column rather than reusing
+  -- `money_last_week_rank <= 3` above, because that column is sticky
+  -- (see its own comment: "nothing clears it back to null") and would
+  -- otherwise leave TopThreeTag.jsx's "$ Top 3" tag showing forever for
+  -- someone who ranked top 3 once and then stopped playing. finalize_money_week
+  -- clears this to false for every previously-flagged account BEFORE
+  -- recomputing it fresh each week (see that function below), so it's
+  -- always in sync with whichever week last completed.
+  money_currently_top3             boolean not null default false,
+  -- Lifetime count of #1 finishes (rnk = 1, not the Golden Goose's top-3
+  -- bar) — incremented by finalize_money_week alongside money_last_week_rank
+  -- below, never reset. Backs MoneyWinsBadge.jsx's "🥇 x N" tag under the
+  -- username on Profile.jsx/PublicProfile.jsx, shown only once this is
+  -- >= 1 — same "badge only appears once earned" reasoning as
+  -- InsuranceBadge's owns_insurance check.
+  money_weekly_wins                int not null default 0 check (money_weekly_wins >= 0),
+  -- Lifetime count of top-3 finishes (rnk <= 3, every week counted
+  -- separately — unlike money_reached_top3_weekly's one-time flag above)
+  -- — incremented by finalize_money_week alongside money_weekly_wins.
+  -- No UI consumer yet; tracked now so it's not missing retroactively for
+  -- whatever future badge/stat wants it, same reasoning money_weekly_wins
+  -- itself was tracked before MoneyWinsBadge.jsx existed to use it.
+  money_top3_finishes              int not null default 0 check (money_top3_finishes >= 0),
   money_last_week_score_cents      int not null default 0 check (money_last_week_score_cents >= 0),
   -- What finalize_money_week actually credited to money_diamonds for that
   -- placement (20/15/10/5/0 — see that function's own comment for the
@@ -1253,6 +1277,14 @@ declare
   v_top3 jsonb;
   v_full_board jsonb;
 begin
+  -- Clear last week's flag before recomputing it fresh below — see
+  -- money_currently_top3's own comment above for why this can't just be
+  -- the sticky money_last_week_rank column instead. Cheap (only ever ~3
+  -- rows are flagged true at once), and safe to run unconditionally since
+  -- this whole function only ever runs once per week (see
+  -- api/weekly-money-reset.js's own idempotency guard around its call).
+  update profiles set money_currently_top3 = false where money_currently_top3;
+
   with ranked as (
     select id, money_weekly_cents,
            row_number() over (order by money_weekly_cents desc, id asc) as rnk
@@ -1274,6 +1306,9 @@ begin
     update profiles p set
       money_diamonds = p.money_diamonds + prized.prize,
       money_reached_top3_weekly = p.money_reached_top3_weekly or (prized.rnk <= 3),
+      money_weekly_wins = p.money_weekly_wins + (case when prized.rnk = 1 then 1 else 0 end),
+      money_top3_finishes = p.money_top3_finishes + (case when prized.rnk <= 3 then 1 else 0 end),
+      money_currently_top3 = (prized.rnk <= 3),
       money_last_week_rank = prized.rnk,
       money_last_week_score_cents = prized.money_weekly_cents,
       money_last_week_diamonds_awarded = prized.prize,
