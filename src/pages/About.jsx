@@ -10,7 +10,7 @@ import {
   PITY_BUST_THRESHOLD,
   PITY_CHARGES_NEEDED,
 } from '../lib/game.js';
-import { MONEY_SUCCESS_CHANCE, MONEY_BONUS_EVERY, MONEY_BONUS_MIN_CENTS, MONEY_BONUS_MAX_CENTS, formatCents } from '../lib/money.js';
+import { MONEY_SUCCESS_CHANCE, MONEY_GUARANTEED_PUSHES, MONEY_BONUS_EVERY, MONEY_BONUS_MIN_CENTS, MONEY_BONUS_MAX_CENTS, formatCents } from '../lib/money.js';
 import { AURA_COLORS, ROW_STYLE_COLORS, COSMETIC_LABELS, COSMETIC_PRICES, INSURANCE_PRICE_DIAMONDS } from '../lib/cosmetics.js';
 
 const DIAMOND_BUTTON_COST = 10; // mirrors MoneyShop.jsx's own display-only mirror of purchase_diamond_button's price
@@ -184,10 +184,14 @@ function MoneyModeTab() {
             <strong style={{ color: 'var(--text)' }}>$1</strong>, and you can{' '}
             <strong style={{ color: 'var(--text)' }}>cash out any time</strong> to bank it for good.
           </p>
-          <p>
+          <p style={{ marginBottom: 12 }}>
             Bust and you only lose what THIS run hasn't banked yet — every dollar you've already
             cashed out stays yours no matter what. Requires an account; there's no guest path for
             Money Mode.
+          </p>
+          <p>
+            Your first {MONEY_GUARANTEED_PUSHES} pushes each run are guaranteed, so nobody busts
+            right out of the gate.
           </p>
         </div>
       </div>

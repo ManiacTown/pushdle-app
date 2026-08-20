@@ -5,7 +5,7 @@ import { useChrome } from '../lib/ChromeContext.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { useParticles } from '../lib/useParticles.js';
 import { pacificDateString, msUntilNextPacificMidnight, formatCountdown } from '../lib/pacificDate.js';
-import { MONEY_SUCCESS_CHANCE, MONEY_BONUS_EVERY, formatCents } from '../lib/money.js';
+import { MONEY_SUCCESS_CHANCE, MONEY_GUARANTEED_PUSHES, MONEY_BONUS_EVERY, formatCents } from '../lib/money.js';
 import {
   playPush,
   playSuccess,
@@ -1345,7 +1345,7 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
             : run.status === 'cashed_out'
             ? moneyBankQuip ?? 'Nice take.'
             : run.pushes === 0
-            ? `Tap to take your first push. ${Math.round(MONEY_SUCCESS_CHANCE * 100)}% survive after that.`
+            ? `Your first ${MONEY_GUARANTEED_PUSHES} pushes are guaranteed. ${Math.round(MONEY_SUCCESS_CHANCE * 100)}% survive after that.`
             : moneyQuote ?? 'Cash out any time.'}
         </div>
 

@@ -6,6 +6,13 @@
 // nobody outside the codebase would ever notice.
 export const CHANGELOG = [
   {
+    date: '2026-08-20',
+    title: 'Money Mode: 10 guaranteed pushes',
+    items: [
+      'Your first 10 pushes each Money Mode run are now guaranteed — up from just the first one. 97% odds kick in starting on push 11.',
+    ],
+  },
+  {
     date: '2026-08-11',
     title: 'Top 3 tag and win badges',
     items: [

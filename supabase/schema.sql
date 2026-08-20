@@ -725,8 +725,11 @@ grant all on money_runs to service_role;
 -- earnings_cents comment above for why that matters — EXCEPT when weekly
 -- insurance saves a bust (see the bust branch below), which is the one
 -- case a push can bank money outside of resolve_money_cashout. The money
--- variant's first push is a GUARANTEED success (v_chance 1.0, not
--- classic's 0.999) — a deliberately softer ante for this mode.
+-- variant's first 10 pushes are GUARANTEED successes (v_chance 1.0, not
+-- classic's single 0.999-guaranteed first press) — a deliberately softer
+-- ante for this mode. v_pushes is the count of successful pushes BEFORE
+-- this one, so `< 10` covers pushes #1 through #10; #11 onward rolls the
+-- real 0.97.
 --
 -- Return shape changed (added out_insurance_used/out_wallet_cents/
 -- out_lifetime_cents, then later out_weekly_cents) — CREATE OR REPLACE
@@ -804,7 +807,7 @@ begin
     return;
   end if;
 
-  v_chance := case when v_pushes = 0 then 1.0 else 0.97 end;
+  v_chance := case when v_pushes < 10 then 1.0 else 0.97 end;
   v_success := random() < v_chance;
 
   if v_success then

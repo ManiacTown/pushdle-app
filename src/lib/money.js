@@ -5,6 +5,11 @@
 // money-cashout Edge Functions. Keep these in sync with schema.sql's
 // resolve_money_push if either ever changes.
 export const MONEY_SUCCESS_CHANCE = 0.97;
+// Pushes #1 through this many are guaranteed successes server-side (see
+// resolve_money_push's `v_chance := case when v_pushes < 10 ...` in
+// schema.sql) — display-only here, same "keep in sync" reasoning as
+// MONEY_SUCCESS_CHANCE above.
+export const MONEY_GUARANTEED_PUSHES = 10;
 export const MONEY_PUSH_CENTS = 100;
 // Random, not fixed — resolve_money_push rolls a uniform $1-$5 (in $1
 // steps) every time the combo bar fills. These bounds are documentation/
