@@ -57,14 +57,23 @@ export const COSMETIC_PRICES = {
 // Priced well above any single cosmetic — real economic value (recovers
 // half an otherwise-lost run once a week), not purely visual.
 export const INSURANCE_PRICE_DIAMONDS = 30;
+// Same price/display-only-mirror reasoning as INSURANCE_PRICE_DIAMONDS
+// above — purchase_streak_bonus/purchase_daredevil in schema.sql are the
+// real enforcement.
+export const STREAK_BONUS_PRICE_DIAMONDS = 30;
+export const DAREDEVIL_PRICE_DIAMONDS = 30;
 
 // The three EQUIPPABLE categories — one tab each in both MoneyShop.jsx
 // (buy) and Profile.jsx's Cosmetics section (equip). Single source of
 // truth for tab labels/membership so the two UIs can never drift apart on
-// what belongs where. Insurance/future gameplay boosters live in their own
+// what belongs where. Insurance/Streak Bonus/Daredevil live in their own
 // "Upgrades" shop tab instead (see MoneyShop.jsx) — deliberately NOT listed
-// here, since they're owned-or-not with nothing to equip, so they have no
-// place in Profile's equip-picker UI at all.
+// here. They DO now have an equip step (active_money_upgrade — only one of
+// the three can be doing anything at a time), but that control lives
+// directly on their own Upgrades-tab cards in MoneyShop.jsx rather than
+// here, since Profile's equip-picker below is built around this specific
+// three-slot (push_skin/aura/row_style) shape and the upgrades aren't a
+// natural fourth slot in it.
 //
 // push_skin is the one category still backed by its own dedicated
 // owns_diamond_button/purchase_diamond_button/active_push_skin plumbing

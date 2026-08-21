@@ -13,6 +13,7 @@ import {
   maxStatsForAllBadges,
   zeroStatsForAllBadges,
   camelToSnakeFields,
+  badgeConditions,
 } from './game.js';
 
 afterEach(() => {
@@ -106,7 +107,11 @@ describe('maxStatsForAllBadges / zeroStatsForAllBadges', () => {
   });
 
   it('both cover the exact same set of fields as BADGES references', () => {
-    const expectedFields = new Set(BADGES.map((b) => b.field));
+    // badgeConditions, not a bare b.field — a multi-field badge (see
+    // game.js's own comment on that shape) has no single top-level field,
+    // just fields: [{field, min}, ...], each of which still needs to show
+    // up here same as any single-field badge's would.
+    const expectedFields = new Set(BADGES.flatMap((b) => badgeConditions(b).map((c) => c.field)));
     expect(new Set(Object.keys(maxStatsForAllBadges()))).toEqual(expectedFields);
     expect(new Set(Object.keys(zeroStatsForAllBadges()))).toEqual(expectedFields);
   });

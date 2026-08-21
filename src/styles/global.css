@@ -1796,6 +1796,20 @@ input:focus{
   top: -8px;
   right: -8px;
 }
+/* Applied wherever a `special`-rarity badge's flair emoji renders as
+   someone's actual leaderboard/profile flair (see BADGE_EMOJI_RARITY in
+   game.js and each render site's own lookup) — a slow glow/pulse using
+   RARITY_META.special's own color (var(--neon-red)), so a special badge
+   keeps reading as special everywhere it shows up, not just inside the
+   badge grid's own rarity pill. */
+@keyframes flair-glow-pulse{
+  0%, 100%{ text-shadow: 0 0 4px var(--neon-red), 0 0 8px var(--neon-red); }
+  50%{ text-shadow: 0 0 10px var(--neon-red), 0 0 18px var(--neon-red); }
+}
+.flair-special{
+  display: inline-block;
+  animation: flair-glow-pulse 1.8s ease-in-out infinite;
+}
 /* The toast's own cards can get quite narrow (see .badge-toast-stack's
    width) — the rarity pill's normal size (tuned for the roomier Profile
    page grid) reads a bit large sharing a line with the label there.

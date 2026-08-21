@@ -130,6 +130,19 @@ export default async function handler(req, res) {
       body: JSON.stringify({ insurance_used_this_week: false }),
     });
 
+    // Re-opens this week's upgrade choice for everyone who already made
+    // one (see money_upgrade_choice_seen's own comment in schema.sql) —
+    // MoneyUpgradeChoiceModal.jsx/Home.jsx's trigger effect is what
+    // actually shows the modal off this flip; this step just clears the
+    // gate. Same "only touch rows with something to reset" idempotency as
+    // the two PATCHes above — a row already false (never made a choice, or
+    // a resumed retry of this same reset) is left alone, harmlessly.
+    await api(url, serviceKey, '/rest/v1/profiles?money_upgrade_choice_seen=eq.true', {
+      method: 'PATCH',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ money_upgrade_choice_seen: false }),
+    });
+
     // The real "this week is done" signal (see completed_at's own comment
     // in schema.sql) — written last, only once everything above has
     // actually succeeded. Anything that throws before this point leaves

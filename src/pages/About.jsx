@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { spotlightMove } from '../lib/spotlight.js';
 import OddsBar from '../components/OddsBar.jsx';
 import CosmeticTabs from '../components/CosmeticTabs.jsx';
@@ -10,8 +11,27 @@ import {
   PITY_BUST_THRESHOLD,
   PITY_CHARGES_NEEDED,
 } from '../lib/game.js';
-import { MONEY_SUCCESS_CHANCE, MONEY_GUARANTEED_PUSHES, MONEY_BONUS_EVERY, MONEY_BONUS_MIN_CENTS, MONEY_BONUS_MAX_CENTS, formatCents } from '../lib/money.js';
-import { AURA_COLORS, ROW_STYLE_COLORS, COSMETIC_LABELS, COSMETIC_PRICES, INSURANCE_PRICE_DIAMONDS } from '../lib/cosmetics.js';
+import {
+  MONEY_SUCCESS_CHANCE,
+  MONEY_GUARANTEED_PUSHES,
+  MONEY_BONUS_EVERY,
+  MONEY_BONUS_MIN_CENTS,
+  MONEY_BONUS_MAX_CENTS,
+  STREAK_BONUS_EXTRA_CENTS,
+  DAREDEVIL_GUARANTEED_PUSHES,
+  DAREDEVIL_SUCCESS_CHANCE,
+  DAREDEVIL_MULTIPLIER,
+  formatCents,
+} from '../lib/money.js';
+import {
+  AURA_COLORS,
+  ROW_STYLE_COLORS,
+  COSMETIC_LABELS,
+  COSMETIC_PRICES,
+  INSURANCE_PRICE_DIAMONDS,
+  STREAK_BONUS_PRICE_DIAMONDS,
+  DAREDEVIL_PRICE_DIAMONDS,
+} from '../lib/cosmetics.js';
 
 const DIAMOND_BUTTON_COST = 10; // mirrors MoneyShop.jsx's own display-only mirror of purchase_diamond_button's price
 
@@ -244,8 +264,8 @@ function MoneyModeTab() {
           ))}
         </div>
         <div className="mono onboarding-note" style={{ marginTop: 18 }}>
-          🛡️ The shop's Upgrades tab also has Weekly Bust Insurance — see the Other tab for what
-          that does.
+          🛡️ The shop's Upgrades tab also has Weekly Bust Insurance, Streak Bonus, and Daredevil —
+          see the Other tab for what each one does.
         </div>
       </div>
 
@@ -296,19 +316,18 @@ function MoneyModeTab() {
   );
 }
 
-function OtherTab() {
+function OtherTab({ insuranceRef, streakBonusRef, daredevilRef }) {
   return (
     <>
-      <div className="panel spotlight" onMouseMove={spotlightMove} style={{ textAlign: 'center' }}>
-        <h2 className="gradient-title" style={{ fontSize: 24, marginBottom: 6 }}>
-          🍀 Comeback Boost
-        </h2>
-        <p className="mono" style={{ fontSize: 12, color: 'var(--neon-green)', marginBottom: 4 }}>
-          A little help when luck isn't on your side.
-        </p>
-      </div>
-
       <div className="panel spotlight" onMouseMove={spotlightMove}>
+        <div style={{ textAlign: 'center', marginBottom: 18 }}>
+          <h2 className="gradient-title" style={{ fontSize: 24, marginBottom: 6 }}>
+            🍀 Comeback Boost
+          </h2>
+          <p className="mono" style={{ fontSize: 12, color: 'var(--neon-green)' }}>
+            A little help when luck isn't on your side.
+          </p>
+        </div>
         <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8, marginBottom: 18 }}>
           <p style={{ marginBottom: 10 }}>
             Bust at streak <strong style={{ color: 'var(--text)' }}>{PITY_BUST_THRESHOLD} or under</strong>,{' '}
@@ -333,16 +352,15 @@ function OtherTab() {
         </div>
       </div>
 
-      <div className="panel spotlight" onMouseMove={spotlightMove} style={{ textAlign: 'center' }}>
-        <h2 className="gradient-title" style={{ fontSize: 24, marginBottom: 6 }}>
-          🛡️ Weekly Bust Insurance
-        </h2>
-        <p className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 4 }}>
-          A safety net for one bad Money Mode run a week.
-        </p>
-      </div>
-
-      <div className="panel spotlight" onMouseMove={spotlightMove}>
+      <div ref={insuranceRef} className="panel spotlight" onMouseMove={spotlightMove}>
+        <div style={{ textAlign: 'center', marginBottom: 18 }}>
+          <h2 className="gradient-title" style={{ fontSize: 24, marginBottom: 6 }}>
+            🛡️ Weekly Bust Insurance
+          </h2>
+          <p className="mono" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+            A safety net for one bad Money Mode run a week.
+          </p>
+        </div>
         <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8, marginBottom: 18 }}>
           <p style={{ marginBottom: 10 }}>
             Once a week, a Money Mode bust banks{' '}
@@ -351,6 +369,12 @@ function OtherTab() {
             <img src="/diamond.png" alt="" width={11} height={11} style={{ display: 'inline-block', verticalAlign: 'middle' }} />{' '}
             <strong style={{ color: 'var(--text)' }}>{INSURANCE_PRICE_DIAMONDS}</strong>, and it
             re-arms automatically once used.
+          </p>
+          <p>
+            Insurance, Streak Bonus, and Daredevil are three separate upgrades, but only{' '}
+            <strong style={{ color: 'var(--text)' }}>one can be active</strong> at a time — buy as
+            many as you like. The first time you enter Money Mode each week, you'll be asked to
+            pick one (or none) for that week; it's locked in from there until the next Monday reset.
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14 }}>
@@ -372,12 +396,122 @@ function OtherTab() {
           </span>
         </div>
       </div>
+
+      <div ref={streakBonusRef} className="panel spotlight" onMouseMove={spotlightMove}>
+        <div style={{ textAlign: 'center', marginBottom: 18 }}>
+          <h2 className="gradient-title" style={{ fontSize: 24, marginBottom: 6 }}>
+            💲 Streak Bonus
+          </h2>
+          <p className="mono" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+            Extra cash every time the combo bar fills.
+          </p>
+        </div>
+        <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8, marginBottom: 18 }}>
+          <p>
+            Every {MONEY_BONUS_EVERY}th successful push fills the combo bar — with Streak Bonus
+            active, that fill pays an extra{' '}
+            <strong style={{ color: 'var(--text)' }}>{formatCents(STREAK_BONUS_EXTRA_CENTS)}</strong>{' '}
+            on top, whether the bar landed on cash or a diamond that time. Buy it in the shop's
+            Upgrades tab for{' '}
+            <img src="/diamond.png" alt="" width={11} height={11} style={{ display: 'inline-block', verticalAlign: 'middle' }} />{' '}
+            <strong style={{ color: 'var(--text)' }}>{STREAK_BONUS_PRICE_DIAMONDS}</strong>.
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14 }}>
+          <span style={{ fontSize: 28 }}>💲</span>
+          <span
+            className="mono"
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              color: '#ffd45e',
+              border: '1px solid rgba(255,212,94,0.4)',
+              borderRadius: 20,
+              padding: '5px 12px',
+            }}
+          >
+            Streak Bonus Activated
+          </span>
+        </div>
+      </div>
+
+      <div ref={daredevilRef} className="panel spotlight" onMouseMove={spotlightMove}>
+        <div style={{ textAlign: 'center', marginBottom: 18 }}>
+          <h2 className="gradient-title" style={{ fontSize: 24, marginBottom: 6 }}>
+            😈 Daredevil
+          </h2>
+          <p className="mono" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+            Shorter guarantee, worse odds, double money.
+          </p>
+        </div>
+        <OddsBar
+          chance={DAREDEVIL_SUCCESS_CHANCE}
+          liveLabel="you keep it"
+          liveColor="var(--neon-red)"
+          liveBg="rgba(255,45,109,0.18)"
+          caption={`Only your first ${DAREDEVIL_GUARANTEED_PUSHES} pushes are guaranteed (down from ${MONEY_GUARANTEED_PUSHES}) — every push after rolls these odds instead of the normal ${Math.round(MONEY_SUCCESS_CHANCE * 100)}%.`}
+        />
+        <div className="mono" style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.8, marginTop: 16, marginBottom: 18 }}>
+          <p>
+            In exchange, every dollar you earn — the base $1 per push and any{' '}
+            {formatCents(MONEY_BONUS_MIN_CENTS)}–{formatCents(MONEY_BONUS_MAX_CENTS)} combo bonus —
+            is worth <strong style={{ color: 'var(--text)' }}>{DAREDEVIL_MULTIPLIER}×</strong> while
+            it's active. Diamonds from the combo bar are unaffected. Buy it in the shop's Upgrades
+            tab for{' '}
+            <img src="/diamond.png" alt="" width={11} height={11} style={{ display: 'inline-block', verticalAlign: 'middle' }} />{' '}
+            <strong style={{ color: 'var(--text)' }}>{DAREDEVIL_PRICE_DIAMONDS}</strong>.
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14 }}>
+          <span style={{ fontSize: 28 }}>😈</span>
+          <span
+            className="mono"
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              color: 'var(--neon-red)',
+              border: '1px solid rgba(255,45,109,0.4)',
+              borderRadius: 20,
+              padding: '5px 12px',
+            }}
+          >
+            Daredevil Mode
+          </span>
+        </div>
+      </div>
     </>
   );
 }
 
 export default function About() {
-  const [activeTab, setActiveTab] = useState('overview');
+  // Only ever set by MoneyShop.jsx's per-upgrade info buttons
+  // ({ tab: 'other', scrollToUpgrade: 'insurance' | 'streak_bonus' |
+  // 'daredevil' }) — lazy-initialized so the right tab renders on the very
+  // first paint instead of flashing Overview then switching, same reasoning
+  // Leaderboard.jsx's own location.state-driven initial tab uses.
+  const location = useLocation();
+  const [activeTab, setActiveTab] = useState(() => (location.state?.tab === 'money' || location.state?.tab === 'other' ? location.state.tab : 'overview'));
+  const insuranceRef = useRef(null);
+  const streakBonusRef = useRef(null);
+  const daredevilRef = useRef(null);
+
+  // Scrolls to the specific upgrade section within the (already-selected,
+  // via the lazy useState above) Other tab — same "land at the top instantly,
+  // then glide down via rAF once this render's DOM is actually laid out"
+  // pattern as Profile.jsx's own scrollToBadges effect.
+  useEffect(() => {
+    const target = location.state?.scrollToUpgrade;
+    const ref = target === 'insurance' ? insuranceRef : target === 'streak_bonus' ? streakBonusRef : target === 'daredevil' ? daredevilRef : null;
+    if (!ref) return;
+    window.scrollTo(0, 0);
+    requestAnimationFrame(() => {
+      ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [location.state]);
 
   function changeTab(id) {
     if (id === activeTab) return;
@@ -404,7 +538,7 @@ export default function About() {
 
       {activeTab === 'overview' && <OverviewTab />}
       {activeTab === 'money' && <MoneyModeTab />}
-      {activeTab === 'other' && <OtherTab />}
+      {activeTab === 'other' && <OtherTab insuranceRef={insuranceRef} streakBonusRef={streakBonusRef} daredevilRef={daredevilRef} />}
     </div>
   );
 }

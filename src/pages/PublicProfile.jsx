@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient.js';
 import { pacificDateString } from '../lib/pacificDate.js';
-import { BADGE_CATEGORIES, earnedBadges } from '../lib/game.js';
+import { BADGE_CATEGORIES, SECRET_CATEGORY, BADGE_EMOJI_RARITY, earnedBadges } from '../lib/game.js';
 import { formatCents } from '../lib/money.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
@@ -11,7 +11,7 @@ import { auraStyle, AURA_COLORS, ROW_STYLE_COLORS, COSMETIC_LABELS } from '../li
 import StatTilesPanel from '../components/StatTilesPanel.jsx';
 import AchievementTabToggle from '../components/AchievementTabToggle.jsx';
 import BadgeGrid from '../components/BadgeGrid.jsx';
-import InsuranceBadge from '../components/InsuranceBadge.jsx';
+import ActiveMoneyUpgradeBadge from '../components/ActiveMoneyUpgradeBadge.jsx';
 import MoneyWinsBadge from '../components/MoneyWinsBadge.jsx';
 import TopThreeTag from '../components/TopThreeTag.jsx';
 
@@ -57,7 +57,7 @@ export default function PublicProfile() {
       const { data, error } = await supabase
         .from('profiles')
         .select(
-          'username, selected_emoji, active_aura, active_push_skin, active_row_style, owns_insurance, ' +
+          'username, selected_emoji, active_aura, active_push_skin, active_row_style, active_money_upgrade, ' +
             'best_streak, total_pushes, day_streak, busted_at_zero, busted_at_one'
         )
         .eq('id', userId)
@@ -96,7 +96,11 @@ export default function PublicProfile() {
         .select(
           'money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
             'money_weekly_cents, money_best_weekly_cents, money_currently_top3, money_weekly_wins, ' +
-            'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100'
+            'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100, ' +
+            'owns_insurance, owns_streak_bonus, owns_daredevil, owns_diamond_button, ' +
+            'owns_any_row_style, owns_any_aura, money_diamonds_spent_lifetime, ' +
+            'money_daredevil_run_200, clicked_contact, ' +
+            'won_weekly_with_insurance, won_weekly_with_streak_bonus, won_weekly_with_daredevil, artemis_earned'
         )
         .eq('id', userId)
         .maybeSingle();
@@ -187,6 +191,22 @@ export default function PublicProfile() {
     moneyReachedTop3Weekly: moneyStats?.money_reached_top3_weekly,
     moneyBankedAfterOnePush: moneyStats?.money_banked_after_one_push,
     moneyBustedOver100: moneyStats?.money_busted_over100,
+    // money-shop badges (see game.js's BADGES)
+    ownsInsurance: moneyStats?.owns_insurance,
+    ownsStreakBonus: moneyStats?.owns_streak_bonus,
+    ownsDaredevil: moneyStats?.owns_daredevil,
+    moneyDiamondsSpentLifetime: moneyStats?.money_diamonds_spent_lifetime,
+    ownsDiamondButton: moneyStats?.owns_diamond_button,
+    ownsAnyRowStyle: moneyStats?.owns_any_row_style,
+    ownsAnyAura: moneyStats?.owns_any_aura,
+    // secret badges (see game.js's BADGES)
+    moneyDaredevilRun200: moneyStats?.money_daredevil_run_200,
+    clickedContact: moneyStats?.clicked_contact,
+    moneyWeeklyWins: moneyStats?.money_weekly_wins,
+    wonWeeklyWithInsurance: moneyStats?.won_weekly_with_insurance,
+    wonWeeklyWithStreakBonus: moneyStats?.won_weekly_with_streak_bonus,
+    wonWeeklyWithDaredevil: moneyStats?.won_weekly_with_daredevil,
+    artemisEarned: moneyStats?.artemis_earned,
   };
   const earned = earnedBadges(statsForBadges);
   const earnedIds = new Set(earned.map((b) => b.id));
@@ -246,11 +266,16 @@ export default function PublicProfile() {
               {profile.username}
             </h2>
             {profile.selected_emoji && (
-              <span style={{ fontSize: 20, flexShrink: 0 }}>{profile.selected_emoji}</span>
+              <span
+                className={BADGE_EMOJI_RARITY[profile.selected_emoji] === 'special' ? 'flair-special' : undefined}
+                style={{ fontSize: 20, flexShrink: 0 }}
+              >
+                {profile.selected_emoji}
+              </span>
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <InsuranceBadge owns={!!profile.owns_insurance} />
+            <ActiveMoneyUpgradeBadge activeMoneyUpgrade={profile.active_money_upgrade ?? null} />
             <MoneyWinsBadge wins={moneyStats?.money_weekly_wins ?? 0} />
           </div>
         </div>
@@ -277,7 +302,7 @@ export default function PublicProfile() {
           categories that actually have something equipped; a player with
           nothing equipped anywhere just doesn't get this panel at all,
           same "no clutter for what isn't there" reasoning as
-          InsuranceBadge above. */}
+          ActiveMoneyUpgradeBadge above. */}
       {(profile.active_push_skin || profile.active_aura || profile.active_row_style) && (
         <div className="panel spotlight" onMouseMove={spotlightMove} style={{ marginBottom: 20 }}>
           <h3 style={{ fontSize: 13, marginBottom: 10 }}>Cosmetics</h3>
@@ -311,7 +336,11 @@ export default function PublicProfile() {
       )}
 
       <BadgeGrid
-        categories={BADGE_CATEGORIES.filter((cat) => cat.id.startsWith('money-') === (achievementTab === 'money'))}
+        categories={
+          achievementTab === 'secret'
+            ? [SECRET_CATEGORY]
+            : BADGE_CATEGORIES.filter((cat) => cat.id.startsWith('money-') === (achievementTab === 'money'))
+        }
         earnedIds={earnedIds}
         currentEmoji={profile.selected_emoji}
         stats={statsForBadges}

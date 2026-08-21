@@ -78,7 +78,8 @@ create table if not exists profiles (
   -- src/lib/game.js's BADGE_EMOJI.
   selected_emoji    text check (selected_emoji is null or selected_emoji in
                        ('⭐','🌀','🍀','🎲','🎲💯🎲','💀','🔥','⚡','🚀','🟢','🔴','💥',
-                        '🧓','🏦','💰','💵','🙌','🤑','🪿','😵')),
+                        '🧓','🏦','💰','💵','🙌','🤑','🪿','😵',
+                        '💠','💎','🗡️','🪶','👑','⚖️','☄️','☢️')),
 
   -- Whether this player has dismissed the first-visit "how to play" modal
   -- (see OnboardingModal.jsx) on ANY device — only ever set true, never
@@ -105,6 +106,13 @@ create table if not exists profiles (
   -- first time the pity meter's fill-up animation actually plays for this
   -- account (see Home.jsx's schedulePityFillReveal), not just on login.
   pity_intro_seen boolean not null default false,
+
+  -- Whether this account has seen ModifierUpdateModal.jsx's one-time "what's
+  -- new" recap (Money Mode upgrades, the Shop/Secret badges, etc.) — same
+  -- one-way-forever semantics as pity_intro_seen above, shown once to any
+  -- LOGGED-IN account on login (see Home.jsx's trigger effect), not tied to
+  -- any particular action the way pity_intro_seen/money_unlock_seen are.
+  modifier_update_seen boolean not null default false,
 
   -- Money-variant currency (see money_runs below). money_lifetime_cents
   -- only ever increases, on every cash-out (it's what the Lifetime
@@ -187,6 +195,36 @@ create table if not exists profiles (
   -- means the same week the money leaderboard itself uses.
   insurance_used_this_week boolean not null default false,
 
+  -- Two more permanent purchases, same "own it forever" shape as
+  -- owns_insurance above — what each actually DOES lives in
+  -- resolve_money_push (see its own comments there), gated on
+  -- active_money_upgrade below, not on these columns directly.
+  owns_streak_bonus       boolean not null default false,
+  owns_daredevil          boolean not null default false,
+  -- Which ONE of the three owned upgrades above (if any) is actually in
+  -- effect right now — insurance, streak_bonus, and daredevil are mutually
+  -- exclusive, not stackable, so this is a single slot rather than three
+  -- independent on/off flags. Owning an upgrade with this pointing at a
+  -- DIFFERENT one (or null) means it's inert: resolve_money_push only ever
+  -- applies whichever upgrade this column names. Written by
+  -- set_active_money_upgrade below (mirrors set_active_cosmetic's own
+  -- ownership-checked equip pattern), called from two places: MoneyShop.jsx
+  -- directly while money_upgrade_choice_seen is false (see that column's
+  -- own comment for the weekly lock), and MoneyUpgradeChoiceModal.jsx's
+  -- Confirm button, which is what actually flips choice_seen true.
+  active_money_upgrade    text check (active_money_upgrade is null or active_money_upgrade in ('insurance', 'streak_bonus', 'daredevil')),
+  -- Whether this account has made its ONE choice of active_money_upgrade
+  -- for the current money week yet — false right after each Monday reset
+  -- (see api/weekly-money-reset.js), flipped true by set_active_money_upgrade
+  -- the moment a choice is actually made (Confirm in the modal, or a direct
+  -- change in MoneyShop.jsx while still false). MoneyShop.jsx's Activate
+  -- buttons are disabled once this is true — the "only one upgrade active
+  -- for the week" rule isn't just "only one at a time," it's "chosen once,
+  -- locked till next week." Defaults true so this doesn't retroactively
+  -- interrupt every existing account the moment this ships — same
+  -- reasoning money_weekly_results_seen's own default does.
+  money_upgrade_choice_seen boolean not null default true,
+
   -- Money-badge tracking (see game.js's money-* BADGES) — all written
   -- exclusively by resolve_money_push/resolve_money_cashout below, same
   -- restricted-grant treatment as the money columns above.
@@ -263,6 +301,43 @@ create table if not exists profiles (
   -- whatever future badge/stat wants it, same reasoning money_weekly_wins
   -- itself was tracked before MoneyWinsBadge.jsx existed to use it.
   money_top3_finishes              int not null default 0 check (money_top3_finishes >= 0),
+
+  -- ---- Badge tracking (see game.js's money-shop-*/secret-* BADGES) ----
+  -- Lifetime diamonds spent across every purchase RPC (purchase_cosmetic,
+  -- purchase_diamond_button, purchase_weekly_insurance,
+  -- purchase_streak_bonus, purchase_daredevil) — money_diamonds itself is
+  -- just the current balance and goes back down on every purchase, so this
+  -- is a separate running total specifically for "Put Them to Good Use".
+  money_diamonds_spent_lifetime    int not null default 0 check (money_diamonds_spent_lifetime >= 0),
+  -- Set true by purchase_cosmetic the first time a row_*/aura_* item is
+  -- bought — "Time to Decorate"/"Standing Out" only care THAT one was
+  -- bought, not which color, so this is simpler than deriving it from
+  -- owned_cosmetics (a text[]) on every badge read.
+  owns_any_row_style               boolean not null default false,
+  owns_any_aura                    boolean not null default false,
+  -- Leonidas (secret badge): a single Money Mode cash-out of $200+ while
+  -- Daredevil was the active upgrade — set by resolve_money_cashout.
+  money_daredevil_run_200          boolean not null default false,
+  -- Hermes (secret badge): clicked the footer's Contact link at least
+  -- once. No server validation needed (same trust level as onboarding_seen/
+  -- money_unlock_seen) — see this column's own entry in the client-update
+  -- grant below, and Footer.jsx for where this actually gets set.
+  clicked_contact                  boolean not null default false,
+  -- Leonardo da Vinci (secret badge): finished #1 on the weekly leaderboard
+  -- at least once while EACH of the three upgrades was active (not
+  -- necessarily the same week, since only one can be active at a time) —
+  -- set by finalize_money_week off that week's active_money_upgrade for
+  -- whoever finished rank 1.
+  won_weekly_with_insurance        boolean not null default false,
+  won_weekly_with_streak_bonus     boolean not null default false,
+  won_weekly_with_daredevil        boolean not null default false,
+  -- Artemis (secret badge): classic streak reached 50+ AND a Money Mode
+  -- run was cashed out for $100+, both on the same Pacific calendar day —
+  -- set by whichever of resolve_push/resolve_money_cashout satisfies the
+  -- SECOND of the two conditions on a given day (each checks whether the
+  -- other already happened today before granting).
+  artemis_earned                   boolean not null default false,
+
   money_last_week_score_cents      int not null default 0 check (money_last_week_score_cents >= 0),
   -- What finalize_money_week actually credited to money_diamonds for that
   -- placement (20/15/10/5/0 — see that function's own comment for the
@@ -320,7 +395,7 @@ grant select on profiles to anon, authenticated;
 -- written by finalize_money_week (service_role), same "never trust the
 -- client with a scoring/currency field" posture every other money_* column
 -- above already follows.
-grant update (username, selected_emoji, onboarding_seen, money_unlock_seen, pity_intro_seen, money_weekly_results_seen) on profiles to authenticated;
+grant update (username, selected_emoji, onboarding_seen, money_unlock_seen, pity_intro_seen, money_weekly_results_seen, clicked_contact, modifier_update_seen) on profiles to authenticated;
 -- service_role bypasses RLS policies but NOT base object grants — those are
 -- two separate permission layers, and creating a table via raw SQL doesn't
 -- grant either automatically the way the Table Editor UI does.
@@ -431,6 +506,12 @@ declare
   v_busted_one boolean;
   v_first_run_guaranteed boolean;
   v_pity_count int;
+  -- Artemis (secret badge, see game.js) — null unless this push crosses
+  -- streak 50, in which case it's set to whether today's Money Mode run
+  -- has ALREADY been cashed out for $100+. coalesce(..., false) below is
+  -- what makes "never checked" and "checked, didn't qualify" behave the
+  -- same in the final UPDATE.
+  v_artemis_qualifies boolean;
 begin
   -- Profile locked FIRST now (used to be after daily_runs) — a brand new
   -- run's own `boosted` flag (set once, at insert, below) needs the
@@ -509,6 +590,15 @@ begin
     if not v_boosted and v_streak >= 7 then
       v_pity_count := 0;
     end if;
+    -- Artemis, half A — the other half lives in resolve_money_cashout,
+    -- for whichever order the two conditions happen in on a given day.
+    if v_streak >= 50 then
+      select exists(
+        select 1 from money_runs
+        where user_id = p_user_id and date = p_date
+          and status = 'cashed_out' and earnings_cents >= 10000
+      ) into v_artemis_qualifies;
+    end if;
   else
     update daily_runs set status = 'dead' where id = v_id
       returning streak, status into v_streak, v_status;
@@ -532,7 +622,8 @@ begin
     last_played_date = v_last_played,
     busted_at_zero = v_busted_zero,
     busted_at_one = v_busted_one,
-    pity_count = v_pity_count
+    pity_count = v_pity_count,
+    artemis_earned = artemis_earned or coalesce(v_artemis_qualifies, false)
   where id = p_user_id;
 
   return query select v_streak, v_status, v_success, v_best_streak, v_total_pushes, v_day_streak, v_busted_zero, v_busted_one, v_pity_count, v_boosted;
@@ -729,7 +820,10 @@ grant all on money_runs to service_role;
 -- classic's single 0.999-guaranteed first press) — a deliberately softer
 -- ante for this mode. v_pushes is the count of successful pushes BEFORE
 -- this one, so `< 10` covers pushes #1 through #10; #11 onward rolls the
--- real 0.97.
+-- real 0.97. All of that shifts under the Daredevil upgrade instead (5
+-- guaranteed, 0.92 after) — see active_money_upgrade's own comment above
+-- for the three-way-exclusive upgrade slot this and Streak Bonus both
+-- read from.
 --
 -- Return shape changed (added out_insurance_used/out_wallet_cents/
 -- out_lifetime_cents, then later out_weekly_cents) — CREATE OR REPLACE
@@ -746,6 +840,12 @@ declare
   v_id bigint;
   v_pushes int;
   v_earnings int;
+  -- Which upgrade (if any) is currently equipped — see active_money_upgrade's
+  -- own comment in schema.sql. Read once, unlocked, right after the
+  -- idempotent guard below; only affects THIS push's odds/bonus math, so a
+  -- split-second-stale read here is harmless. Re-read under lock inside the
+  -- bust branch instead, since that one actually gates real money.
+  v_active_upgrade text;
   -- This CYCLE's pre-rolled outcome (see money_runs.next_bonus_is_diamond)
   -- — read once at the top, consumed (not re-rolled) on the fill that
   -- actually uses it, then immediately re-rolled for the cycle that's
@@ -807,7 +907,15 @@ begin
     return;
   end if;
 
-  v_chance := case when v_pushes < 10 then 1.0 else 0.97 end;
+  select active_money_upgrade into v_active_upgrade from profiles where id = p_user_id;
+
+  -- Daredevil trades a shorter guarantee and worse odds after it for
+  -- double money (see the earnings line below) — everyone else keeps the
+  -- normal 10-guaranteed/0.97 shape.
+  v_chance := case
+    when v_active_upgrade = 'daredevil' then (case when v_pushes < 5 then 1.0 else 0.92 end)
+    else (case when v_pushes < 10 then 1.0 else 0.97 end)
+  end;
   v_success := random() < v_chance;
 
   if v_success then
@@ -830,24 +938,40 @@ begin
       else
         v_bonus := (1 + floor(random() * 5))::int * 100;
       end if;
+      -- Streak Bonus: a flat extra $1 on every combo-bar fill, on top of
+      -- whichever of the two branches above just happened — the diamond
+      -- branch normally leaves v_bonus at 0, so this is what actually
+      -- guarantees "always +$1, whether it's the money or a diamond" for
+      -- that branch too, not just the cash one.
+      if v_active_upgrade = 'streak_bonus' then
+        v_bonus := v_bonus + 100;
+      end if;
       -- Immediately re-roll for the cycle that's starting right now, so
       -- out_next_diamond below already reflects it — the corner icon can
       -- swap the instant this push's response lands rather than waiting
       -- on some later push.
       v_next_diamond := random() < 0.10;
     end if;
-    v_earnings := v_earnings + 100 + v_bonus;
+    -- Daredevil doubles every dollar this push is worth (base + bonus) —
+    -- deliberately NOT the diamond credited above, which stays a flat 1;
+    -- diamonds are a separate currency from "money" throughout this file.
+    v_earnings := v_earnings + (case when v_active_upgrade = 'daredevil' then (100 + v_bonus) * 2 else 100 + v_bonus end);
     update money_runs set pushes = v_pushes, earnings_cents = v_earnings,
       next_bonus_is_diamond = v_next_diamond where id = v_id;
   else
     -- Bust — check weekly insurance before finalizing anything as a loss.
     -- Locks profiles here (a plain bust otherwise only ever touches it via
     -- the update in the else branch below) so a concurrent purchase can't
-    -- race a use of the same charge.
-    select owns_insurance, insurance_used_this_week into v_owns_insurance, v_insurance_used_this_week
+    -- race a use of the same charge. Re-fetches active_money_upgrade too
+    -- (overwriting the unlocked read up top) since THIS read is the one
+    -- that actually gates real money — an equip that landed between the
+    -- odds roll above and this bust should still be judged by its
+    -- up-to-the-lock value, not a stale one from earlier in the call.
+    select owns_insurance, insurance_used_this_week, active_money_upgrade
+      into v_owns_insurance, v_insurance_used_this_week, v_active_upgrade
       from profiles where id = p_user_id for update;
 
-    if v_owns_insurance and not v_insurance_used_this_week then
+    if v_active_upgrade = 'insurance' and v_owns_insurance and not v_insurance_used_this_week then
       -- Saved: bank HALF this run's unbanked earnings, rounded down
       -- (integer division truncates toward zero, which for a non-negative
       -- value IS floor) instead of losing all of it. Mirrors
@@ -930,6 +1054,13 @@ declare
   v_last_banked date;
   v_prev_streak int;
   v_new_streak int;
+  -- Leonidas needs to know what was active AT this cash-out — read
+  -- alongside the lock below, same row.
+  v_active_money_upgrade text;
+  -- Artemis, half B — the other half lives in resolve_push. null unless
+  -- this cash-out banks $100+, in which case it's set to whether today's
+  -- classic run already reached streak 50.
+  v_artemis_qualifies boolean;
 begin
   select id, earnings_cents, pushes, status into v_id, v_earnings, v_pushes, v_status
     from money_runs
@@ -947,7 +1078,8 @@ begin
   -- insurance against a concurrent cash-out on the same user corrupting
   -- the streak math below, even though the money_runs lock already rules
   -- out two cash-outs landing for the same user+date.
-  select money_last_banked_date, money_bank_streak into v_last_banked, v_prev_streak
+  select money_last_banked_date, money_bank_streak, active_money_upgrade
+    into v_last_banked, v_prev_streak, v_active_money_upgrade
     from profiles where id = p_user_id for update;
 
   -- Streak continues only if the last bank was literally yesterday
@@ -956,6 +1088,13 @@ begin
   -- for the permanent badge, live value for the current one" split
   -- money_best_bank_streak/money_bank_streak documents in schema.sql.
   v_new_streak := case when v_last_banked = p_date - 1 then v_prev_streak + 1 else 1 end;
+
+  if v_earnings >= 10000 then
+    select exists(
+      select 1 from daily_runs
+      where user_id = p_user_id and date = p_date and streak >= 50
+    ) into v_artemis_qualifies;
+  end if;
 
   update profiles set
     money_wallet_cents = money_wallet_cents + v_earnings,
@@ -970,7 +1109,9 @@ begin
     money_banked_after_one_push = money_banked_after_one_push or (v_pushes = 1),
     money_bank_streak = v_new_streak,
     money_best_bank_streak = greatest(money_best_bank_streak, v_new_streak),
-    money_last_banked_date = p_date
+    money_last_banked_date = p_date,
+    money_daredevil_run_200 = money_daredevil_run_200 or (v_active_money_upgrade = 'daredevil' and v_earnings >= 20000),
+    artemis_earned = artemis_earned or coalesce(v_artemis_qualifies, false)
   where id = p_user_id
   returning money_wallet_cents, money_lifetime_cents, money_weekly_cents into v_wallet, v_lifetime, v_weekly;
 
@@ -1005,7 +1146,10 @@ begin
     return;
   end if;
 
-  update profiles set money_diamonds = money_diamonds - 10, owns_diamond_button = true
+  update profiles set
+    money_diamonds = money_diamonds - 10,
+    owns_diamond_button = true,
+    money_diamonds_spent_lifetime = money_diamonds_spent_lifetime + 10
     where id = p_user_id
     returning money_diamonds, owns_diamond_button into v_diamonds, v_owns;
 
@@ -1127,7 +1271,10 @@ begin
 
   update profiles set
     money_diamonds = money_diamonds - v_price,
-    owned_cosmetics = array_append(owned_cosmetics, p_cosmetic_id)
+    owned_cosmetics = array_append(owned_cosmetics, p_cosmetic_id),
+    money_diamonds_spent_lifetime = money_diamonds_spent_lifetime + v_price,
+    owns_any_row_style = owns_any_row_style or (p_cosmetic_id like 'row_%'),
+    owns_any_aura = owns_any_aura or (p_cosmetic_id like 'aura_%')
     where id = p_user_id
     returning money_diamonds, owned_cosmetics into v_diamonds, v_owned;
 
@@ -1157,7 +1304,10 @@ begin
     return;
   end if;
 
-  update profiles set money_diamonds = money_diamonds - 30, owns_insurance = true
+  update profiles set
+    money_diamonds = money_diamonds - 30,
+    owns_insurance = true,
+    money_diamonds_spent_lifetime = money_diamonds_spent_lifetime + 30
     where id = p_user_id
     returning money_diamonds, owns_insurance into v_diamonds, v_owns;
 
@@ -1167,6 +1317,119 @@ $$ language plpgsql security definer set search_path = public;
 
 revoke execute on function public.purchase_weekly_insurance from public, anon, authenticated;
 grant execute on function public.purchase_weekly_insurance to service_role;
+
+-- One-time purchase of the Streak Bonus upgrade — same shape as
+-- purchase_weekly_insurance immediately above, just a different owned_*
+-- column. What owning it does (an extra +$1 on every combo-bar fill,
+-- diamond or cash either way) lives entirely in resolve_money_push, gated
+-- on active_money_upgrade = 'streak_bonus', not here.
+create or replace function public.purchase_streak_bonus(p_user_id uuid)
+returns table(out_success boolean, out_diamonds int, out_owns_streak_bonus boolean) as $$
+declare
+  v_diamonds int;
+  v_owns boolean;
+begin
+  select money_diamonds, owns_streak_bonus into v_diamonds, v_owns
+    from profiles where id = p_user_id for update;
+
+  if v_owns or v_diamonds < 30 then
+    return query select false, v_diamonds, v_owns;
+    return;
+  end if;
+
+  update profiles set
+    money_diamonds = money_diamonds - 30,
+    owns_streak_bonus = true,
+    money_diamonds_spent_lifetime = money_diamonds_spent_lifetime + 30
+    where id = p_user_id
+    returning money_diamonds, owns_streak_bonus into v_diamonds, v_owns;
+
+  return query select true, v_diamonds, v_owns;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+revoke execute on function public.purchase_streak_bonus from public, anon, authenticated;
+grant execute on function public.purchase_streak_bonus to service_role;
+
+-- One-time purchase of the Daredevil upgrade — same shape as
+-- purchase_weekly_insurance above. What owning it does (5 guaranteed
+-- pushes instead of 10, 92% instead of 97% after that, double money on
+-- every push) lives entirely in resolve_money_push, gated on
+-- active_money_upgrade = 'daredevil', not here.
+create or replace function public.purchase_daredevil(p_user_id uuid)
+returns table(out_success boolean, out_diamonds int, out_owns_daredevil boolean) as $$
+declare
+  v_diamonds int;
+  v_owns boolean;
+begin
+  select money_diamonds, owns_daredevil into v_diamonds, v_owns
+    from profiles where id = p_user_id for update;
+
+  if v_owns or v_diamonds < 30 then
+    return query select false, v_diamonds, v_owns;
+    return;
+  end if;
+
+  update profiles set
+    money_diamonds = money_diamonds - 30,
+    owns_daredevil = true,
+    money_diamonds_spent_lifetime = money_diamonds_spent_lifetime + 30
+    where id = p_user_id
+    returning money_diamonds, owns_daredevil into v_diamonds, v_owns;
+
+  return query select true, v_diamonds, v_owns;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+revoke execute on function public.purchase_daredevil from public, anon, authenticated;
+grant execute on function public.purchase_daredevil to service_role;
+
+-- Equips/unequips one of the three mutually-exclusive money-mode upgrades
+-- (see active_money_upgrade's own comment above) — same ownership-checked
+-- shape as set_active_cosmetic, just one flat slot instead of three. Null
+-- always succeeds (deactivating never needs an ownership check); any
+-- other value must actually be owned, checked here with the same "never
+-- trust the client" posture as every purchase_* function — an unowned or
+-- made-up value just gets out_success=false with the unchanged current
+-- value, not an error. Every SUCCESSFUL branch also flips
+-- money_upgrade_choice_seen true — this is what "making this week's
+-- choice" actually means mechanically, whether that call came from
+-- MoneyUpgradeChoiceModal.jsx's Confirm button or a direct change in
+-- MoneyShop.jsx (both call this same function; there's no separate
+-- "confirm" step elsewhere). The failure branch below deliberately does
+-- NOT touch it — an invalid/unowned attempt isn't a real choice.
+create or replace function public.set_active_money_upgrade(p_user_id uuid, p_upgrade text)
+returns table(out_success boolean, out_active_money_upgrade text) as $$
+declare
+  v_owns_insurance boolean;
+  v_owns_streak_bonus boolean;
+  v_owns_daredevil boolean;
+  v_current text;
+begin
+  select owns_insurance, owns_streak_bonus, owns_daredevil, active_money_upgrade
+    into v_owns_insurance, v_owns_streak_bonus, v_owns_daredevil, v_current
+    from profiles where id = p_user_id for update;
+
+  if p_upgrade is null then
+    update profiles set active_money_upgrade = null, money_upgrade_choice_seen = true where id = p_user_id;
+    return query select true, null::text;
+  elsif p_upgrade = 'insurance' and v_owns_insurance then
+    update profiles set active_money_upgrade = 'insurance', money_upgrade_choice_seen = true where id = p_user_id;
+    return query select true, 'insurance'::text;
+  elsif p_upgrade = 'streak_bonus' and v_owns_streak_bonus then
+    update profiles set active_money_upgrade = 'streak_bonus', money_upgrade_choice_seen = true where id = p_user_id;
+    return query select true, 'streak_bonus'::text;
+  elsif p_upgrade = 'daredevil' and v_owns_daredevil then
+    update profiles set active_money_upgrade = 'daredevil', money_upgrade_choice_seen = true where id = p_user_id;
+    return query select true, 'daredevil'::text;
+  else
+    return query select false, v_current;
+  end if;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+revoke execute on function public.set_active_money_upgrade from public, anon, authenticated;
+grant execute on function public.set_active_money_upgrade to service_role;
 
 -- ---- Weekly money leaderboard reset (see api/weekly-money-reset.js) ----
 --
@@ -1312,6 +1575,12 @@ begin
       money_weekly_wins = p.money_weekly_wins + (case when prized.rnk = 1 then 1 else 0 end),
       money_top3_finishes = p.money_top3_finishes + (case when prized.rnk <= 3 then 1 else 0 end),
       money_currently_top3 = (prized.rnk <= 3),
+      -- Leonardo da Vinci (secret badge, see game.js) — p.active_money_upgrade
+      -- reflects whatever was locked in for the week that's ending, since it
+      -- can't change again mid-week once chosen (see money_upgrade_choice_seen).
+      won_weekly_with_insurance = p.won_weekly_with_insurance or (prized.rnk = 1 and p.active_money_upgrade = 'insurance'),
+      won_weekly_with_streak_bonus = p.won_weekly_with_streak_bonus or (prized.rnk = 1 and p.active_money_upgrade = 'streak_bonus'),
+      won_weekly_with_daredevil = p.won_weekly_with_daredevil or (prized.rnk = 1 and p.active_money_upgrade = 'daredevil'),
       money_last_week_rank = prized.rnk,
       money_last_week_score_cents = prized.money_weekly_cents,
       money_last_week_diamonds_awarded = prized.prize,

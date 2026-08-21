@@ -7,6 +7,7 @@ import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
 import { formatCents } from '../lib/money.js';
 import { ROW_STYLE_COLORS, auraStyle } from '../lib/cosmetics.js';
+import { BADGE_EMOJI_RARITY } from '../lib/game.js';
 import WeeklyPodium, { RANK_COLORS } from '../components/WeeklyPodium.jsx';
 import TopThreeTag from '../components/TopThreeTag.jsx';
 
@@ -526,7 +527,9 @@ export default function Leaderboard() {
               >
                 {row.name}
               </span>
-              {row.emoji && <span>{row.emoji}</span>}
+              {row.emoji && (
+                <span className={BADGE_EMOJI_RARITY[row.emoji] === 'special' ? 'flair-special' : undefined}>{row.emoji}</span>
+              )}
               {row.me && rankColor && (
                 <span className="mono" style={{ fontSize: 9, color: 'var(--neon-cyan)', letterSpacing: '0.05em', flexShrink: 0 }}>
                   YOU

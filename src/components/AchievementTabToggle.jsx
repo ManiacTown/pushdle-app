@@ -18,6 +18,13 @@ export default function AchievementTabToggle({ tab, onChange }) {
       >
         💰 Money Mode
       </button>
+      <button
+        className="btn-ghost"
+        style={tab === 'secret' ? { borderColor: 'var(--neon-red)', color: 'var(--neon-red)' } : undefined}
+        onClick={() => onChange('secret')}
+      >
+        Secret
+      </button>
     </div>
   );
 }

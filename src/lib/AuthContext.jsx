@@ -28,6 +28,11 @@ export function AuthProvider({ children }) {
   // explainer — same null-while-unknown/no-localStorage-side reasoning as
   // moneyUnlockSeen above (registered-accounts-only feature).
   const [pityIntroSeen, setPityIntroSeenState] = useState(null);
+  // Whether THIS account has seen ModifierUpdateModal.jsx's one-time "what's
+  // new" recap — same null-while-unknown/no-localStorage-side reasoning as
+  // pityIntroSeen above, but shown to any logged-in account on login, not
+  // gated behind a particular in-game moment.
+  const [modifierUpdateSeen, setModifierUpdateSeenState] = useState(null);
   // Whether MoneyWeeklyResultsModal.jsx has been dismissed for the CURRENT
   // money_last_week_rank snapshot — same null-while-unknown convention as
   // pityIntroSeen above, but this one flips back to false on its OWN
@@ -77,6 +82,7 @@ export function AuthProvider({ children }) {
       setMoneyUnlockSeenState(null);
       setPityIntroSeenState(null);
       setMoneyWeeklyResultsSeenState(null);
+      setModifierUpdateSeenState(null);
       return;
     }
     supabase
@@ -187,6 +193,22 @@ export function AuthProvider({ children }) {
         // money_unlock_seen's own fallback — showing it an extra time is
         // harmless, silently never showing it at all isn't.
         setPityIntroSeenState(error ? false : data?.pity_intro_seen ?? false);
+      });
+
+    // Same defensive separate-query reasoning as every *_seen fetch above.
+    // No localStorage/guest carry-over — ModifierUpdateModal.jsx only ever
+    // shows to a logged-in account in the first place (see Home.jsx's
+    // trigger effect), so there's no pre-login local dismissal to carry
+    // over.
+    supabase
+      .from('profiles')
+      .select('modifier_update_seen')
+      .eq('id', user.id)
+      .single()
+      .then(({ data, error }) => {
+        // Defaults to false (not yet seen) on error, same reasoning as
+        // pity_intro_seen's own fallback above.
+        setModifierUpdateSeenState(error ? false : data?.modifier_update_seen ?? false);
       });
 
     // Same defensive separate-query reasoning as onboarding_seen/
@@ -333,9 +355,13 @@ export function AuthProvider({ children }) {
         'money_wallet_cents, money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
           'money_weekly_cents, money_best_weekly_cents, money_diamonds, owns_diamond_button, ' +
           'owned_cosmetics, active_push_skin, active_aura, active_row_style, owns_insurance, insurance_used_this_week, ' +
+          'owns_streak_bonus, owns_daredevil, active_money_upgrade, money_upgrade_choice_seen, ' +
           'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100, ' +
           'money_last_week_rank, money_last_week_score_cents, money_last_week_diamonds_awarded, ' +
-          'money_weekly_wins, money_currently_top3'
+          'money_weekly_wins, money_currently_top3, ' +
+          'money_diamonds_spent_lifetime, owns_any_row_style, owns_any_aura, money_daredevil_run_200, ' +
+          'clicked_contact, won_weekly_with_insurance, won_weekly_with_streak_bonus, won_weekly_with_daredevil, ' +
+          'artemis_earned'
       )
       .eq('id', user.id)
       .single();
@@ -377,6 +403,19 @@ export function AuthProvider({ children }) {
       // moneyWeeklyCents (see api/weekly-money-reset.js).
       ownsInsurance: !!data?.owns_insurance,
       insuranceUsedThisWeek: !!data?.insurance_used_this_week,
+      // The other two Upgrades-tab items, same "own it forever" shape as
+      // ownsInsurance — and activeMoneyUpgrade, the single slot that picks
+      // which ONE of the three (if any) is actually in effect (see
+      // active_money_upgrade's own comment in schema.sql).
+      ownsStreakBonus: !!data?.owns_streak_bonus,
+      ownsDaredevil: !!data?.owns_daredevil,
+      activeMoneyUpgrade: data?.active_money_upgrade ?? null,
+      // Whether this account has made its ONE choice of active_money_upgrade
+      // for the current money week (see that column's own comment in
+      // schema.sql) — MoneyUpgradeChoiceModal.jsx/Home.jsx's trigger effect
+      // gates on this being exactly `false`, and MoneyShop.jsx disables its
+      // Activate buttons once this is `true`.
+      moneyUpgradeChoiceSeen: data?.money_upgrade_choice_seen ?? null,
       // This account's placement in the most recently completed money
       // week (see MoneyWeeklyResultsModal.jsx and finalize_money_week's
       // own comment in schema.sql) — moneyLastWeekRank stays null until
@@ -391,6 +430,18 @@ export function AuthProvider({ children }) {
       // moneyLastWeekRank <= 3 above (that column is sticky and doesn't
       // reset for an inactive account, see its own schema.sql comment).
       moneyCurrentlyTop3: !!data?.money_currently_top3,
+      // Badge-tracking fields (see game.js's money-shop-*/secret-* BADGES)
+      // — every one of these backs exactly one badge, no other UI reads
+      // them directly.
+      moneyDiamondsSpentLifetime: data?.money_diamonds_spent_lifetime ?? 0,
+      ownsAnyRowStyle: !!data?.owns_any_row_style,
+      ownsAnyAura: !!data?.owns_any_aura,
+      moneyDaredevilRun200: !!data?.money_daredevil_run_200,
+      clickedContact: !!data?.clicked_contact,
+      wonWeeklyWithInsurance: !!data?.won_weekly_with_insurance,
+      wonWeeklyWithStreakBonus: !!data?.won_weekly_with_streak_bonus,
+      wonWeeklyWithDaredevil: !!data?.won_weekly_with_daredevil,
+      artemisEarned: !!data?.artemis_earned,
     };
     setStats((prev) => ({ ...prev, ...next }));
     return next;
@@ -425,6 +476,16 @@ export function AuthProvider({ children }) {
     if (error) console.error('failed to sync pity_intro_seen:', error);
   }
 
+  // Called by Home.jsx when ModifierUpdateModal.jsx is dismissed for real
+  // (not the admin dev-tools preview) — same optimistic-update shape as
+  // markPityIntroSeen above.
+  async function markModifierUpdateSeen() {
+    if (!user) return;
+    setModifierUpdateSeenState(true);
+    const { error } = await supabase.from('profiles').update({ modifier_update_seen: true }).eq('id', user.id);
+    if (error) console.error('failed to sync modifier_update_seen:', error);
+  }
+
   // Called by Home.jsx when MoneyWeeklyResultsModal.jsx is dismissed for
   // real (not the admin dev-tools preview) — same optimistic-update shape
   // as markPityIntroSeen above, except this flag is one-way-PER-WEEK, not
@@ -436,6 +497,20 @@ export function AuthProvider({ children }) {
     setMoneyWeeklyResultsSeenState(true);
     const { error } = await supabase.from('profiles').update({ money_weekly_results_seen: true }).eq('id', user.id);
     if (error) console.error('failed to sync money_weekly_results_seen:', error);
+  }
+
+  // Called by Footer.jsx when the Contact link is clicked — backs the
+  // Hermes secret badge (see game.js's BADGES). No server validation
+  // needed (same trust level as onboarding_seen above); lives in the
+  // general stats blob (see refreshMoneyStats) rather than its own
+  // dedicated state var, since nothing else ever needs it tracked
+  // separately. One-way-forever, so a redundant click after the first is
+  // a harmless no-op guarded here rather than left to the DB round trip.
+  async function markContactClicked() {
+    if (!user || stats?.clickedContact) return;
+    setStats((prev) => ({ ...prev, clickedContact: true }));
+    const { error } = await supabase.from('profiles').update({ clicked_contact: true }).eq('id', user.id);
+    if (error) console.error('failed to sync clicked_contact:', error);
   }
 
   return (
@@ -465,6 +540,9 @@ export function AuthProvider({ children }) {
         markPityIntroSeen,
         moneyWeeklyResultsSeen,
         markMoneyWeeklyResultsSeen,
+        markContactClicked,
+        modifierUpdateSeen,
+        markModifierUpdateSeen,
         signUp,
         signIn,
         logout,

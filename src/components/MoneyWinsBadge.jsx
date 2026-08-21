@@ -5,7 +5,7 @@ import { useState } from 'react';
 // account has finished #1 in the weekly Money Mode leaderboard at least
 // once (see schema.sql's money_weekly_wins, incremented by
 // finalize_money_week) — same shared-component/hover-or-tap-tooltip
-// pattern as InsuranceBadge.jsx, sitting alongside it.
+// pattern as ActiveMoneyUpgradeBadge.jsx, sitting alongside it.
 export default function MoneyWinsBadge({ wins }) {
   const [showLabel, setShowLabel] = useState(false);
   if (!wins) return null;

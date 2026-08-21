@@ -67,7 +67,17 @@ export const BADGE_CATEGORIES = [
   // their own (1 and 2 badges) that splitting them felt like padding out
   // the grid rather than meaningfully grouping anything.
   { id: 'money-unique', label: 'Unique' },
+  // Shop purchases — deliberately its own category rather than folded into
+  // money-unique, so "did I buy everything" reads as its own checklist.
+  { id: 'money-shop', label: 'Shop' },
 ];
+
+// Its own top-level achievement tab (see Profile.jsx/PublicProfile.jsx's
+// AchievementTabToggle), not folded into money-shop/money-unique — every
+// badge in this category has its hint masked to "???" until earned (see
+// BadgeGrid.jsx), which only makes sense as a distinct browsing mode, not
+// mixed in with badges that show their real hint from the start.
+export const SECRET_CATEGORY = { id: 'secret', label: 'Only the best of the best earn these badges' };
 
 // Rarity is flavor on top of the check thresholds above — common/rare/
 // legendary roughly track difficulty, special is reserved for the two
@@ -138,11 +148,71 @@ export const BADGES = [
   { id: 'money-style-walkaway', label: 'Walking Away', category: 'money-unique', hint: 'Cash out after just 1 push', rarity: 'common', field: 'moneyBankedAfterOnePush', min: true },
   { id: 'money-rank-top3', label: 'Golden Goose', category: 'money-unique', hint: 'Reach top 3 on the weekly money leaderboard', rarity: 'legendary', field: 'moneyReachedTop3Weekly', min: true },
   { id: 'money-style-greedy', label: 'Too Greedy', category: 'money-unique', hint: 'Bust with $100+ unbanked in one run', rarity: 'legendary', field: 'moneyBustedOver100', min: true },
+
+  // ---- Money variant: Shop ----
+  // Reads owns*/moneyDiamondsSpentLifetime off the same stats object as
+  // everything above — see AuthContext.jsx for where each is fetched.
+  // Ordered common -> rare -> legendary (BadgeGrid.jsx renders each
+  // category in plain array order, no separate sort) rather than the
+  // order they were first described in.
+  { id: 'money-shop-button-skin', label: 'Oooh Shiny', category: 'money-shop', hint: 'Buy a push-button skin', rarity: 'common', field: 'ownsDiamondButton', min: true },
+  { id: 'money-shop-row-style', label: 'Time to Decorate', category: 'money-shop', hint: 'Buy a row background', rarity: 'common', field: 'ownsAnyRowStyle', min: true },
+  { id: 'money-shop-aura', label: 'Standing Out', category: 'money-shop', hint: 'Buy a name color', rarity: 'common', field: 'ownsAnyAura', min: true },
+  { id: 'money-shop-diamonds-50', label: 'Put Them to Good Use', category: 'money-shop', hint: 'Spend 50 diamonds in the shop', rarity: 'rare', field: 'moneyDiamondsSpentLifetime', min: 50 },
+  {
+    id: 'money-shop-all-upgrades',
+    label: 'Modification Master',
+    category: 'money-shop',
+    hint: 'Buy all 3 Money Mode upgrades',
+    rarity: 'legendary',
+    fields: [
+      { field: 'ownsInsurance', min: true },
+      { field: 'ownsStreakBonus', min: true },
+      { field: 'ownsDaredevil', min: true },
+    ],
+  },
+
+  // ---- Secret ---- (see SECRET_CATEGORY above and BadgeGrid.jsx — every
+  // hint below shows as "???" until earned, so keep them real/specific
+  // here regardless; the masking is purely a display-layer concern.)
+  { id: 'secret-leonidas', label: 'Leonidas', category: 'secret', hint: 'Bank $200 in a single Money Mode run while Daredevil is active', rarity: 'special', field: 'moneyDaredevilRun200', min: true },
+  { id: 'secret-hermes', label: 'Hermes', category: 'secret', hint: 'Click the Contact link in the footer', rarity: 'special', field: 'clickedContact', min: true },
+  { id: 'secret-orion', label: 'Orion', category: 'secret', hint: 'Finish #1 on the weekly Money Mode leaderboard 5 times', rarity: 'special', field: 'moneyWeeklyWins', min: 5 },
+  {
+    id: 'secret-davinci',
+    label: 'Leonardo da Vinci',
+    category: 'secret',
+    hint: 'Finish #1 on the weekly leaderboard with each of the 3 upgrades active',
+    rarity: 'special',
+    fields: [
+      { field: 'wonWeeklyWithInsurance', min: true },
+      { field: 'wonWeeklyWithStreakBonus', min: true },
+      { field: 'wonWeeklyWithDaredevil', min: true },
+    ],
+  },
+  { id: 'secret-artemis', label: 'Artemis', category: 'secret', hint: 'Reach a 50 streak in classic mode AND bank $100 in Money Mode on the same day', rarity: 'special', field: 'artemisEarned', min: true },
+  // Deliberately unclaimable right now — no code anywhere ever sets
+  // nukeEarned, and it's deliberately NOT in ALLOWED_BADGE_FIELDS
+  // (supabase/functions/_shared/utils.ts) either, so even the admin
+  // "claim all badges" dev tool can't grant it. A placeholder for later.
+  { id: 'secret-nuke', label: 'N.U.K.E.', category: 'secret', hint: 'Not obtainable yet — check back another time', rarity: 'special', field: 'nukeEarned', min: true },
 ];
 
+// A badge is either a single {field, min} threshold, or — for a badge that
+// needs several independent things to ALL be true ("own all 3 upgrades",
+// "won the week with each of the 3 upgrades") — a `fields: [{field, min},
+// ...]` array, ANDed together instead of a bare `field`/`min` pair. This
+// normalizes both shapes to the same list so every consumer below only
+// ever has to handle one case.
+export function badgeConditions(badge) {
+  return badge.fields ?? [{ field: badge.field, min: badge.min }];
+}
+
 function badgeIsEarned(badge, stats) {
-  const value = stats[badge.field];
-  return badge.min === true ? !!value : (value || 0) >= badge.min;
+  return badgeConditions(badge).every(({ field, min }) => {
+    const value = stats[field];
+    return min === true ? !!value : (value || 0) >= min;
+  });
 }
 
 export function earnedBadges(stats) {
@@ -153,14 +223,20 @@ export function earnedBadges(stats) {
 // earned (the highest `min` seen per field; `true` for boolean flags) —
 // powers the admin "claim all badges" dev tool (Home.jsx's
 // adminClaimAllBadges). Adding a new badge above is automatically enough
-// to make it claimable too; nothing here needs updating by hand.
+// to make it claimable too; nothing here needs updating by hand — with one
+// deliberate exception: a field not listed in ALLOWED_BADGE_FIELDS
+// (supabase/functions/_shared/utils.ts) gets silently dropped server-side
+// regardless of what this returns, which is exactly how N.U.K.E. stays
+// unclaimable even by this admin tool.
 export function maxStatsForAllBadges() {
   const result = {};
   for (const b of BADGES) {
-    if (b.min === true) {
-      result[b.field] = true;
-    } else {
-      result[b.field] = Math.max(result[b.field] || 0, b.min);
+    for (const { field, min } of badgeConditions(b)) {
+      if (min === true) {
+        result[field] = true;
+      } else {
+        result[field] = Math.max(result[field] || 0, min);
+      }
     }
   }
   return result;
@@ -173,7 +249,9 @@ export function maxStatsForAllBadges() {
 export function zeroStatsForAllBadges() {
   const result = {};
   for (const b of BADGES) {
-    result[b.field] = b.min === true ? false : 0;
+    for (const { field, min } of badgeConditions(b)) {
+      result[field] = min === true ? false : 0;
+    }
   }
   return result;
 }
@@ -240,4 +318,22 @@ export const BADGE_EMOJI = {
   'money-run-250': '🤑',
   'money-rank-top3': '🪿',
   'money-style-greedy': '😵',
+  'money-shop-all-upgrades': '💠',
+  'money-shop-diamonds-50': '💎',
+  'secret-leonidas': '🗡️',
+  'secret-hermes': '🪶',
+  'secret-orion': '👑',
+  'secret-davinci': '⚖️',
+  'secret-artemis': '☄️',
+  'secret-nuke': '☢️',
 };
+
+// Reverse lookup (emoji character -> that badge's rarity) — powers the
+// glow/pulse effect on `special`-rarity flair wherever it renders
+// (Leaderboard.jsx rows, Profile.jsx, PublicProfile.jsx). Built once here
+// rather than at each render site, and keyed by the emoji itself (not
+// badge id) since every render site only ever has the raw stored
+// selected_emoji character in hand, not which badge it came from.
+export const BADGE_EMOJI_RARITY = Object.fromEntries(
+  Object.entries(BADGE_EMOJI).map(([id, emoji]) => [emoji, BADGES.find((b) => b.id === id)?.rarity])
+);

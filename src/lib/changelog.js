@@ -6,6 +6,20 @@
 // nobody outside the codebase would ever notice.
 export const CHANGELOG = [
   {
+    date: '2026-08-21',
+    title: 'Money Mode upgrades, Shop & Secret badges',
+    items: [
+      'Added two new Money Mode upgrades — Streak Bonus and Daredevil — alongside Weekly Bust Insurance, 30 diamonds each in the shop.',
+      'Only one upgrade can be active at a time. Pick one (or none) the first time you enter Money Mode each week, or activate a fresh purchase immediately if nothing else is running yet — either way, it’s locked in until the next Monday reset.',
+      'Your profile now shows a tag for whichever upgrade you currently have active.',
+      'Added a "Shop" badge category — 5 badges for buying things in the Money Mode shop.',
+      'Added a "Secret" badge category — 6 hidden badges whose descriptions stay a mystery until you earn them.',
+      'Special-rarity badge flair now glows next to your name wherever it shows up.',
+      'The Golden Goose badge’s chicken is now an actual goose 🪿.',
+      'Added a one-time "Modifier Update" recap that pops up the next time you log in, covering everything above.',
+    ],
+  },
+  {
     date: '2026-08-20',
     title: 'Money Mode: 10 guaranteed pushes',
     items: [
@@ -57,7 +71,7 @@ export const CHANGELOG = [
       'Added a Discord icon to the nav bar, right next to "How to play" — click it to join the server.',
       'Tabs left open in the background now pick up new updates more reliably instead of occasionally getting stuck on an old version.',
     ],
-  },
+  },   
   {
     date: '2026-07-30',
     title: 'Polish pass',

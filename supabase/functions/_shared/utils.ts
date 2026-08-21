@@ -129,4 +129,23 @@ export const ALLOWED_BADGE_FIELDS = new Set([
   'money_banked_after_one_push',
   'money_reached_top3_weekly',
   'money_busted_over100',
+  // money-shop badges (see game.js's BADGES)
+  'owns_insurance',
+  'owns_streak_bonus',
+  'owns_daredevil',
+  'money_diamonds_spent_lifetime',
+  'owns_diamond_button',
+  'owns_any_row_style',
+  'owns_any_aura',
+  // secret badges (see game.js's BADGES) — deliberately NOT including
+  // nuke_earned: that badge has no real column and no code path ever sets
+  // it, and leaving it off this allowlist is what keeps it unclaimable
+  // even via the admin "claim all badges" dev tool. Don't add it.
+  'money_daredevil_run_200',
+  'clicked_contact',
+  'money_weekly_wins',
+  'won_weekly_with_insurance',
+  'won_weekly_with_streak_bonus',
+  'won_weekly_with_daredevil',
+  'artemis_earned',
 ]);

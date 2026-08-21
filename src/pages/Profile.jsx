@@ -4,7 +4,7 @@ import { useAuth } from '../lib/AuthContext.jsx';
 import { supabase } from '../lib/supabaseClient.js';
 import { pacificDateString } from '../lib/pacificDate.js';
 import * as storage from '../lib/storage.js';
-import { BADGES, BADGE_CATEGORIES, BADGE_EMOJI, earnedBadges } from '../lib/game.js';
+import { BADGES, BADGE_CATEGORIES, SECRET_CATEGORY, BADGE_EMOJI, BADGE_EMOJI_RARITY, earnedBadges } from '../lib/game.js';
 import { formatCents } from '../lib/money.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { auraStyle, AURA_COLORS, ROW_STYLE_COLORS, COSMETIC_CATEGORIES } from '../lib/cosmetics.js';
@@ -12,7 +12,7 @@ import { playBadgeSelect } from '../lib/sound.js';
 import StatTilesPanel from '../components/StatTilesPanel.jsx';
 import AchievementTabToggle from '../components/AchievementTabToggle.jsx';
 import CosmeticTabs from '../components/CosmeticTabs.jsx';
-import InsuranceBadge from '../components/InsuranceBadge.jsx';
+import ActiveMoneyUpgradeBadge from '../components/ActiveMoneyUpgradeBadge.jsx';
 import MoneyWinsBadge from '../components/MoneyWinsBadge.jsx';
 import TopThreeTag from '../components/TopThreeTag.jsx';
 import BadgeGrid from '../components/BadgeGrid.jsx';
@@ -233,6 +233,23 @@ export default function Profile() {
     moneyReachedTop3Weekly: stats.moneyReachedTop3Weekly,
     moneyBankedAfterOnePush: stats.moneyBankedAfterOnePush,
     moneyBustedOver100: stats.moneyBustedOver100,
+    // money-shop badges (see game.js's BADGES)
+    ownsInsurance: stats.ownsInsurance,
+    ownsStreakBonus: stats.ownsStreakBonus,
+    ownsDaredevil: stats.ownsDaredevil,
+    moneyDiamondsSpentLifetime: stats.moneyDiamondsSpentLifetime,
+    ownsDiamondButton: stats.ownsDiamondButton,
+    ownsAnyRowStyle: stats.ownsAnyRowStyle,
+    ownsAnyAura: stats.ownsAnyAura,
+    // secret badges (see game.js's BADGES) — nukeEarned deliberately never
+    // appears here (or anywhere else), see secret-nuke's own comment.
+    moneyDaredevilRun200: stats.moneyDaredevilRun200,
+    clickedContact: stats.clickedContact,
+    moneyWeeklyWins: stats.moneyWeeklyWins,
+    wonWeeklyWithInsurance: stats.wonWeeklyWithInsurance,
+    wonWeeklyWithStreakBonus: stats.wonWeeklyWithStreakBonus,
+    wonWeeklyWithDaredevil: stats.wonWeeklyWithDaredevil,
+    artemisEarned: stats.artemisEarned,
   };
   const earned = earnedBadges(statsForBadges);
   const earnedIds = new Set(earned.map((b) => b.id));
@@ -254,8 +271,9 @@ export default function Profile() {
   const activeRowStyle = user ? authStats?.activeRowStyle : null;
   const ownedCosmetics = user ? authStats?.ownedCosmetics ?? [] : [];
   const ownedPushSkins = user && authStats?.ownsDiamondButton ? ['diamond_button'] : [];
-  // Guests can't buy shop upgrades either — see InsuranceBadge's own gate.
-  const ownsInsurance = user ? !!authStats?.ownsInsurance : false;
+  // Guests can't buy shop upgrades either — see ActiveMoneyUpgradeBadge's
+  // own gate (renders nothing when activeMoneyUpgrade is null/undefined).
+  const activeMoneyUpgrade = user ? authStats?.activeMoneyUpgrade ?? null : null;
   // Guests never rank on a real weekly leaderboard — see MoneyWinsBadge's
   // own gate.
   const moneyWeeklyWins = user ? authStats?.moneyWeeklyWins ?? 0 : 0;
@@ -434,13 +452,17 @@ export default function Profile() {
                   confirmation of which flair (if any) is actually selected,
                   the one place on the whole site that couldn't show it. */}
               {currentEmoji && (
-                <span ref={emojiRef} style={{ fontSize: 20, flexShrink: 0 }}>
+                <span
+                  ref={emojiRef}
+                  className={BADGE_EMOJI_RARITY[currentEmoji] === 'special' ? 'flair-special' : undefined}
+                  style={{ fontSize: 20, flexShrink: 0 }}
+                >
                   {currentEmoji}
                 </span>
               )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <InsuranceBadge owns={ownsInsurance} />
+              <ActiveMoneyUpgradeBadge activeMoneyUpgrade={activeMoneyUpgrade} />
               <MoneyWinsBadge wins={moneyWeeklyWins} />
             </div>
           </div>
@@ -590,7 +612,11 @@ export default function Profile() {
 
       <BadgeGrid
         gridRef={badgeGridRef}
-        categories={BADGE_CATEGORIES.filter((cat) => cat.id.startsWith('money-') === (achievementTab === 'money'))}
+        categories={
+          achievementTab === 'secret'
+            ? [SECRET_CATEGORY]
+            : BADGE_CATEGORIES.filter((cat) => cat.id.startsWith('money-') === (achievementTab === 'money'))
+        }
         earnedIds={earnedIds}
         currentEmoji={currentEmoji}
         stats={statsForBadges}

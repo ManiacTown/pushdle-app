@@ -31,6 +31,8 @@ import OnboardingModal from '../components/OnboardingModal.jsx';
 import MoneyModeUnlockModal from '../components/MoneyModeUnlockModal.jsx';
 import PityIntroModal from '../components/PityIntroModal.jsx';
 import MoneyWeeklyResultsModal from '../components/MoneyWeeklyResultsModal.jsx';
+import MoneyUpgradeChoiceModal from '../components/MoneyUpgradeChoiceModal.jsx';
+import ModifierUpdateModal from '../components/ModifierUpdateModal.jsx';
 import MoneyMode, { MONEY_BADGE_REVEAL_DELAY_MS, MONEY_PANEL_GAP } from '../components/MoneyMode.jsx';
 import MoneyShop from '../components/MoneyShop.jsx';
 import BadgeToastStack from '../components/BadgeToast.jsx';
@@ -110,6 +112,22 @@ export default function Home() {
   // markMoneyWeeklyResultsSeen, or previewing it would consume this
   // account's own real unseen-results moment.
   const [moneyWeeklyResultsPreview, setMoneyWeeklyResultsPreview] = useState(false);
+  // Weekly upgrade-choice modal (see MoneyUpgradeChoiceModal.jsx) — shown
+  // once per money week, the first time an account with at least one owned
+  // upgrade actually enters Money Mode after money_upgrade_choice_seen
+  // resets false. No preview-data state needed the way the results modal
+  // has (moneyWeeklyResultsData) — this one only ever shows this account's
+  // own real owned-upgrades/active-upgrade snapshot, nothing to fabricate.
+  const [showMoneyUpgradeChoiceModal, setShowMoneyUpgradeChoiceModal] = useState(false);
+  // "What's new" recap (see ModifierUpdateModal.jsx) — shown once to any
+  // logged-in account on login, gated on profiles.modifier_update_seen. No
+  // preview-data state needed, same reasoning as MoneyUpgradeChoiceModal
+  // above — this one only ever shows its own static, hand-written content.
+  const [showModifierUpdateModal, setShowModifierUpdateModal] = useState(false);
+  // Same preview-flag reasoning as moneyWeeklyResultsPreview above — an
+  // admin dev-tools summon must NOT call markModifierUpdateSeen, or
+  // previewing it would consume this account's own real one-time moment.
+  const [modifierUpdatePreview, setModifierUpdatePreview] = useState(false);
   // Money-variant mode switch — open to everyone (see hasPlayedClassic
   // below for the one real requirement). Not persisted across reloads —
   // always starts back on classic.
@@ -298,6 +316,8 @@ export default function Home() {
     markPityIntroSeen,
     moneyWeeklyResultsSeen,
     markMoneyWeeklyResultsSeen,
+    modifierUpdateSeen,
+    markModifierUpdateSeen,
   } = useAuth();
 
   // Money mode's progression gate, computed once here rather than
@@ -779,6 +799,58 @@ export default function Home() {
     timers.current.push(timer);
     return () => clearTimeout(timer);
   }, [user, moneyWeeklyResultsSeen, authStats?.moneyLastWeekRank]);
+
+  // Prompts this week's upgrade choice (see MoneyUpgradeChoiceModal.jsx) —
+  // gated on actually being in Money Mode (uiMode, not just logged in;
+  // unlike the results modal above, which fires regardless of mode), the
+  // last-week results modal not currently pending/showing (that one goes
+  // first if there's anything to show), authStats.moneyUpgradeChoiceSeen
+  // being exactly false (null means still loading; true means already
+  // chosen this week or nothing to choose from ever), and owning at least
+  // one upgrade — nothing to choose from otherwise, so there's no reason to
+  // interrupt a player who's never bought one. moneyUpgradeChoiceShownRef
+  // guards it to once per mount, same reasoning moneyWeeklyResultsShownRef
+  // uses above (this effect re-runs on every stats refresh mid-session,
+  // e.g. after a push — without the ref it would try to reopen the modal
+  // the instant it's dismissed, since dismissal itself is what flips
+  // moneyUpgradeChoiceSeen true, which is also a dependency here).
+  const moneyUpgradeChoiceShownRef = useRef(false);
+  useEffect(() => {
+    if (!user) return;
+    if (uiMode !== 'money') return;
+    if (showMoneyWeeklyResultsModal) return;
+    if (authStats?.moneyUpgradeChoiceSeen !== false) return;
+    if (!(authStats?.ownsInsurance || authStats?.ownsStreakBonus || authStats?.ownsDaredevil)) return;
+    if (moneyUpgradeChoiceShownRef.current) return;
+    moneyUpgradeChoiceShownRef.current = true;
+    setShowMoneyUpgradeChoiceModal(true);
+  }, [user, uiMode, showMoneyWeeklyResultsModal, authStats?.moneyUpgradeChoiceSeen, authStats?.ownsInsurance, authStats?.ownsStreakBonus, authStats?.ownsDaredevil]);
+
+  // One-time "what's new" recap (see ModifierUpdateModal.jsx) — shown to
+  // any logged-in account, regardless of mode (like the results modal
+  // above, unlike the upgrade-choice one). Defers to every other login/
+  // gameplay modal so this never stacks with something more specific —
+  // same "check every other show* state" reasoning MoneyUpgradeChoiceModal's
+  // own trigger uses just above. The 2s delay (longer than the results
+  // modal's own 1400ms) is what makes the showMoneyWeeklyResultsModal check
+  // actually meaningful: without it, this could fire before that modal's
+  // own delayed trigger has had a chance to decide whether IT's showing at
+  // all. If any guard flips true during the wait, React's own effect
+  // cleanup cancels this timer before it can fire (see the dependency
+  // array) — modifierUpdateShownRef then keeps it from ever rescheduling.
+  const modifierUpdateShownRef = useRef(false);
+  useEffect(() => {
+    if (!user) return;
+    if (modifierUpdateSeen !== false) return;
+    if (showMoneyUnlockModal || showPityIntroModal || showMoneyWeeklyResultsModal || showMoneyUpgradeChoiceModal) return;
+    if (modifierUpdateShownRef.current) return;
+    modifierUpdateShownRef.current = true;
+    const timer = setTimeout(() => {
+      setShowModifierUpdateModal(true);
+    }, 2000);
+    timers.current.push(timer);
+    return () => clearTimeout(timer);
+  }, [user, modifierUpdateSeen, showMoneyUnlockModal, showPityIntroModal, showMoneyWeeklyResultsModal, showMoneyUpgradeChoiceModal]);
 
   // Once busted, tick every second so the "next run" countdown is live,
   // and re-check the date so the run auto-resets the moment it rolls over.
@@ -2020,6 +2092,43 @@ export default function Home() {
             />
           )}
 
+          {showMoneyUpgradeChoiceModal && (
+            <MoneyUpgradeChoiceModal
+              ownsInsurance={!!authStats?.ownsInsurance}
+              ownsStreakBonus={!!authStats?.ownsStreakBonus}
+              ownsDaredevil={!!authStats?.ownsDaredevil}
+              currentActive={authStats?.activeMoneyUpgrade ?? null}
+              onConfirm={async (upgrade) => {
+                // set_active_money_upgrade (see schema.sql) is the real
+                // enforcement point AND what actually flips
+                // money_upgrade_choice_seen true — same RPC MoneyShop.jsx's
+                // own Activate button calls, so a choice made here and one
+                // made directly in the shop (while still unlocked) go
+                // through the exact same path.
+                try {
+                  const { error } = await supabase.functions.invoke('set-active-money-upgrade', { body: { upgrade } });
+                  if (error) console.error('set active money upgrade failed:', error);
+                } catch (err) {
+                  console.error('set active money upgrade failed:', err);
+                }
+                await refreshMoneyStats();
+                setShowMoneyUpgradeChoiceModal(false);
+              }}
+            />
+          )}
+
+          {showModifierUpdateModal && (
+            <ModifierUpdateModal
+              onDismiss={() => {
+                setShowModifierUpdateModal(false);
+                // A preview dismissal never marks it seen — see
+                // modifierUpdatePreview's own declaration comment.
+                if (modifierUpdatePreview) setModifierUpdatePreview(false);
+                else markModifierUpdateSeen();
+              }}
+            />
+          )}
+
           {/* Gated strictly by role now the site is actually public — this
               used to also show for guests (no account = no role to check),
               since that was the only way to dev-test the local/guest game
@@ -2176,6 +2285,38 @@ export default function Home() {
                 }}
               >
                 🪿 Preview weekly results
+              </button>
+              <button
+                className="btn-ghost"
+                onClick={() => {
+                  // Unlike the results preview above, there's no fake data
+                  // to fabricate here — this account's own real owned/active
+                  // upgrades always exist and are safe to show regardless of
+                  // whether the real trigger conditions (uiMode==='money',
+                  // moneyUpgradeChoiceSeen===false, owns at least one) are
+                  // actually met right now. Setting the shown-ref too keeps
+                  // this consistent with a real trigger that happens to fire
+                  // while this is already open, same reasoning as every
+                  // other preview button's own ref-guard interaction.
+                  moneyUpgradeChoiceShownRef.current = true;
+                  setShowMoneyUpgradeChoiceModal(true);
+                }}
+              >
+                🎰 Preview weekly upgrade choice
+              </button>
+              <button
+                className="btn-ghost"
+                onClick={() => {
+                  // No fake data to fabricate here either — this modal's
+                  // content is static, hand-written copy, not derived from
+                  // this account's own stats. Same shown-ref/preview-flag
+                  // treatment as every other preview button above.
+                  modifierUpdateShownRef.current = true;
+                  setModifierUpdatePreview(true);
+                  setShowModifierUpdateModal(true);
+                }}
+              >
+                📣 Preview modifier update
               </button>
             </div>
           )}

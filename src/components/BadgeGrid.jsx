@@ -1,4 +1,4 @@
-import { BADGES, RARITY_META, BADGE_EMOJI } from '../lib/game.js';
+import { BADGES, RARITY_META, BADGE_EMOJI, badgeConditions } from '../lib/game.js';
 import { formatCents } from '../lib/money.js';
 import { spotlightMove } from '../lib/spotlight.js';
 
@@ -48,7 +48,17 @@ export default function BadgeGrid({
     >
       {categories.map((cat) => (
         <div key={cat.id} className="panel spotlight" onMouseMove={spotlightMove}>
-          <h3 style={{ fontSize: 14, marginBottom: 12 }}>{cat.label}</h3>
+          {/* Secret's own label is a description, not a proper category
+              name the way every other tab's is (see SECRET_CATEGORY in
+              game.js) — plain/dim text instead of the bold heading look
+              those get, so it reads as quieter flavor text, not a title. */}
+          {cat.id === 'secret' ? (
+            <div className="mono" style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-dim)', marginBottom: 12 }}>
+              {cat.label}
+            </div>
+          ) : (
+            <h3 style={{ fontSize: 14, marginBottom: 12 }}>{cat.label}</h3>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {BADGES.filter((b) => b.category === cat.id).map((b) => {
               const has = earnedIds.has(b.id);
@@ -58,9 +68,20 @@ export default function BadgeGrid({
               const selected = clickable && currentEmoji === emoji;
               const expanded = interactive && !clickable && expandedBadgeId === b.id;
 
-              const isCents = b.field.endsWith('Cents');
-              const current = stats?.[b.field] ?? 0;
-              const showProgress = !has && b.min !== true;
+              // Multi-field badges (see badgeConditions/game.js) have no
+              // single b.field/b.min to show a linear "X/Y" progress bar
+              // for in the first place — a "2/3 conditions met" bar would
+              // need its own bespoke logic per badge, so these just skip
+              // progress entirely, same treatment boolean badges already get.
+              const isMultiField = badgeConditions(b).length > 1;
+              // "Secret" badges (see SECRET_CATEGORY/game.js) hide their
+              // hint as "???" until earned — showing a numeric progress bar
+              // for one would leak exactly the info the mystery is hiding,
+              // so those are suppressed here too, not just the hint text.
+              const isSecret = b.category === 'secret';
+              const isCents = !isMultiField && b.field.endsWith('Cents');
+              const current = !isMultiField ? stats?.[b.field] ?? 0 : 0;
+              const showProgress = !has && !isMultiField && !isSecret && b.min !== true;
               const progressText = showProgress
                 ? isCents
                   ? `${formatCents(current)}/${formatCents(b.min)}`
@@ -70,6 +91,7 @@ export default function BadgeGrid({
               // smallest thresholds start at 1), so this can't divide by
               // zero — clamped to 100 regardless, defensively.
               const progressPct = showProgress ? Math.min(100, (current / b.min) * 100) : 0;
+              const hintText = !has && isSecret ? '???' : b.hint;
 
               const activate = clickable ? () => onBadgeClick(b) : () => onToggleExpand(b.id);
 
@@ -149,7 +171,7 @@ export default function BadgeGrid({
                     </div>
                   )}
                   <div className="mono badge-card-hint" style={{ fontSize: 9 }}>
-                    {b.hint}
+                    {hintText}
                   </div>
                 </div>
               );

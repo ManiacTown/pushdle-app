@@ -1157,23 +1157,25 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
           </div>
         </div>
 
-        {/* Weekly bust insurance status (see MoneyShop.jsx/
-            resolve_money_push's bust branch in schema.sql) — only shown to
-            players who actually own it, same "no clutter for what you
-            don't have" reasoning as the diamond-button skin only rendering
-            once owned. Reads displayedInsuranceUsed (a locally-delayed
-            mirror of stats.insuranceUsedThisWeek — see its own comment)
-            rather than stats directly, so a live save doesn't flip this
-            the instant the response lands. Still just works for admin's
-            "Reset insurance timer" dev tool (see Home.jsx) via its own
+        {/* Active money-mode upgrade status (see MoneyShop.jsx's Upgrades
+            tab / resolve_money_push's active_money_upgrade branch in
+            schema.sql) — only one of Insurance/Streak Bonus/Daredevil can
+            ever be active at once (see that column's own comment), so this
+            is one pill whose look/text swaps on stats.activeMoneyUpgrade
+            rather than three independent badges. Insurance's own armed/
+            used distinction still reads displayedInsuranceUsed (a
+            locally-delayed mirror of stats.insuranceUsedThisWeek — see its
+            own comment) rather than stats directly, so a live save doesn't
+            flip this the instant the response lands; Streak Bonus/Daredevil
+            have no equivalent "just happened" moment, so their text is
+            static while active. Still just works for admin's "Reset
+            insurance timer" dev tool (see Home.jsx) via its own
             refreshMoneyStats() call — no signal prop needed, since that
             path isn't suppressed (only triggerInsuranceSave sets the
             suppress ref). Same slot as the run/wallet row above (0) since
             it's visually part of that same cluster and should animate with
-            it, not independently. Red for "used" (not just dimmed) —
-            deliberately reads as the OPPOSITE of armed's green, a clear
-            on/off state rather than "still fine, just faded." */}
-        {stats?.ownsInsurance && (
+            it, not independently. */}
+        {stats?.activeMoneyUpgrade && (
           <div
             ref={insuranceBadgeRef}
             className="mono"
@@ -1193,13 +1195,32 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
               // clearance below it or the two visually collide regardless
               // of how far apart their own boxes sit in the document.
               marginBottom: 28,
-              border: `1px solid ${displayedInsuranceUsed ? 'rgba(255,45,109,0.4)' : 'rgba(57,255,143,0.4)'}`,
-              color: displayedInsuranceUsed ? 'var(--neon-red)' : 'var(--neon-green)',
+              border: `1px solid ${
+                stats.activeMoneyUpgrade === 'insurance'
+                  ? displayedInsuranceUsed ? 'rgba(255,45,109,0.4)' : 'rgba(57,255,143,0.4)'
+                  : stats.activeMoneyUpgrade === 'streak_bonus'
+                  ? 'rgba(255,212,94,0.4)'
+                  : 'rgba(255,45,109,0.4)'
+              }`,
+              color:
+                stats.activeMoneyUpgrade === 'insurance'
+                  ? displayedInsuranceUsed ? 'var(--neon-red)' : 'var(--neon-green)'
+                  : stats.activeMoneyUpgrade === 'streak_bonus'
+                  ? '#ffd45e'
+                  : 'var(--neon-red)',
               ...modeSlotStyle(modeTransition, 0),
             }}
           >
-            <img src="/shield.png" alt="" width={9} height={9} style={{ display: 'block' }} />
-            {displayedInsuranceUsed ? 'Insurance used this week' : 'Insurance armed'}
+            {stats.activeMoneyUpgrade === 'insurance' ? (
+              <>
+                <img src="/shield.png" alt="" width={9} height={9} style={{ display: 'block' }} />
+                {displayedInsuranceUsed ? 'Insurance used this week' : 'Insurance armed'}
+              </>
+            ) : stats.activeMoneyUpgrade === 'streak_bonus' ? (
+              <>💲 Streak Bonus Activated</>
+            ) : (
+              <>😈 Daredevil Mode</>
+            )}
           </div>
         )}
 
