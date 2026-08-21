@@ -227,5 +227,26 @@ Deno.serve(async (req) => {
     return json({ success: true });
   }
 
+  // Broadcasts a Realtime message every open tab is already subscribed to
+  // (see src/lib/pwaUpdate.js) — lets an admin force every already-open tab
+  // to hard-reload right now instead of waiting on the normal poll/
+  // foreground-triggered check. Uses the Realtime broadcast REST endpoint
+  // rather than opening a websocket from an Edge Function just to send one
+  // message — see https://supabase.com/docs/guides/realtime/broadcast#broadcast-using-the-rest-api.
+  // 'app-updates'/'reload' must match the client's channel/event exactly.
+  if (action === 'force_reload') {
+    const res = await fetch(`${Deno.env.get('SUPABASE_URL')}/realtime/v1/api/broadcast`, {
+      method: 'POST',
+      headers: {
+        apikey: getServiceRoleKey(),
+        Authorization: `Bearer ${getServiceRoleKey()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ messages: [{ topic: 'app-updates', event: 'reload', payload: {} }] }),
+    });
+    if (!res.ok) return json({ error: `broadcast failed: ${res.status}` }, 500);
+    return json({ success: true });
+  }
+
   return json({ error: 'unknown action' }, 400);
 });

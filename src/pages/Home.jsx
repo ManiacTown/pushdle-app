@@ -1555,6 +1555,17 @@ export default function Home() {
     refreshMoneyStats();
   }
 
+  // Forces every already-open tab (anyone's, not just this admin's) to
+  // hard-reload right now — see admin/index.ts's force_reload action and
+  // pwaUpdate.js's subscribeToForceReload for the other end of this. Fire-
+  // and-forget on purpose: this tab is about to reload too the instant its
+  // own broadcast comes back around, so there's nothing useful to do with
+  // the response even on success.
+  async function adminForceReloadAll() {
+    const { error } = await supabase.functions.invoke('admin', { body: { action: 'force_reload' } });
+    if (error) console.error('force reload failed:', error);
+  }
+
   // Dev tool — adds one Comeback Boost pity charge (capped at 3, armed).
   // Real testing otherwise means 3 genuine early busts, one per day.
   async function adminAddPityCharge() {
@@ -2228,6 +2239,7 @@ export default function Home() {
                 <img src="/shield.png" alt="" width={12} height={12} style={{ display: 'inline-block', verticalAlign: 'middle', marginRight: 4 }} /> Reset insurance timer
               </button>
               <button className="btn-ghost" onClick={adminAddPityCharge}>🍀 Add pity charge</button>
+              <button className="btn-ghost" onClick={adminForceReloadAll}>🚨 Force reload all tabs</button>
               <button className="btn-ghost" onClick={resetBestStreak}>↺ Reset best streak</button>
               <button className="btn-ghost" onClick={adminResetBadges}>🏅 Reset all badges</button>
               <button className="btn-ghost" onClick={adminClaimAllBadges}>🏆 Claim all badges</button>

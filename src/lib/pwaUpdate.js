@@ -35,6 +35,7 @@
 // server-side before any of that plays out, so the worst case is a
 // visual interruption, not lost progress.
 import { registerSW } from 'virtual:pwa-register';
+import { supabase } from './supabaseClient.js';
 
 // 2 minutes — tight enough that a deploy reaches every already-open tab
 // within a couple minutes of shipping, not just eventually. The request
@@ -68,7 +69,25 @@ async function hardReload() {
   window.location.reload();
 }
 
+// Lets an admin force every already-open tab to hard-reload right now
+// (see supabase/functions/admin/index.ts's force_reload action) instead of
+// waiting on the poll/foreground checks above — those are already tight
+// (worst case ~2 minutes), but there's no way to trigger them on demand for
+// tabs other than your own. Realtime broadcast is a plain pub/sub channel,
+// not tied to auth — subscribes unconditionally (same as the SW update
+// checks above, guest or logged in, everyone's tab should reload) as long
+// as Supabase is configured at all. 'app-updates'/'reload' must match the
+// Edge Function's topic/event exactly.
+function subscribeToForceReload() {
+  if (!supabase) return;
+  supabase
+    .channel('app-updates')
+    .on('broadcast', { event: 'reload' }, () => hardReload())
+    .subscribe();
+}
+
 export function initPWAUpdates() {
+  subscribeToForceReload();
   registerSW({
     immediate: true,
     onNeedReload: hardReload,
