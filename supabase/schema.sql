@@ -1578,9 +1578,15 @@ begin
       -- Leonardo da Vinci (secret badge, see game.js) — p.active_money_upgrade
       -- reflects whatever was locked in for the week that's ending, since it
       -- can't change again mid-week once chosen (see money_upgrade_choice_seen).
-      won_weekly_with_insurance = p.won_weekly_with_insurance or (prized.rnk = 1 and p.active_money_upgrade = 'insurance'),
-      won_weekly_with_streak_bonus = p.won_weekly_with_streak_bonus or (prized.rnk = 1 and p.active_money_upgrade = 'streak_bonus'),
-      won_weekly_with_daredevil = p.won_weekly_with_daredevil or (prized.rnk = 1 and p.active_money_upgrade = 'daredevil'),
+      -- coalesce(...,'') guards against p.active_money_upgrade being null (no
+      -- upgrade active, the common case) — `null = 'insurance'` evaluates to
+      -- null, not false, and `false or null` is null, which then fails these
+      -- columns' not-null constraint. Confirmed live: this broke the first
+      -- real run of this function (2026-08-24's weekly reset never
+      -- completed) because that week's #1 finisher had no upgrade active.
+      won_weekly_with_insurance = p.won_weekly_with_insurance or (prized.rnk = 1 and coalesce(p.active_money_upgrade, '') = 'insurance'),
+      won_weekly_with_streak_bonus = p.won_weekly_with_streak_bonus or (prized.rnk = 1 and coalesce(p.active_money_upgrade, '') = 'streak_bonus'),
+      won_weekly_with_daredevil = p.won_weekly_with_daredevil or (prized.rnk = 1 and coalesce(p.active_money_upgrade, '') = 'daredevil'),
       money_last_week_rank = prized.rnk,
       money_last_week_score_cents = prized.money_weekly_cents,
       money_last_week_diamonds_awarded = prized.prize,
