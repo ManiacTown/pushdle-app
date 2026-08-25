@@ -298,3 +298,72 @@ prize structure and an announcement modal on top of the existing reset:
   tested end-to-end (Golden Goose banner, podium, prize infographic) from
   a fresh admin account that's never actually ranked, same as the other
   preview dev-tools buttons never mutate the real seen-flag.
+
+## Sunday anti-sniping blackout for the weekly money leaderboard (2026-08-25)
+
+With real diamond prizes on the line (see above), the top of the weekly
+money leaderboard invited last-minute sniping — watch the board, see a
+rival is $1,842 to your $1,841, push once more to edge them out right
+before Monday's reset. Fix: the top 10 standings go fully invisible for
+everyone on the last day of the money week (Sunday, Pacific).
+
+- **This had to be enforced server-side, not in the UI.** A client-side
+  "don't render the top 10 on Sundays" check would've been trivially
+  bypassed by anyone willing to open dev tools and hit the Supabase REST
+  endpoint directly with the app's own public anon/publishable key —
+  `profiles` already had a blanket `grant select ... to anon,
+  authenticated` with no column restriction, so `money_weekly_cents` was
+  fully bulk-readable/sortable by anyone, any row, any day, regardless of
+  what the React components chose to show. Fixed with a column-level
+  `revoke select (money_weekly_cents) on profiles from anon,
+  authenticated` — after this, a raw query for that column just fails,
+  full stop, for anyone. Three new SECURITY DEFINER RPCs
+  (`get_money_weekly_leaderboard`, `get_public_money_stats`,
+  `get_my_weekly_cents` — `schema.sql`, "Weekly money leaderboard
+  blackout" section) are the only remaining read paths, and the first two
+  apply the actual masking.
+- **Two separate leak paths, not just one.** The obvious fix is hiding the
+  leaderboard's top 10 rows. The one that's easy to miss: a sniper doesn't
+  need the leaderboard at all if they already know a specific rival's
+  `/player/:id` — they can just bookmark it and refresh all day Sunday for
+  that one account's live total. `get_public_money_stats` closes this
+  too: during blackout, any account OTHER than the caller's own comes back
+  hidden; viewing your own public profile still shows your real number.
+- **The top 10 rows are OMITTED, not nulled or flagged.** `pacific_money_blackout()`
+  (day check computed in Postgres itself, `extract(dow from now() at time
+  zone 'America/Los_Angeles') = 0`, not trusted from the client) gates a
+  `filter (where not v_blackout or rnk > 10)` on the leaderboard RPC's own
+  jsonb_agg — rank 1-10 genuinely never leaves the database during
+  blackout, there's nothing in the response for a client to work with even
+  by accident. `hiddenCount` tells `Leaderboard.jsx` how many blurred
+  placeholder rows to render in their place, with a "Stats Hidden for Last
+  Day of Money Mode" card on top.
+- **No exceptions, not even for your own rank.** If your own account is
+  one of the withheld top 10 during blackout, you're just as absent from
+  the response as everyone else there — the "You are rank #X" banner
+  naturally shows nothing, same as a genuinely unranked account. Not
+  special-cased; this falls straight out of the omission-based design.
+- **`allRows.findIndex`/positional-index rank display broke** the moment
+  leading rows could be absent — position 0 in the array can genuinely be
+  rank 11 now. Every row across every Leaderboard.jsx view (streak,
+  weekly, last week, lifetime) now carries its own explicit `rank` field
+  set at fetch time, and both the medal/rank-color rendering and the "You
+  are rank #X" banner read `row.rank`, never array position, even for the
+  views that still always return a gapless list.
+- **Admin preview switch** (`profiles.money_blackout_preview`, "🕶️
+  Blackout preview: ON/OFF" in Home.jsx's admin panel) — a real two-way
+  toggle, not a one-shot preview like the other admin buttons, since
+  there's no fake data to fabricate here the way the results-modal preview
+  fakes a demo rank. `pacific_money_blackout()` ORs in `exists (select 1
+  from profiles where id = auth.uid() and money_blackout_preview)` —
+  since `auth.uid()` always resolves to whoever is actually making THIS
+  request, flipping the switch only ever changes what the flipping
+  account sees; every other visitor's own calls still resolve to their
+  own (false) flag and get the real board. No separate scoping logic
+  needed anywhere else for that to hold.
+- **Verified against production data, not a mock.** Supabase
+  anon/publishable keys are meant to be public (same design intent as
+  this feature's own threat model) — pulled `VITE_SUPABASE_URL`/
+  `VITE_SUPABASE_ANON_KEY` straight out of the live site's shipped JS
+  bundle to stand up a local `.env.local` pointed at the real project,
+  confirmed the new RPCs against real rows before merging.
