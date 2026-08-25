@@ -318,6 +318,8 @@ export default function Home() {
     markMoneyWeeklyResultsSeen,
     modifierUpdateSeen,
     markModifierUpdateSeen,
+    moneyBlackoutPreview,
+    toggleMoneyBlackoutPreview,
   } = useAuth();
 
   // Money mode's progression gate, computed once here rather than
@@ -2297,6 +2299,22 @@ export default function Home() {
                 }}
               >
                 🪿 Preview weekly results
+              </button>
+              <button
+                className="btn-ghost"
+                // A real on/off switch, not a one-shot preview like the
+                // buttons around it — stays flipped until clicked again
+                // (see toggleMoneyBlackoutPreview/pacific_money_blackout's
+                // own comments). Only affects THIS account's own view of
+                // the leaderboard/public profiles (Leaderboard.jsx/
+                // PublicProfile.jsx both re-fetch on their own normal
+                // effects, so nav to/refresh the Leaderboard page after
+                // flipping to actually see it take effect) — nothing here
+                // touches what any other visitor sees.
+                style={moneyBlackoutPreview ? { borderColor: '#ffd45e', color: '#ffd45e' } : undefined}
+                onClick={toggleMoneyBlackoutPreview}
+              >
+                🕶️ Blackout preview: {moneyBlackoutPreview ? 'ON' : 'OFF'}
               </button>
               <button
                 className="btn-ghost"

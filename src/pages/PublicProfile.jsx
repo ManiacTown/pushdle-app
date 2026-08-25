@@ -95,7 +95,7 @@ export default function PublicProfile() {
         .from('profiles')
         .select(
           'money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
-            'money_weekly_cents, money_best_weekly_cents, money_currently_top3, money_weekly_wins, ' +
+            'money_best_weekly_cents, money_currently_top3, money_weekly_wins, ' +
             'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100, ' +
             'owns_insurance, owns_streak_bonus, owns_daredevil, owns_diamond_button, ' +
             'owns_any_row_style, owns_any_aura, money_diamonds_spent_lifetime, ' +
@@ -104,7 +104,22 @@ export default function PublicProfile() {
         )
         .eq('id', userId)
         .maybeSingle();
-      if (!cancelled && !moneyError) setMoneyStats(moneyData ?? {});
+      // money_weekly_cents is deliberately NOT in the select above — it's
+      // column-revoked from anon/authenticated entirely now (Sunday
+      // anti-sniping lockdown, see get_public_money_stats' own comment in
+      // schema.sql). This RPC is the only remaining way to read another
+      // account's live weekly total, and it applies blackout masking on
+      // the server: any account other than the viewer's own comes back
+      // `hidden: true, weeklyCents: null` on a blackout day, so a sniper
+      // can't just bookmark a rival's /player/:id and refresh it all day.
+      const { data: weeklyData } = await supabase.rpc('get_public_money_stats', { p_user_id: userId });
+      if (!cancelled && !moneyError) {
+        setMoneyStats({
+          ...(moneyData ?? {}),
+          money_weekly_cents: weeklyData?.weeklyCents ?? null,
+          money_weekly_hidden: !!weeklyData?.hidden,
+        });
+      }
 
       // Unlike the columns above, money_runs (today's IN-PROGRESS run) is
       // deliberately NOT publicly readable (see schema.sql) — there's no
@@ -239,7 +254,10 @@ export default function PublicProfile() {
             ]
           : []),
         { label: 'Most Banked', value: formatCents(moneyStats.money_best_run_cents) },
-        { label: 'Weekly $', value: formatCents(moneyStats.money_weekly_cents) },
+        // Hidden (not a real $0) on the last day of the money week for
+        // anyone other than yourself — see get_public_money_stats' own
+        // comment in schema.sql.
+        { label: 'Weekly $', value: moneyStats.money_weekly_hidden ? '🔒 Hidden' : formatCents(moneyStats.money_weekly_cents) },
         { label: 'Best Weekly $', value: formatCents(moneyStats.money_best_weekly_cents) },
         { label: 'Lifetime $', value: formatCents(moneyStats.money_lifetime_cents) },
       ]

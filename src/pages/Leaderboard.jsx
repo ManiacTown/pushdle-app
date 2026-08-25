@@ -73,6 +73,14 @@ export default function Leaderboard() {
   // not just on success, so switching tabs after a failure clears the
   // banner instead of leaving a stale error up.
   const [fetchError, setFetchError] = useState(false);
+  // How many top-ranked rows the server withheld entirely (Sunday
+  // anti-sniping blackout — see get_money_weekly_leaderboard's own
+  // comment in schema.sql). Only ever nonzero for tab==='money' &&
+  // moneyPeriod==='weekly'; every other view always resets it to 0.
+  // Drives the blurred placeholder block below the tab row, not
+  // `allRows` itself — the hidden rows were never sent to the client in
+  // the first place, there's no real data here to blur.
+  const [hiddenCount, setHiddenCount] = useState(0);
   // See WEEKLY_LEADERBOARD_START_DATE's own comment — plain string
   // comparison works here since pacificDateString() and the constant are
   // both YYYY-MM-DD, which sorts identically to a real date compare.
@@ -114,6 +122,7 @@ export default function Leaderboard() {
   useEffect(() => {
     setPage(0);
     setFetchError(false);
+    setHiddenCount(0);
 
     if (!isSupabaseConfigured) {
       setAllRows([]);
@@ -152,7 +161,7 @@ export default function Leaderboard() {
             // comment in schema.sql); the row list below just renders
             // without that flourish for this one view.
             setAllRows(
-              (data?.full_board ?? []).map((row) => ({
+              (data?.full_board ?? []).map((row, i) => ({
                 userId: row.userId,
                 name: row.username ?? 'Unknown',
                 emoji: row.emoji ?? null,
@@ -164,6 +173,7 @@ export default function Leaderboard() {
                 // (rather than profiles.money_last_week_rank, which this
                 // view never fetches) is what decides the tag here.
                 topThreeLastWeek: row.rank <= 3,
+                rank: i,
               }))
             );
           });
@@ -177,16 +187,47 @@ export default function Leaderboard() {
         setAllRows([]);
         return;
       }
-      // Both columns live on profiles, not money_runs (which only holds
-      // TODAY's in-progress run, and isn't publicly readable anyway — see
-      // schema.sql) — money_lifetime_cents never goes down,
-      // money_weekly_cents resets every Monday (see moneyPeriod's comment
-      // above). Same query shape either way, just a different column.
-      const scoreColumn = moneyPeriod === 'weekly' ? 'money_weekly_cents' : 'money_lifetime_cents';
+      // 'weekly' goes through get_money_weekly_leaderboard (see schema.sql,
+      // "Weekly money leaderboard blackout" section) instead of a direct
+      // table query — that RPC is what actually enforces the Sunday
+      // anti-sniping hide (money_weekly_cents is column-revoked from
+      // anon/authenticated now; a raw query for it would just fail).
+      // 'lifetime' is untouched — a permanent, already-banked total has no
+      // last-minute-sniping angle, so it still reads straight off profiles.
+      if (moneyPeriod === 'weekly') {
+        supabase.rpc('get_money_weekly_leaderboard').then(({ data, error }) => {
+          if (error) {
+            console.error('leaderboard money fetch failed:', error);
+            setFetchError(true);
+            setAllRows([]);
+            setHiddenCount(0);
+            return;
+          }
+          setHiddenCount(data?.hiddenCount ?? 0);
+          setAllRows(
+            (data?.rows ?? []).map((row) => ({
+              userId: row.userId,
+              name: row.username ?? 'Unknown',
+              emoji: row.emoji ?? null,
+              aura: row.aura ?? null,
+              rowStyle: row.rowStyle ?? null,
+              score: row.scoreCents,
+              me: user ? row.userId === user.id : false,
+              topThreeLastWeek: !!row.topThreeLastWeek,
+              // The RPC's own `rank` is 1-indexed (row_number()); rows
+              // ranked 1-10 may simply be ABSENT during blackout, so this
+              // can't be re-derived from array position the way every
+              // other view's rank still can be.
+              rank: row.rank - 1,
+            }))
+          );
+        });
+        return;
+      }
       supabase
         .from('profiles')
-        .select(`id, username, selected_emoji, active_aura, active_row_style, money_currently_top3, ${scoreColumn}`)
-        .order(scoreColumn, { ascending: false })
+        .select('id, username, selected_emoji, active_aura, active_row_style, money_currently_top3, money_lifetime_cents')
+        .order('money_lifetime_cents', { ascending: false })
         .limit(1000)
         .then(({ data, error }) => {
           if (error) {
@@ -196,15 +237,16 @@ export default function Leaderboard() {
             return;
           }
           setAllRows(
-            (data ?? []).map((row) => ({
+            (data ?? []).map((row, i) => ({
               userId: row.id,
               name: row.username ?? 'Unknown',
               emoji: row.selected_emoji ?? null,
               aura: row.active_aura ?? null,
               rowStyle: row.active_row_style ?? null,
-              score: row[scoreColumn],
+              score: row.money_lifetime_cents,
               me: user ? row.id === user.id : false,
               topThreeLastWeek: !!row.money_currently_top3,
+              rank: i,
             }))
           );
         });
@@ -229,7 +271,7 @@ export default function Leaderboard() {
           return;
         }
         setAllRows(
-          (data ?? []).map((row) => ({
+          (data ?? []).map((row, i) => ({
             userId: row.user_id,
             name: row.profiles?.username ?? 'Unknown',
             emoji: row.profiles?.selected_emoji ?? null,
@@ -238,6 +280,7 @@ export default function Leaderboard() {
             score: row.streak,
             me: user ? row.user_id === user.id : false,
             topThreeLastWeek: !!row.profiles?.money_currently_top3,
+            rank: i,
           }))
         );
       });
@@ -245,11 +288,17 @@ export default function Leaderboard() {
 
   const pageCount = Math.max(1, Math.ceil(allRows.length / PAGE_SIZE));
   const rows = allRows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
-  // Rank across the WHOLE board, not just whatever page you're looking at
-  // — a guest is never in allRows at all (see the "guest runs stay local"
-  // note below), so this naturally stays hidden for them without any
-  // extra guarding.
-  const myRank = allRows.findIndex((r) => r.me);
+  // Each row's own `rank` field (0-indexed, set per-view above), NOT
+  // array position — during the Sunday money blackout, rank 1-10 rows are
+  // simply absent from allRows, so position 0 in the array can genuinely
+  // be rank 11. A guest is never in allRows at all (see the "guest runs
+  // stay local" note below), so this naturally stays hidden for them
+  // without any extra guarding — and if the viewer's own rank happens to
+  // be one of the withheld top 10 during blackout, they're just as absent
+  // from allRows as everyone else there, so this also naturally shows
+  // nothing rather than leaking "you're in the top 10" via a banner.
+  const myRow = allRows.find((r) => r.me);
+  const myRank = myRow ? myRow.rank : -1;
 
   return (
     // Capped at its own width (matching the old flat --content-max-width
@@ -414,10 +463,72 @@ export default function Leaderboard() {
           You are rank #{myRank + 1}
         </div>
       )}
+      {/* Sunday anti-sniping blackout (see get_money_weekly_leaderboard's
+          own comment in schema.sql) — the top 10 rows genuinely never
+          reached the client, so there's no real data here to blur; these
+          are fake placeholder rows purely to preserve the board's usual
+          shape, with the actual message living in the opaque card on top.
+          Only on page 1 — repeating 10 blurred rows at the top of every
+          later page would be nonsensical, since the real rows below never
+          moved from where they'd normally be. */}
+      {tab === 'money' && moneyPeriod === 'weekly' && hiddenCount > 0 && page === 0 && (
+        <div style={{ position: 'relative', marginBottom: 4 }}>
+          <div style={{ filter: 'blur(5px)', pointerEvents: 'none', userSelect: 'none' }} aria-hidden="true">
+            {Array.from({ length: hiddenCount }).map((_, i) => {
+              const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1;
+              const rankColor = RANK_COLORS[i];
+              return (
+                <div
+                  key={i}
+                  className="mono leaderboard-row"
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    fontSize: 12,
+                    padding: '9px 12px',
+                    borderRadius: 8,
+                    marginBottom: 4,
+                    background: rankColor ? `${rankColor}1a` : 'rgba(255,255,255,0.02)',
+                    border: rankColor ? `1px solid ${rankColor}55` : 'none',
+                    borderLeft: rankColor ? `3px solid ${rankColor}` : undefined,
+                  }}
+                >
+                  <div style={{ width: 28, color: rankColor || 'var(--neon-violet)' }}>{medal}</div>
+                  <div style={{ flex: 1, paddingLeft: 6, color: 'var(--text-dim)' }}>██████████</div>
+                  <div style={{ flexShrink: 0, color: 'var(--text-dim)' }}>$████</div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 10 }}>
+            <div
+              className="mono panel"
+              style={{
+                textAlign: 'center',
+                padding: '14px 20px',
+                border: '1px solid rgba(255,212,94,0.5)',
+                background: 'rgba(8,8,12,0.9)',
+                maxWidth: 320,
+              }}
+            >
+              <div style={{ fontSize: 20, marginBottom: 6 }}>🕶️</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#ffd45e', marginBottom: 4 }}>
+                Stats Hidden for Last Day of Money Mode
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+                Top {hiddenCount} standings are hidden today to keep the finish fair — see full results after tomorrow's reset.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {rows.map((row, i) => {
-        // Global rank across all pages, not just this page's index — only
-        // the very top 3 overall ever get a medal.
-        const rank = page * PAGE_SIZE + i;
+        // The row's own `rank` (see allRows' construction above), not
+        // page*PAGE_SIZE+i — those stop being the same number the moment
+        // any leading rows can be absent from allRows (the money blackout
+        // above is the only case that does that today, but this is
+        // correct/unaffected for every other view regardless).
+        const rank = row.rank;
         const medal = rank === 0 ? '🥇' : rank === 1 ? '🥈' : rank === 2 ? '🥉' : rank + 1;
         const rankColor = RANK_COLORS[rank];
         // Shop-purchased personalization (see MoneyShop.jsx/cosmetics.js)

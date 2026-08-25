@@ -40,6 +40,14 @@ export function AuthProvider({ children }) {
   // account ranked), not just once ever — see that column's own comment
   // in schema.sql.
   const [moneyWeeklyResultsSeen, setMoneyWeeklyResultsSeenState] = useState(null);
+  // Admin dev-tool switch (see profiles.money_blackout_preview's own
+  // comment in schema.sql) — forces pacific_money_blackout() to true for
+  // THIS account only, letting an admin verify the Sunday anti-sniping
+  // hardening live without waiting for a real Sunday. null while
+  // logged out or still loading, same convention as every other flag
+  // above; Home.jsx's dev-tools panel is what actually gates the toggle
+  // button to isAdmin, this is just the plumbing.
+  const [moneyBlackoutPreview, setMoneyBlackoutPreviewState] = useState(null);
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
@@ -83,6 +91,7 @@ export function AuthProvider({ children }) {
       setPityIntroSeenState(null);
       setMoneyWeeklyResultsSeenState(null);
       setModifierUpdateSeenState(null);
+      setMoneyBlackoutPreviewState(null);
       return;
     }
     supabase
@@ -227,6 +236,23 @@ export function AuthProvider({ children }) {
         setMoneyWeeklyResultsSeenState(error ? true : data?.money_weekly_results_seen ?? true);
       });
 
+    // Same defensive separate-query reasoning as the others above — a
+    // not-yet-migrated database missing this column can't take role/flair
+    // or any of the earlier fetches down with it. Defaults to false
+    // (not previewing) on error, same "showing extra is harmless, hiding
+    // forever isn't" logic as onboarding_seen's own fallback — this one
+    // only ever affects the admin's own view anyway (see
+    // pacific_money_blackout's own comment in schema.sql), so there's
+    // even less at stake either way.
+    supabase
+      .from('profiles')
+      .select('money_blackout_preview')
+      .eq('id', user.id)
+      .single()
+      .then(({ data, error }) => {
+        setMoneyBlackoutPreviewState(error ? false : !!data?.money_blackout_preview);
+      });
+
     // Money-variant wallet/lifetime totals (see MoneyMode.jsx). Same
     // reasoning as the onboarding_seen query above:
     // kept separate from role/selected_emoji so a not-yet-migrated
@@ -349,22 +375,35 @@ export function AuthProvider({ children }) {
   // to see the new stats.
   async function refreshMoneyStats() {
     if (!user) return null;
-    const { data, error } = await supabase
-      .from('profiles')
-      .select(
-        'money_wallet_cents, money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
-          'money_weekly_cents, money_best_weekly_cents, money_diamonds, owns_diamond_button, ' +
-          'owned_cosmetics, active_push_skin, active_aura, active_row_style, owns_insurance, insurance_used_this_week, ' +
-          'owns_streak_bonus, owns_daredevil, active_money_upgrade, money_upgrade_choice_seen, ' +
-          'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100, ' +
-          'money_last_week_rank, money_last_week_score_cents, money_last_week_diamonds_awarded, ' +
-          'money_weekly_wins, money_currently_top3, ' +
-          'money_diamonds_spent_lifetime, owns_any_row_style, owns_any_aura, money_daredevil_run_200, ' +
-          'clicked_contact, won_weekly_with_insurance, won_weekly_with_streak_bonus, won_weekly_with_daredevil, ' +
-          'artemis_earned'
-      )
-      .eq('id', user.id)
-      .single();
+    // money_weekly_cents is deliberately NOT in this select — it's
+    // column-revoked from anon/authenticated entirely now (see
+    // get_my_weekly_cents' own comment in schema.sql, "Weekly money
+    // leaderboard blackout" section), part of the Sunday anti-sniping
+    // lockdown. This is the one legitimate "read my own" path left for
+    // it, run in parallel rather than folded into the select above so a
+    // not-yet-migrated database missing this RPC can't take the rest of
+    // this fetch down with it (same defensive-isolation reasoning as
+    // every other separate query in this file) — falls back to 0 either
+    // way via the `?? 0` below.
+    const [{ data, error }, { data: weeklyCents }] = await Promise.all([
+      supabase
+        .from('profiles')
+        .select(
+          'money_wallet_cents, money_lifetime_cents, money_best_run_cents, money_best_bank_streak, ' +
+            'money_best_weekly_cents, money_diamonds, owns_diamond_button, ' +
+            'owned_cosmetics, active_push_skin, active_aura, active_row_style, owns_insurance, insurance_used_this_week, ' +
+            'owns_streak_bonus, owns_daredevil, active_money_upgrade, money_upgrade_choice_seen, ' +
+            'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100, ' +
+            'money_last_week_rank, money_last_week_score_cents, money_last_week_diamonds_awarded, ' +
+            'money_weekly_wins, money_currently_top3, ' +
+            'money_diamonds_spent_lifetime, owns_any_row_style, owns_any_aura, money_daredevil_run_200, ' +
+            'clicked_contact, won_weekly_with_insurance, won_weekly_with_streak_bonus, won_weekly_with_daredevil, ' +
+            'artemis_earned'
+        )
+        .eq('id', user.id)
+        .single(),
+      supabase.rpc('get_my_weekly_cents'),
+    ]);
     if (error) return null;
     const next = {
       moneyWalletCents: data?.money_wallet_cents ?? 0,
@@ -375,9 +414,12 @@ export function AuthProvider({ children }) {
       moneyReachedTop3Weekly: !!data?.money_reached_top3_weekly,
       moneyBankedAfterOnePush: !!data?.money_banked_after_one_push,
       moneyBustedOver100: !!data?.money_busted_over100,
-      // Profile.jsx's own money-tab stat tiles (see there) — same fields
-      // PublicProfile.jsx fetches separately for viewing someone else.
-      moneyWeeklyCents: data?.money_weekly_cents ?? 0,
+      // Profile.jsx's own money-tab stat tiles (see there) — PublicProfile.jsx
+      // fetches this same value separately (via get_public_money_stats, not
+      // this table select) for viewing someone else, since it's subject to
+      // blackout masking there and never masked here (this IS the account's
+      // own row).
+      moneyWeeklyCents: weeklyCents ?? 0,
       moneyBestWeeklyCents: data?.money_best_weekly_cents ?? 0,
       // Shop-only currency (see MoneyShop.jsx and resolve_money_push's
       // 10%-chance-per-combo-bar-fill roll) — rides along on this same
@@ -499,6 +541,26 @@ export function AuthProvider({ children }) {
     if (error) console.error('failed to sync money_weekly_results_seen:', error);
   }
 
+  // Called by Home.jsx's admin dev-tools "🕶️ Blackout preview" button —
+  // a real on/off switch (not a one-way flag like the others above),
+  // toggling profiles.money_blackout_preview. See pacific_money_blackout's
+  // own comment in schema.sql for how this stays scoped to only the
+  // toggling account's own view. Optimistic like every other flag here;
+  // reverts to the previous value if the write fails, since this one's a
+  // genuine two-way switch rather than a one-way "seen" flag, so silently
+  // keeping the optimistic flip on a failed write would leave the UI
+  // showing ON when the server never actually recorded it.
+  async function toggleMoneyBlackoutPreview() {
+    if (!user) return;
+    const next = !moneyBlackoutPreview;
+    setMoneyBlackoutPreviewState(next);
+    const { error } = await supabase.from('profiles').update({ money_blackout_preview: next }).eq('id', user.id);
+    if (error) {
+      console.error('failed to sync money_blackout_preview:', error);
+      setMoneyBlackoutPreviewState(!next);
+    }
+  }
+
   // Called by Footer.jsx when the Contact link is clicked — backs the
   // Hermes secret badge (see game.js's BADGES). No server validation
   // needed (same trust level as onboarding_seen above); lives in the
@@ -540,6 +602,8 @@ export function AuthProvider({ children }) {
         markPityIntroSeen,
         moneyWeeklyResultsSeen,
         markMoneyWeeklyResultsSeen,
+        moneyBlackoutPreview,
+        toggleMoneyBlackoutPreview,
         markContactClicked,
         modifierUpdateSeen,
         markModifierUpdateSeen,

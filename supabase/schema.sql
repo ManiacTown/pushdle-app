@@ -355,7 +355,17 @@ create table if not exists profiles (
   -- (not false) so this ships without retroactively popping the modal for
   -- every existing account on their next login — only an account
   -- finalize_money_week actually touches ever sees it flip to false.
-  money_weekly_results_seen        boolean not null default true
+  money_weekly_results_seen        boolean not null default true,
+  -- Admin dev-tool: forces pacific_money_blackout() to true for whoever
+  -- has this flipped on, regardless of the real day — see that
+  -- function's own comment ("Weekly money leaderboard blackout" section)
+  -- for why this is scoped per-account (auth.uid()) rather than a global
+  -- site-wide flag. Plain client-updatable, like onboarding_seen/
+  -- money_unlock_seen/etc. above — the isAdmin-gated button in Home.jsx's
+  -- dev-tools panel is what actually restricts who can reach it in
+  -- practice; flipping it on yourself if you're not an admin is harmless
+  -- (it only hides the leaderboard from your OWN view of it).
+  money_blackout_preview           boolean not null default false
 );
 
 alter table profiles enable row level security;
@@ -379,6 +389,19 @@ create policy "users can update their own profile"
 -- need the base grant to touch the table at all. The Supabase Table Editor
 -- does this for you automatically; raw SQL doesn't, so it has to be explicit.
 grant select on profiles to anon, authenticated;
+-- Column-level revoke on top of the table-level grant above — see
+-- get_money_weekly_leaderboard/get_public_money_stats/get_my_weekly_cents
+-- near the bottom of this file (the "Weekly money leaderboard reset"
+-- section) for why: those three SECURITY DEFINER functions are the ONLY
+-- way anon/authenticated can read this column at all now. Without this,
+-- the weekly-leaderboard blackout day (Sunday, Pacific — top 10 hidden to
+-- prevent last-minute $1 sniping) would only ever be a client-side UI
+-- choice, trivially bypassed by anyone hitting the Supabase REST endpoint
+-- directly with the app's own public anon key. service_role is untouched
+-- (see its own blanket grant below) — resolve_money_push/
+-- resolve_money_cashout/api/weekly-money-reset.js all keep working
+-- exactly as before.
+revoke select (money_weekly_cents) on profiles from anon, authenticated;
 -- Column-restricted on purpose: the RLS policy above allows updating the
 -- row, but this grant only allows touching these five columns — role/
 -- stat columns are unreachable from the client even though the row itself
@@ -395,7 +418,7 @@ grant select on profiles to anon, authenticated;
 -- written by finalize_money_week (service_role), same "never trust the
 -- client with a scoring/currency field" posture every other money_* column
 -- above already follows.
-grant update (username, selected_emoji, onboarding_seen, money_unlock_seen, pity_intro_seen, money_weekly_results_seen, clicked_contact, modifier_update_seen) on profiles to authenticated;
+grant update (username, selected_emoji, onboarding_seen, money_unlock_seen, pity_intro_seen, money_weekly_results_seen, clicked_contact, modifier_update_seen, money_blackout_preview) on profiles to authenticated;
 -- service_role bypasses RLS policies but NOT base object grants — those are
 -- two separate permission layers, and creating a table via raw SQL doesn't
 -- grant either automatically the way the Table Editor UI does.
@@ -1614,3 +1637,122 @@ $$ language plpgsql security definer set search_path = public;
 
 revoke execute on function public.finalize_money_week from public, anon, authenticated;
 grant execute on function public.finalize_money_week to service_role;
+
+-- ---- Weekly money leaderboard blackout (Sunday, Pacific) ----
+--
+-- Anti-sniping for the last day of the money week: the top 10 standings
+-- become fully hidden for everyone so nobody can nudge a rival by exactly
+-- $1 in the closing hours. See the money_weekly_cents column-level
+-- REVOKE above (right after profiles' own grants) for the enforcement
+-- half of this — these four functions are the only remaining way
+-- anon/authenticated can read that column at all.
+
+-- The shared "is it blackout day" check, computed in Postgres itself (not
+-- trusted from the client) so the real enforcement lives server-side
+-- regardless of what a client claims the date is. extract(dow ...) = 0 is
+-- Sunday, same convention Postgres always uses (0-6, Sunday first).
+--
+-- The `or exists (...)` half is an admin dev-tool (see
+-- profiles.money_blackout_preview's own comment) — auth.uid() resolves
+-- to whoever is ACTUALLY calling this request, so flipping the preview
+-- flag on only changes what that one account sees when it calls
+-- get_money_weekly_leaderboard/get_public_money_stats below; every other
+-- caller's own auth.uid() still resolves to their own (false) flag, no
+-- extra scoping needed anywhere else for that to hold.
+create or replace function public.pacific_money_blackout()
+returns boolean as $$
+begin
+  return extract(dow from (now() at time zone 'America/Los_Angeles')) = 0
+    or exists (select 1 from profiles where id = auth.uid() and money_blackout_preview);
+end;
+$$ language plpgsql stable set search_path = public;
+
+grant execute on function public.pacific_money_blackout to anon, authenticated;
+
+-- Replaces Leaderboard.jsx's old direct `profiles` query for the money/
+-- weekly view. Ranks everyone with money_weekly_cents > 0 (same filter
+-- finalize_money_week uses — a 0-cents week was never in the running).
+-- Non-blackout days return every ranked row with its own explicit `rank`,
+-- unchanged from the old direct-query behavior. On blackout, rows ranked
+-- 1-10 are dropped from the result set entirely — not nulled, not
+-- flagged, just absent — so there's nothing in the response for a client
+-- to work with even by accident. hiddenCount tells the client exactly how
+-- many blurred placeholder rows to render (capped at 10 automatically,
+-- since row_number() can never produce more than 10 rows with rnk <= 10).
+create or replace function public.get_money_weekly_leaderboard()
+returns jsonb as $$
+declare
+  v_blackout boolean := public.pacific_money_blackout();
+  v_hidden_count int;
+  v_rows jsonb;
+begin
+  with ranked as (
+    select id, username, selected_emoji, active_aura, active_row_style, money_currently_top3, money_weekly_cents,
+           row_number() over (order by money_weekly_cents desc, id asc) as rnk
+    from profiles
+    where money_weekly_cents > 0
+  )
+  select
+    coalesce(jsonb_agg(jsonb_build_object(
+      'userId', id, 'username', username, 'emoji', selected_emoji, 'aura', active_aura,
+      'rowStyle', active_row_style, 'topThreeLastWeek', money_currently_top3,
+      'scoreCents', money_weekly_cents, 'rank', rnk
+    ) order by rnk) filter (where not v_blackout or rnk > 10), '[]'::jsonb),
+    count(*) filter (where v_blackout and rnk <= 10)
+  into v_rows, v_hidden_count
+  from ranked;
+
+  return jsonb_build_object('hiddenCount', coalesce(v_hidden_count, 0), 'rows', v_rows);
+end;
+$$ language plpgsql security definer set search_path = public;
+
+grant execute on function public.get_money_weekly_leaderboard to anon, authenticated;
+
+-- Replaces PublicProfile.jsx's direct read of money_weekly_cents for
+-- someone ELSE's profile — the leaderboard hide alone doesn't stop a
+-- sniper from just bookmarking a known rival's /player/:id and refreshing
+-- it all day Sunday for their live total. During blackout, any account
+-- OTHER than the caller's own gets weeklyCents = null/hidden = true;
+-- viewing your own public profile still shows your real number.
+-- `IS DISTINCT FROM` handles the anonymous-caller case correctly —
+-- auth.uid() is null for a guest, and `p_user_id IS DISTINCT FROM null`
+-- is true for every real id, so a guest never gets an "own profile"
+-- exemption, which is the correct default.
+create or replace function public.get_public_money_stats(p_user_id uuid)
+returns jsonb as $$
+declare
+  v_hidden boolean;
+  v_cents int;
+begin
+  v_hidden := public.pacific_money_blackout() and p_user_id is distinct from auth.uid();
+  if v_hidden then
+    v_cents := null;
+  else
+    select money_weekly_cents into v_cents from profiles where id = p_user_id;
+  end if;
+  return jsonb_build_object('weeklyCents', v_cents, 'hidden', v_hidden);
+end;
+$$ language plpgsql security definer set search_path = public;
+
+grant execute on function public.get_public_money_stats to anon, authenticated;
+
+-- The one legitimate "read my own live weekly total" path left once the
+-- column-level REVOKE lands — Money Mode gameplay already gets fresh
+-- values straight from resolve_money_push/resolve_money_cashout's own
+-- return rows, so this is really just for AuthContext.jsx's
+-- refreshMoneyStats (login + on-demand refresh). Scoped to auth.uid()
+-- internally, not a parameter, so there's no argument to pass a
+-- different id and read someone else's — the function itself IS the
+-- access control, always unmasked regardless of blackout.
+create or replace function public.get_my_weekly_cents()
+returns int as $$
+declare
+  v_cents int;
+begin
+  select money_weekly_cents into v_cents from profiles where id = auth.uid();
+  return coalesce(v_cents, 0);
+end;
+$$ language plpgsql security definer set search_path = public;
+
+revoke execute on function public.get_my_weekly_cents from public, anon;
+grant execute on function public.get_my_weekly_cents to authenticated;
