@@ -17,18 +17,49 @@ Deno.serve(async (req) => {
   const body = await req.json().catch(() => ({}));
   const { action } = body;
 
-  // TEMPORARY — remove once getServiceRoleKey's real env var name is
-  // confirmed (see that function's own comment in _shared/utils.ts).
-  // Deliberately checked BEFORE createServiceClient()/isAdmin() below,
-  // not after: if getServiceRoleKey() is ALSO guessing at a stale/wrong
-  // env var name the same way createUserClient() just was, isAdmin()
-  // would itself throw or silently return false before ever reaching
-  // this action — this needs to work regardless of whether that's
-  // currently broken too. Only names, never values, so this is safe to
-  // leave reachable by any logged-in account (not just isAdmin) for the
-  // short time it exists — an env var's NAME isn't sensitive on its own.
+  // TEMPORARY — remove once getServiceRoleKey's real parsing logic is
+  // confirmed correct (see that function's own comment in
+  // _shared/utils.ts). Deliberately checked BEFORE
+  // createServiceClient()/isAdmin() below, not after: if
+  // getServiceRoleKey() is parsing SUPABASE_SECRET_KEYS wrong, isAdmin()
+  // would itself throw or silently return false before ever reaching this
+  // action — this needs to work regardless of whether that's currently
+  // broken too. describeShape() below never returns any substring of an
+  // actual secret value — only its type/length/which known prefix it
+  // starts with — so this is safe to leave reachable by any logged-in
+  // account (not just isAdmin) for the short time it exists.
   if (action === 'debug_env') {
-    return json({ envVarNames: Object.keys(Deno.env.toObject()).sort() });
+    const describeShape = (value: unknown): unknown => {
+      if (typeof value === 'string') {
+        return {
+          type: 'string',
+          length: value.length,
+          startsWithSbSecret: value.startsWith('sb_secret_'),
+          startsWithSbPublishable: value.startsWith('sb_publishable_'),
+        };
+      }
+      if (Array.isArray(value)) return value.map(describeShape);
+      if (value && typeof value === 'object') {
+        const out: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(value)) out[k] = describeShape(v);
+        return out;
+      }
+      return value; // number/boolean/null are never secret material
+    };
+    const shapes: Record<string, unknown> = {};
+    for (const key of ['SUPABASE_SECRET_KEYS', 'SUPABASE_PUBLISHABLE_KEYS', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) {
+      const raw = Deno.env.get(key);
+      if (!raw) {
+        shapes[key] = null;
+        continue;
+      }
+      try {
+        shapes[key] = describeShape(JSON.parse(raw));
+      } catch {
+        shapes[key] = describeShape(raw); // not JSON — a plain string value
+      }
+    }
+    return json({ shapes });
   }
 
   const db = createServiceClient();
