@@ -1,0 +1,44 @@
+name: Notify deploy (force reload all tabs)
+
+# Fires once Vercel's own GitHub integration reports the production
+# deployment as successfully live — NOT on every push to main directly,
+# since a push can fail to build/deploy and we don't want to reload
+# everyone into a broken/nonexistent version. Vercel's GitHub App creates
+# a real GitHub Deployment + deployment_status for every deploy it makes
+# (production and preview alike), which is what this listens for.
+#
+# The `environment == 'Production'` check is what excludes preview-branch
+# deploys — only a deploy of `main` should ever reload every real
+# visitor's tab. If this workflow silently never fires, the first thing
+# to check is whether Vercel is actually labeling its production
+# deployment's GitHub environment exactly "Production" (case-sensitive)
+# — that string comes from Vercel's own integration, not this repo, and
+# could in principle differ by Vercel account/integration version.
+#
+# See supabase/functions/notify-deploy/index.ts for the receiving end (a
+# dedicated Edge Function — deliberately not admin/index.ts's
+# force_reload action, since this runs with no logged-in user session at
+# all) and src/lib/pwaUpdate.js's subscribeToForceReload for how an
+# already-open tab actually picks the broadcast up.
+on:
+  deployment_status:
+  workflow_dispatch: {}
+
+jobs:
+  notify:
+    if: github.event_name == 'workflow_dispatch' || (github.event.deployment_status.state == 'success' && github.event.deployment.environment == 'Production')
+    runs-on: ubuntu-latest
+    steps:
+      # DEPLOY_NOTIFY_SECRET must be set as a repo SECRET matching the
+      # same value configured via `supabase secrets set
+      # DEPLOY_NOTIFY_SECRET=...` on the Supabase project — this is a
+      # custom header (X-Deploy-Secret), not Authorization, since that
+      # header is reserved for Supabase's own platform-level JWT check
+      # (this function is deployed with --no-verify-jwt precisely because
+      # CI has no real Supabase user JWT to send).
+      - name: Broadcast force-reload to all open tabs
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Deploy-Secret: ${{ secrets.DEPLOY_NOTIFY_SECRET }}" \
+            "https://mokonbirvjtvztscwvbm.supabase.co/functions/v1/notify-deploy"
