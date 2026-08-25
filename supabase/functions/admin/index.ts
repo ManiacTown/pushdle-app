@@ -11,6 +11,22 @@ Deno.serve(async (req) => {
   const preflight = handlePreflight(req);
   if (preflight) return preflight;
 
+  // Any uncaught exception below this point used to crash the whole
+  // handler before it ever reached json()'s corsHeaders — the browser
+  // then reports that as a CORS failure (net::ERR_FAILED / "No
+  // Access-Control-Allow-Origin header"), which is genuinely misleading:
+  // the real problem is whatever actually threw, not CORS at all. This
+  // wrapper is what finally surfaced the real error message instead of
+  // that dead end — every response from here on is guaranteed to carry
+  // corsHeaders even when something throws.
+  try {
+    return await handleRequest(req);
+  } catch (err) {
+    return json({ error: `unhandled: ${err instanceof Error ? err.message : String(err)}` }, 500);
+  }
+});
+
+async function handleRequest(req: Request): Promise<Response> {
   const user = await requireUser(req);
   if (!user) return json({ error: 'unauthorized' }, 401);
 
@@ -295,4 +311,4 @@ Deno.serve(async (req) => {
   }
 
   return json({ error: 'unknown action' }, 400);
-});
+}
