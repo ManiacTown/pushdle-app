@@ -14,13 +14,28 @@ Deno.serve(async (req) => {
   const user = await requireUser(req);
   if (!user) return json({ error: 'unauthorized' }, 401);
 
+  const body = await req.json().catch(() => ({}));
+  const { action } = body;
+
+  // TEMPORARY — remove once getServiceRoleKey's real env var name is
+  // confirmed (see that function's own comment in _shared/utils.ts).
+  // Deliberately checked BEFORE createServiceClient()/isAdmin() below,
+  // not after: if getServiceRoleKey() is ALSO guessing at a stale/wrong
+  // env var name the same way createUserClient() just was, isAdmin()
+  // would itself throw or silently return false before ever reaching
+  // this action — this needs to work regardless of whether that's
+  // currently broken too. Only names, never values, so this is safe to
+  // leave reachable by any logged-in account (not just isAdmin) for the
+  // short time it exists — an env var's NAME isn't sensitive on its own.
+  if (action === 'debug_env') {
+    return json({ envVarNames: Object.keys(Deno.env.toObject()).sort() });
+  }
+
   const db = createServiceClient();
   if (!(await isAdmin(db, user.id))) {
     return json({ error: 'forbidden' }, 403);
   }
 
-  const body = await req.json().catch(() => ({}));
-  const { action } = body;
   const today = pacificDateString();
 
   if (action === 'force_bust') {
