@@ -42,42 +42,27 @@ export function getServiceRoleKey(): string {
   }
 }
 
-// SUPABASE_PUBLISHABLE_KEYS is a JSON object keyed by key name, e.g.
-// {"default":"sb_publishable_..."} — same rotation-friendly shape as
-// SUPABASE_SECRET_KEYS above, just for the anon/publishable side. Falls
-// back to the legacy SUPABASE_ANON_KEY for older projects that don't have
-// this at all.
-//
-// Missing before this fix: getServiceRoleKey() above already got this
-// treatment, but createUserClient() below was still reading the bare
-// legacy SUPABASE_ANON_KEY directly — on a project that's moved to the
-// new key system, that env var is unset/stale, so the client it built had
-// an invalid apikey. auth.getUser() then failed regardless of whether the
-// caller's own JWT was valid, so requireUser() returned null and every
-// function that gates on it (push, money-push, money-cashout, admin,
-// sync-stats, every purchase-* function — anything importing requireUser
-// from this file) 401'd for every real logged-in user. Confirmed live:
-// the caller's Authorization JWT decoded fine (ES256, valid claims) and
-// the platform gateway accepted it (no sb-error-code on the response,
-// meaning it reached this function's own code) — the failure was here,
-// not the token or the gateway.
-export function getPublishableKey(): string {
-  const raw = Deno.env.get('SUPABASE_PUBLISHABLE_KEYS') ?? Deno.env.get('SUPABASE_ANON_KEY')!;
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed[0];
-    if (parsed && typeof parsed === 'object') return parsed.default ?? Object.values(parsed)[0];
-    return raw;
-  } catch {
-    return raw;
-  }
-}
-
 // Resolves the caller's identity from their JWT — RLS still applies to
 // anything this client does (it can't write daily_runs/profiles beyond
 // what a normal user is allowed).
-export function createUserClient(authHeader: string) {
-  return createClient(Deno.env.get('SUPABASE_URL')!, getPublishableKey(), {
+//
+// Takes the whole request (not just the Authorization header) so it can
+// reuse the SAME apikey header the browser already sent — a first attempt
+// at fixing this read a guessed-at env var (SUPABASE_PUBLISHABLE_KEYS)
+// instead, which doesn't exist and made createClient() throw an uncaught
+// 500 for every request. The incoming request's own apikey header is a
+// better source of truth regardless: it's exactly what the platform
+// gateway already validated to let this request reach the function at
+// all (confirmed live — no sb-error-code on the response, meaning it got
+// past the gateway), so there's no env-var-name guessing needed, and it
+// can't drift out of sync with whatever key system the project is on.
+// Falls back to the legacy SUPABASE_ANON_KEY env var only for a caller
+// that somehow didn't send an apikey header at all (shouldn't happen for
+// any real supabase-js call, which always sends one).
+export function createUserClient(req: Request) {
+  const authHeader = req.headers.get('Authorization') ?? '';
+  const apikey = req.headers.get('apikey') ?? Deno.env.get('SUPABASE_ANON_KEY') ?? '';
+  return createClient(Deno.env.get('SUPABASE_URL')!, apikey, {
     global: { headers: { Authorization: authHeader } },
   });
 }
@@ -90,8 +75,7 @@ export function createServiceClient() {
 }
 
 export async function requireUser(req: Request) {
-  const authHeader = req.headers.get('Authorization') ?? '';
-  const userClient = createUserClient(authHeader);
+  const userClient = createUserClient(req);
   const { data: { user }, error } = await userClient.auth.getUser();
   if (error || !user) return null;
   return user;
