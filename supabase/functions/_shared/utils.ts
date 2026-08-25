@@ -42,11 +42,42 @@ export function getServiceRoleKey(): string {
   }
 }
 
+// SUPABASE_PUBLISHABLE_KEYS is a JSON object keyed by key name, e.g.
+// {"default":"sb_publishable_..."} — same rotation-friendly shape as
+// SUPABASE_SECRET_KEYS above, just for the anon/publishable side. Falls
+// back to the legacy SUPABASE_ANON_KEY for older projects that don't have
+// this at all.
+//
+// Missing before this fix: getServiceRoleKey() above already got this
+// treatment, but createUserClient() below was still reading the bare
+// legacy SUPABASE_ANON_KEY directly — on a project that's moved to the
+// new key system, that env var is unset/stale, so the client it built had
+// an invalid apikey. auth.getUser() then failed regardless of whether the
+// caller's own JWT was valid, so requireUser() returned null and every
+// function that gates on it (push, money-push, money-cashout, admin,
+// sync-stats, every purchase-* function — anything importing requireUser
+// from this file) 401'd for every real logged-in user. Confirmed live:
+// the caller's Authorization JWT decoded fine (ES256, valid claims) and
+// the platform gateway accepted it (no sb-error-code on the response,
+// meaning it reached this function's own code) — the failure was here,
+// not the token or the gateway.
+export function getPublishableKey(): string {
+  const raw = Deno.env.get('SUPABASE_PUBLISHABLE_KEYS') ?? Deno.env.get('SUPABASE_ANON_KEY')!;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed[0];
+    if (parsed && typeof parsed === 'object') return parsed.default ?? Object.values(parsed)[0];
+    return raw;
+  } catch {
+    return raw;
+  }
+}
+
 // Resolves the caller's identity from their JWT — RLS still applies to
 // anything this client does (it can't write daily_runs/profiles beyond
 // what a normal user is allowed).
 export function createUserClient(authHeader: string) {
-  return createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_ANON_KEY')!, {
+  return createClient(Deno.env.get('SUPABASE_URL')!, getPublishableKey(), {
     global: { headers: { Authorization: authHeader } },
   });
 }
