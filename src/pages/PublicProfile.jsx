@@ -7,7 +7,7 @@ import { formatCents } from '../lib/money.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
 import { useAuth } from '../lib/AuthContext.jsx';
-import { auraStyle, AURA_COLORS, ROW_STYLE_COLORS, COSMETIC_LABELS } from '../lib/cosmetics.js';
+import { auraStyle, rowStyleBackground, COSMETIC_LABELS } from '../lib/cosmetics.js';
 import StatTilesPanel from '../components/StatTilesPanel.jsx';
 import AchievementTabToggle from '../components/AchievementTabToggle.jsx';
 import BadgeGrid from '../components/BadgeGrid.jsx';
@@ -249,7 +249,12 @@ export default function PublicProfile() {
           ? [
               {
                 label: "Today's Money",
-                value: formatCents(todayMoneyRun?.status === 'dead' ? 0 : todayMoneyRun?.earnings_cents ?? 0),
+                // Neither a plain bust nor a still-undecided insurance
+                // prompt (see resolve_money_push's 'bust_pending_insurance'
+                // status) has actually banked anything yet — only
+                // 'cashed_out' has, whether via a real cash-out or an
+                // insurance save.
+                value: formatCents(todayMoneyRun?.status === 'cashed_out' ? todayMoneyRun?.earnings_cents ?? 0 : 0),
               },
             ]
           : []),
@@ -335,7 +340,7 @@ export default function PublicProfile() {
             )}
             {profile.active_aura && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontWeight: 700, color: AURA_COLORS[profile.active_aura] }}>Aa</span>
+                <span style={{ fontWeight: 700, ...auraStyle(profile.active_aura) }}>Aa</span>
                 <span className="mono" style={{ fontSize: 10, color: 'var(--text-dim)' }}>
                   {COSMETIC_LABELS[profile.active_aura]} name
                 </span>
@@ -343,7 +348,7 @@ export default function PublicProfile() {
             )}
             {profile.active_row_style && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div style={{ width: 14, height: 14, borderRadius: '50%', background: ROW_STYLE_COLORS[profile.active_row_style] }} />
+                <div style={{ width: 14, height: 14, borderRadius: '50%', background: rowStyleBackground(profile.active_row_style) }} />
                 <span className="mono" style={{ fontSize: 10, color: 'var(--text-dim)' }}>
                   {COSMETIC_LABELS[profile.active_row_style]} row
                 </span>

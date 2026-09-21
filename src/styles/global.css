@@ -1007,6 +1007,73 @@ input:focus{
   animation: diamondBtnBustedSmolder 6s ease-in-out infinite;
 }
 
+/* ---- Generic push-button skin (see Home.jsx, shop-unlocked) ---- */
+/* Every push_skin item added after diamond_button (Lucky Dice/Clover/
+   High Roller Chip/Golden Egg — see cosmetics.js's PUSH_SKIN_ICONS/
+   PUSH_SKIN_GLOW_COLORS) shares this ONE class instead of each getting
+   its own near-duplicate copy of .push-btn-diamond above — --skin-glow
+   (set inline per-skin in Home.jsx) is the only thing that varies.
+   color-mix() builds the different opacities each state needs from that
+   single hex value, same shape .push-btn-diamond's own rgba() literals
+   already used, just parameterized. Structurally identical to
+   .push-btn-diamond otherwise (no border/background box, image IS the
+   button, filter:drop-shadow carries all state) — see that block's own
+   comment for why. */
+.push-btn-skin{
+  position: relative;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+.push-btn-skin:disabled{
+  cursor: default;
+}
+.push-btn-skin img{
+  display: block;
+  transition: filter 0.25s ease;
+}
+.push-btn-skin--playing img{
+  filter: drop-shadow(0 0 30px color-mix(in srgb, var(--skin-glow) 45%, transparent));
+}
+.push-btn-skin--playing:hover:not(:disabled){
+  transform: scale(1.05);
+}
+.push-btn-skin--playing:hover:not(:disabled) img{
+  filter: drop-shadow(0 0 55px color-mix(in srgb, var(--skin-glow) 80%, transparent));
+}
+.push-btn-skin--playing:active:not(:disabled){
+  transform: scale(0.96);
+}
+.push-btn-skin--dead img{
+  filter: drop-shadow(0 0 35px rgba(255,45,109,0.45)) grayscale(0.35);
+}
+.push-btn-skin--dead:hover:not(:disabled) img{
+  filter: drop-shadow(0 0 55px rgba(255,45,109,0.7)) grayscale(0.35);
+}
+@keyframes skinBtnIdlePulseScale{
+  0%, 100%{ transform: scale(1); }
+  50%{ transform: scale(1.045); }
+}
+.push-btn-skin--idle-pulse{
+  animation: skinBtnIdlePulseScale var(--pulse-duration) ease-in-out infinite;
+}
+@keyframes skinBtnIdlePulseGlow{
+  0%, 100%{ filter: drop-shadow(0 0 30px color-mix(in srgb, var(--skin-glow) 45%, transparent)); }
+  50%{ filter: drop-shadow(0 0 60px color-mix(in srgb, var(--skin-glow) 85%, transparent)) drop-shadow(0 0 90px color-mix(in srgb, var(--skin-glow) 40%, transparent)); }
+}
+.push-btn-skin--idle-pulse img{
+  animation: skinBtnIdlePulseGlow var(--pulse-duration) ease-in-out infinite;
+}
+@keyframes skinBtnBustedSmolder{
+  0%, 100%{ filter: drop-shadow(0 0 28px rgba(255,45,109,0.4)) grayscale(0.35); }
+  50%{ filter: drop-shadow(0 0 50px rgba(255,45,109,0.7)) grayscale(0.35); }
+}
+.push-btn-skin--busted-idle img{
+  animation: skinBtnBustedSmolder 6s ease-in-out infinite;
+}
+
 /* ---- Money-variant bag icon (see MoneyMode.jsx) ---- */
 /* No button chrome at all (no border/background/box-shadow ring like
    .push-btn) — the money-bag image itself IS the button, so state (gold

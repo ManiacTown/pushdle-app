@@ -24,10 +24,13 @@ import {
   formatCents,
 } from '../lib/money.js';
 import {
-  AURA_COLORS,
-  ROW_STYLE_COLORS,
+  auraSwatchColor,
+  auraBackground,
+  rowStyleSwatchColor,
+  rowStyleBackground,
   COSMETIC_LABELS,
   COSMETIC_PRICES,
+  COSMETIC_CATEGORIES,
   INSURANCE_PRICE_DIAMONDS,
   STREAK_BONUS_PRICE_DIAMONDS,
   DAREDEVIL_PRICE_DIAMONDS,
@@ -51,8 +54,15 @@ function SectionHeader({ icon, title }) {
 
 // Small labeled swatch — reused for both the Name Color and Row Background
 // shop categories below, same "one shape, two color sets" reasoning
-// CosmeticCard in MoneyShop.jsx itself already follows.
-function ColorSwatch({ label, color, price }) {
+// CosmeticCard in MoneyShop.jsx itself already follows. `color` is always
+// a single representative hex (a fusion item's first stop — see
+// auraSwatchColor/rowStyleSwatchColor) since it's used for the border,
+// which can't render a gradient; `swatchBackground` is the real CSS
+// background value shown in the dot itself (defaults to `color` for a
+// plain item, but callers pass the true gradient for a fusion one — this
+// reference page should show what the item actually looks like, not a
+// flattened stand-in).
+function ColorSwatch({ label, color, swatchBackground, price }) {
   return (
     <div
       style={{
@@ -66,7 +76,7 @@ function ColorSwatch({ label, color, price }) {
         padding: '10px 8px',
       }}
     >
-      <div style={{ width: 18, height: 18, borderRadius: '50%', background: color }} />
+      <div style={{ width: 18, height: 18, borderRadius: '50%', background: swatchBackground ?? color }} />
       <span className="mono" style={{ fontSize: 10, color: 'var(--text)' }}>{label}</span>
       <span className="mono" style={{ fontSize: 9, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 3 }}>
         <img src="/diamond.png" alt="" width={9} height={9} style={{ display: 'block' }} />
@@ -251,16 +261,28 @@ function MoneyModeTab() {
           Name Color
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(70px, 1fr))', gap: 8, marginBottom: 18 }}>
-          {Object.entries(AURA_COLORS).map(([id, color]) => (
-            <ColorSwatch key={id} label={COSMETIC_LABELS[id]} color={color} price={COSMETIC_PRICES[id]} />
+          {COSMETIC_CATEGORIES.find((c) => c.id === 'aura').itemIds.map((id) => (
+            <ColorSwatch
+              key={id}
+              label={COSMETIC_LABELS[id]}
+              color={auraSwatchColor(id)}
+              swatchBackground={auraBackground(id)}
+              price={COSMETIC_PRICES[id]}
+            />
           ))}
         </div>
         <div className="mono" style={{ fontSize: 11, color: 'var(--text)', marginBottom: 8, fontWeight: 700 }}>
           Row Background
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(70px, 1fr))', gap: 8 }}>
-          {Object.entries(ROW_STYLE_COLORS).map(([id, color]) => (
-            <ColorSwatch key={id} label={COSMETIC_LABELS[id]} color={color} price={COSMETIC_PRICES[id]} />
+          {COSMETIC_CATEGORIES.find((c) => c.id === 'row_style').itemIds.map((id) => (
+            <ColorSwatch
+              key={id}
+              label={COSMETIC_LABELS[id]}
+              color={rowStyleSwatchColor(id)}
+              swatchBackground={rowStyleBackground(id)}
+              price={COSMETIC_PRICES[id]}
+            />
           ))}
         </div>
         <div className="mono onboarding-note" style={{ marginTop: 18 }}>

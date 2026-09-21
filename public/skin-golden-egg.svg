@@ -1,0 +1,31 @@
+<svg viewBox="0 0 448 448" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="eggShell" x1="20%" y1="0%" x2="80%" y2="100%">
+      <stop offset="0%" stop-color="#fff8e0"/>
+      <stop offset="45%" stop-color="#ffdd6e"/>
+      <stop offset="100%" stop-color="#e0932a"/>
+    </linearGradient>
+  </defs>
+
+  <ellipse cx="224" cy="404" rx="86" ry="16" fill="#000000" opacity="0.28"/>
+
+  <!-- egg body, enlarged to fill the frame now that there's no badge circle -->
+  <path
+    d="M224,44
+       C300,44 352,168 352,254
+       C352,330 288,376 224,376
+       C160,376 96,330 96,254
+       C96,168 148,44 224,44 Z"
+    fill="url(#eggShell)"
+    stroke="#c97a12"
+    stroke-width="5"
+  />
+
+  <!-- faceted shading overlays, same flat-facet language as the dice/chip -->
+  <path d="M224,44 C276,44 314,112 330,176 L224,224 Z" fill="#ffffff" opacity="0.30"/>
+  <path d="M224,224 L330,176 C344,228 344,286 312,332 L224,224 Z" fill="#c97a12" opacity="0.25"/>
+  <path d="M224,224 L312,332 C280,358 254,376 224,376 L224,224 Z" fill="#a8650a" opacity="0.22"/>
+
+  <!-- sparkle -->
+  <path d="M172,110 l8,20 20,8 -20,8 -8,20 -8,-20 -20,-8 20,-8 Z" fill="#ffffff" opacity="0.85"/>
+</svg>

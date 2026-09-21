@@ -299,6 +299,184 @@ prize structure and an announcement modal on top of the existing reset:
   a fresh admin account that's never actually ranked, same as the other
   preview dev-tools buttons never mutate the real seen-flag.
 
+## Daredevil odds buff: 92% -> 94% (2026-09-16)
+
+Math check (break-even pot before another push stops being +EV, using
+`p·v/(1-p)` where v is the average $ value per push): at 92%, Daredevil's
+ceiling was ~$35 versus baseline/Streak Bonus's ~$50/$56, despite paying
+2x per push — meaning any run that went past a fairly small pot was
+strictly worse off than having no upgrade at all, not a "high risk, high
+reward" trade-off. 94% brings that ceiling to ~$48, close to parity with
+baseline while still trailing Streak Bonus, so Daredevil no longer traps
+anyone who plays a normal-length run but also doesn't dominate the other
+two upgrades. `DAREDEVIL_SUCCESS_CHANCE` in `money.js` and the matching
+literal in `resolve_money_push` (`schema.sql`, migration
+`20260916180000_daredevil_odds_buff.sql`) were the only two places this
+number lives — both display copy (`About.jsx`/`MoneyShop.jsx`) already
+read from the `money.js` constant.
+
+## Weekly bust insurance becomes a choice, not an auto-trigger (2026-09-16)
+
+Insurance used to auto-spend itself on the very first bust of the week,
+no matter how small the pot — a $6 nothing-run could burn the whole
+week's insurance before a genuinely big pot ever got a chance to bust.
+Now the player decides in the moment.
+
+- **Split into two RPCs.** `resolve_money_push`'s bust branch no longer
+  resolves an insurance-eligible bust inline — it parks the run in a new
+  `money_runs.status = 'bust_pending_insurance'`, leaving
+  `earnings_cents`/`pushes` exactly as they were pre-bust. The actual
+  bank-half-or-let-it-stand logic that used to live inline there moved,
+  byte-for-byte, into a new `resolve_money_insurance_decision(p_user_id,
+  p_date, p_use_insurance)` RPC — called only once the player actually
+  answers. Deliberately NOT a new roll of any kind: the bust already
+  happened server-side; this only commits to one of two already-known
+  outcomes, the same trust level `resolve_money_cashout` already has (see
+  the stat-tampering incident above for why that distinction matters here
+  — a client is never trusted to report an outcome, only to pick between
+  ones the server already computed).
+- **Declining doesn't burn insurance** — it stays armed for a later bust
+  the same week. That's the actual point of this change: letting players
+  save it for a pot that's actually worth insuring, instead of it being
+  forced onto whatever bust happens first.
+- **No timeout on the decision.** Closing the tab mid-prompt just leaves
+  the row in `bust_pending_insurance` — `MoneyMode.jsx`'s existing
+  load-on-mount effect picks that status back up like any other on next
+  visit and the same `InsuranceDecisionModal` reappears, no separate
+  "resume a pending decision" code path needed. Not eligible for the
+  weekly upgrade-lock edge case (switching away from Insurance mid-week)
+  since `active_money_upgrade` is already locked for the week once chosen
+  (`20260820224408_money_upgrade_choice_weekly_lock.sql`).
+- **Client-side, no new choreography inserted into the delicate reveal
+  timers** (see the "Timer cleanup matters" principle above) — `push()`
+  simply stops and does nothing further when it sees
+  `'bust_pending_insurance'` (no `triggerMoneyBust`/`triggerInsuranceSave`
+  yet), and `decideInsurance()` (new) calls the two existing, unmodified
+  reveal functions once a real answer comes back. The impact FX (shake/
+  flash/debris) and "Busted!" beat only ever play for a genuinely
+  finalized bust, same as before this feature existed.
+- **Found and fixed a related bug while wiring this up**: `Profile.jsx`
+  and `PublicProfile.jsx`'s "Today's Money" tile computed
+  `status === 'dead' ? 0 : earnings_cents` — with the new pending status,
+  that would have displayed the full pre-decision pot as if already
+  banked. Changed to the inverse check (`status === 'cashed_out' ? earnings_cents : 0`),
+  which is correct for both the old two-status world and the new one.
+
+## Four new push-button skins: Lucky Dice, Lucky Clover, High Roller Chip, Golden Egg (2026-09-16)
+
+The push_skin shop category had exactly one item (`diamond_button`) since
+launch, backed by its own dedicated `owns_diamond_button`/
+`purchase_diamond_button`/hardcoded `active_push_skin` special case that
+predates the generic `owned_cosmetics`/`purchase_cosmetic`/
+`set_active_cosmetic` system auras and row styles already use. All four
+new skins go through that generic system instead (`skin_` id prefix, same
+shape as `aura_`/`row_`) — `diamond_button` was deliberately left alone
+rather than migrated, since "it predates them and already works" was
+already this codebase's stated reasoning for not touching it.
+
+- **Art**: each is a hand-authored inline SVG (`public/skin-*.svg`)
+  following the diamond icon's own recipe — circular radial-gradient
+  badge, a flat two-tone-shaded object in the middle, a soft drop-shadow
+  ellipse underneath. Chosen specifically because that recipe is
+  vector-icon-shaped (gradients + flat polygon/path facets), not
+  photoreal/painterly, so it was buildable directly in code rather than
+  needing a commissioned asset. The clover's first attempt (over-lapping
+  plain circles + crosshair vein lines) read as an abstract target icon,
+  not a clover, when actually screenshotted — rebuilt using the standard
+  "four hearts rotated 90° around a shared point" clover construction,
+  which reads correctly. Verified visually via a throwaway Playwright
+  script rendering the actual `.push-btn-skin` CSS against the real
+  `global.css` (both at 190px button size and 36px shop-card size, in
+  both playing and dead/grayscale states) — no way to preview raw SVG
+  files any other way, and this also happens to be the first time this
+  session's screenshot-based verification loop was used on this project.
+- **New shared CSS class `.push-btn-skin`** (global.css) replaces what
+  would otherwise have been 4 more near-copies of `.push-btn-diamond` —
+  a single `--skin-glow` custom property (set inline per-skin from
+  `cosmetics.js`'s `PUSH_SKIN_GLOW_COLORS`) parameterizes every glow via
+  `color-mix(in srgb, var(--skin-glow) X%, transparent)`, replacing what
+  diamond's own version hardcodes as literal `rgba(43,200,247,X)` values.
+  `diamond_button` itself was left on its own dedicated class rather than
+  ported to the new one — no reason to risk regressing the one skin
+  that's been live and working since launch.
+- **`owns_any_push_skin`** (new profile column) backs game.js's "Oooh
+  Shiny" badge now instead of `owns_diamond_button` directly — that badge
+  always meant "bought A push-button skin," not specifically the diamond
+  one, which only mattered while it was the only option. Backfilled from
+  existing `owns_diamond_button` owners in the same migration
+  (`20260916210000_push_skin_cosmetics.sql`), same "recompute from what's
+  already true" pattern as `20260821180500_backfill_shop_badge_tracking.sql`.
+  Needed its own explicit `grant select (owns_any_push_skin) on profiles
+  to anon, authenticated` — under the corrected column-level-privilege
+  model from the same day's security fix, a newly added column isn't
+  readable by anon/authenticated by default anymore the way it used to be
+  under the old blanket table-level grant, so this is a real step now,
+  not a no-op.
+- **Pricing**: Dice/Clover 10 diamonds (parity with diamond_button),
+  Chip 15, Golden Egg 25 (deliberately pricier — "exclusive" framing, ties
+  into the existing Golden Goose weekly-#1 lore without requiring an
+  actual eligibility gate).
+- **Revised after first pass**: the initial icons each sat inside a
+  circular gradient badge (matching diamond_button's own PNG construction
+  literally). Feedback was that this read as "clicking a puck with a
+  picture on it," not "clicking the object itself" — removed the badge
+  circle entirely and enlarged each object (dice/clover/chip/egg) to fill
+  the frame on its own, transparent background. This also means
+  `.push-btn-skin`'s `filter:drop-shadow` glow now hugs each object's own
+  irregular silhouette instead of a uniform circle, matching the technique
+  `.money-bag-btn` already used elsewhere in this codebase (glow hugging
+  the bag's own shape, not a circular box around empty space) — same
+  underlying CSS mechanism, just newly applied to a second icon family.
+
+## Fusion gradient colors: Ashy, Phoenix, Nebula (2026-09-16)
+
+Three two-tone gradient colors — Ashy (crimson→ash-black), Phoenix
+(gold→fire-orange), Nebula (violet→cyan, literally `.gradient-title`'s
+own site-brand pair) — added as a premium tier alongside the existing
+flat Gold/Violet/Emerald/Diamond colors, for both Name Color and Row
+Background.
+
+- **New ids, same generic system**: `aura_ashy`/`aura_phoenix`/
+  `aura_nebula` and `row_ashy`/`row_phoenix`/`row_nebula` go through the
+  exact same `owned_cosmetics`/`purchase_cosmetic`/`set_active_cosmetic`
+  path the flat colors already use — `owns_any_aura`/`owns_any_row_style`
+  already match by prefix, so no new tracking columns were needed, unlike
+  the push-skin batch's `owns_any_push_skin`.
+- **`AURA_GRADIENTS`/`ROW_STYLE_GRADIENTS`** (cosmetics.js) are deliberately
+  SEPARATE maps from `AURA_COLORS`/`ROW_STYLE_COLORS`, not more entries in
+  those — a `[start, end]` pair isn't a valid CSS `color` or plain
+  `background` value on its own. Every call site that needs the real
+  rendered value now goes through `auraStyle`/`auraBackground`/
+  `rowStyleBackground` (gradient-or-flat, picked automatically); every
+  call site that only needs one representative flat color — a border,
+  a button accent, `BoughtBadge` — goes through `auraSwatchColor`/
+  `rowStyleSwatchColor` (the gradient's first stop) instead, since a
+  border-color/box-shadow can't be a gradient at all.
+- **Re-enables gradient text for Name Color**, which had been deliberately
+  removed earlier ("Visual design system" section, and `auraStyle`'s own
+  prior comment) in favor of a flat "just recolor the name" look. That
+  earlier decision wasn't wrong for a single flat color; a genuine
+  two-tone fusion item just isn't expressible without it. `auraStyle` now
+  branches: a fusion id gets `background-clip:text` + `color:transparent`
+  (the same technique `.gradient-title` already used site-wide, just with
+  a per-item pair instead of fixed violet/cyan stops); a flat id keeps the
+  exact prior cancel-out-the-clip/plain-`color` behavior, unchanged.
+- **`About.jsx`'s reference page was refactored** to iterate
+  `COSMETIC_CATEGORIES` itemIds instead of `Object.entries(AURA_COLORS)`/
+  `Object.entries(ROW_STYLE_COLORS)` directly — the old approach would
+  have silently never shown the three new fusion items (they're not IN
+  those two maps at all) without this page also being remembered and
+  hand-edited a second time.
+- **Pricing**: 15 diamonds for a fusion aura (vs. 8 flat), 20 for a fusion
+  row (vs. 12 flat) — same "premium tier costs more" pattern as Golden
+  Egg among the push skins.
+- **Verified visually**: no live account/purchase needed for this one —
+  rendered the exact `linear-gradient(135deg, ...)`/`background-clip:text`
+  CSS this produces in a throwaway Playwright page (gradient username
+  text, a leaderboard-row-shaped tint, and the small reference swatch) to
+  confirm the technique actually renders as intended before calling it
+  done.
+
 ## Sunday anti-sniping blackout for the weekly money leaderboard (2026-08-25)
 
 With real diamond prizes on the line (see above), the top of the weekly
@@ -367,3 +545,79 @@ everyone on the last day of the money week (Sunday, Pacific).
   `VITE_SUPABASE_ANON_KEY` straight out of the live site's shipped JS
   bundle to stand up a local `.env.local` pointed at the real project,
   confirmed the new RPCs against real rows before merging.
+
+## Badge toast re-fired for already-owned shop/secret badges (2026-09-21, fixed)
+
+`earnedAtRunStart` (Home.jsx) is the baseline snapshot a bust/cash-out
+diffs against to find what's genuinely NEWLY earned — anything in that
+baseline is treated as already-owned and skipped. It was built from an
+explicit hand-picked field list (`{ bestStreak, totalPushes, dayStreak,
+moneyBestBankStreak, ... }`) instead of spreading the real stats object,
+reasoned at the time as avoiding polluting it with fields no badge reads.
+That list was never updated when the Shop badges (`ownsAnyPushSkin`,
+`ownsAnyRowStyle`, `ownsAnyAura`, `moneyDiamondsSpentLifetime`,
+`ownsInsurance`/`ownsStreakBonus`/`ownsDaredevil`) or the Secret badges
+(`moneyDaredevilRun200`, `clickedContact`, `moneyWeeklyWins`,
+`wonWeeklyWith*`, `artemisEarned`) were added to `BADGES` — every one of
+those came back `undefined` in the baseline, so `earnedBadges()` always
+scored them as not-yet-earned THERE specifically, while the real
+post-bust stats correctly had them earned. Net effect: every already-owned
+shop/secret badge looked "newly earned" on literally every single bust or
+cash-out, forever, for any account that owned one.
+
+This is the SAME bug shape as an earlier incident (visible in this same
+code's own prior comment) where omitting the money-* fields from this
+exact snapshot did the identical thing to money badges specifically. Two
+occurrences of the identical bug class, caused by the identical root
+cause (a hand-maintained field allowlist nobody remembers to update when
+`BADGES` grows), was enough to stop patching it as a list and fix the
+actual pattern: `earnedAtRunStart` now spreads the whole stats object
+(`earnedBadges({ ...s, bestStreak: best })`) instead of naming fields.
+Confirmed safe first — `badgeIsEarned` (game.js) only ever reads
+`stats[field]` for the exact field(s) each badge names, so extra
+unrelated keys in the object are inert, meaning there was never a real
+upside to hand-picking in the first place. Self-maintaining now: a future
+badge category needs zero changes here, same as
+`recordBustAndCheckBadges`'/`checkMoneyBadges`' own `earnedBadges` calls
+elsewhere in this file already worked. Purely a client-side display bug —
+nothing server-side was ever wrong, so no data cleanup was needed, just
+the annoying repeat toast.
+
+## Two "can't act before you've acknowledged X" gaps closed (2026-09-21)
+
+Both were the same shape: a real gate existed (a modal that's supposed to
+block you), but there was a window BEFORE that gate actually mounted
+where the thing it was meant to prevent was still possible.
+
+- **Weekly results vs. every button on the page.** The weekly-results
+  modal (`MoneyWeeklyResultsModal`) only actually mounts after a 1400ms
+  delay PLUS an async `money_weekly_resets` fetch — during that whole
+  window, every button on the page (push, cash out, mode switch, shop)
+  was fully live, so a fast player could play right through an
+  unacknowledged weekly result. Fixed with the same technique
+  `OnboardingModal.jsx` already uses for its own pre-appear delay: a new
+  `moneyWeeklyResultsPending` flag (true the instant
+  `money_weekly_results_seen === false` and a rank is known — i.e. long
+  before the delayed effect gets around to calling
+  `setShowMoneyWeeklyResultsModal`) renders the same invisible
+  full-viewport `.onboarding-preblock` div. One flag, one div, blocks
+  literally everything underneath — no per-button `disabled` threading
+  needed, and it can't drift out of sync with individual buttons the way
+  a hand-maintained list would.
+- **Money bag vs. the weekly upgrade choice.** `MoneyUpgradeChoiceModal`
+  is supposed to force a choice before playing once
+  `money_upgrade_choice_seen` resets false for the week, but it only
+  actually shows once `authStats` has loaded AND its own trigger effect
+  has run — until then, `MoneyMode.jsx`'s bag button had no idea a choice
+  was pending, so a push could land under whatever `active_money_upgrade`
+  happened to still be set. Fixed by computing the identical eligibility
+  condition (`moneyUpgradeChoiceSeen === false` and owns at least one
+  upgrade) independently inside `MoneyMode.jsx` itself as
+  `upgradeChoicePending`, and gating both `push()`'s own guard and the
+  button's `disabled` prop on it — a real disable, not the "still
+  clickable, routes to a poke" treatment a plain bust gets, since there's
+  nothing to acknowledge with a poke here. Scoped to the bag/push button
+  only (not cash-out) since the two resets that matter — the day and the
+  week — always land on the same Monday-midnight-Pacific moment, so
+  there's never a real in-progress run with unbanked money sitting around
+  while a choice is pending to accidentally block.

@@ -24,6 +24,7 @@ import {
 } from '../lib/sound.js';
 import { modeSlotStyle } from '../lib/modeTransition.js';
 import { getMoneyQuote, getMoneyBustQuote, getMoneyBankQuote, getMoneyInsuranceQuote } from '../lib/quotes.js';
+import InsuranceDecisionModal from './InsuranceDecisionModal.jsx';
 
 // Reachable via Home.jsx's mode-switch button, open to everyone who's
 // played classic at least once (see hasPlayedClassic there). Requires a
@@ -68,6 +69,17 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
   const navigate = useNavigate();
   const { setCollapsed } = useChrome();
   const { particles, rings, spawnEffect, popCoin, spawnDebris, spawnSpark } = useParticles();
+  // True the moment this account owns at least one upgrade and hasn't
+  // made its weekly choice yet (money_upgrade_choice_seen false — see its
+  // own comment in schema.sql) — the exact condition Home.jsx's own
+  // MoneyUpgradeChoiceModal trigger effect uses, computed independently
+  // here so the bag button gates on it immediately rather than only once
+  // that effect has actually gotten around to mounting the modal. Without
+  // this, a fast player could get a push in — under whatever
+  // active_money_upgrade happens to still be set from before the reset —
+  // before ever seeing the prompt to actually choose one for the week.
+  const upgradeChoicePending =
+    stats?.moneyUpgradeChoiceSeen === false && (!!stats?.ownsInsurance || !!stats?.ownsStreakBonus || !!stats?.ownsDaredevil);
   const [run, setRun] = useState(DEFAULT_RUN);
   const [rolling, setRolling] = useState(false);
   const [tick, setTick] = useState(0);
@@ -113,6 +125,12 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
   // back, before the player's even seen the "Insured!" reveal begin.
   // suppressInsuranceSyncRef mirrors suppressWalletSyncRef's own role.
   const [displayedInsuranceUsed, setDisplayedInsuranceUsed] = useState(() => !!stats?.insuranceUsedThisWeek);
+  // True while awaiting money-insurance-decision's response — see
+  // decideInsurance below. Only gates the InsuranceDecisionModal's own
+  // buttons (disables double-submitting a decision); unrelated to
+  // `rolling`, which gates the push button itself and is already false
+  // by the time this modal can even be showing (push() resolved already).
+  const [insuranceDecisionBusy, setInsuranceDecisionBusy] = useState(false);
   // Measured flight path for the shield-save animation (see
   // runInsuranceRevealSequence/insuranceBadgeRef) — null when nothing's
   // happening, same shape/pattern as flyingCoin above: appears already at
@@ -565,6 +583,7 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
     setMoneyBankQuip(null);
     setMoneyInsuranceQuip(null);
     setInsuranceSaved(false);
+    setInsuranceDecisionBusy(false);
     setFlyingShield(null);
     suppressWalletSyncRef.current = false;
     suppressInsuranceSyncRef.current = false;
@@ -631,7 +650,7 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
   }
 
   async function push() {
-    if (!user || rolling || run.status !== 'playing') return;
+    if (!user || rolling || run.status !== 'playing' || upgradeChoicePending) return;
     setRolling(true);
     setBagAnim('pressing');
     setShowWalletPanel(false); // exits right away — see runRevealSequence for when it comes back
@@ -709,13 +728,15 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
         // immediately rather than only after the next bust/cash-out's own
         // refreshMoneyStats call.
         if (gotDiamond) refreshMoneyStats();
-      } else if (data.insuranceUsed) {
-        triggerInsuranceSave(data);
-        // Insurance moves real money (wallet/lifetime/weekly/streak — see
-        // resolve_money_push's bust branch), same as a real cash-out —
-        // refresh so those and any newly-earned badge show up immediately,
-        // same reasoning as the plain-bust branch below.
-        refreshMoneyStats().then((fresh) => fresh && onMoneyResolved?.(fresh));
+      } else if (data.status === 'bust_pending_insurance') {
+        // Insurance-eligible bust — hold here without playing any reveal
+        // yet. run's already been updated to this status above, which is
+        // what makes InsuranceDecisionModal appear (see the render below);
+        // decideInsurance is what actually resolves this once the player
+        // answers it. Nothing's touched profiles yet, so no
+        // refreshMoneyStats call here either — that only happens once a
+        // real decision lands.
+        setBagAnim('');
       } else {
         triggerMoneyBust(data.pushes);
         // A bust can flip money_busted_over100 and resets money_bank_streak
@@ -731,6 +752,38 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
       setBagAnim('');
     } finally {
       setRolling(false);
+    }
+  }
+
+  // Commits whichever choice the player made on InsuranceDecisionModal —
+  // see resolve_money_insurance_decision in schema.sql. No re-roll here;
+  // the bust already happened server-side the moment push() got back
+  // 'bust_pending_insurance', this only decides what to do about it. The
+  // reveal that follows is exactly the same triggerInsuranceSave/
+  // triggerMoneyBust either path already used before this was a choice at
+  // all — this function's only job is picking which one to run and with
+  // what final numbers.
+  async function decideInsurance(useInsurance) {
+    if (insuranceDecisionBusy) return;
+    setInsuranceDecisionBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('money-insurance-decision', { body: { useInsurance } });
+      if (error || !data) throw error ?? new Error('no response');
+      setRun({ status: data.status, pushes: run.pushes, earningsCents: data.earningsCents });
+      if (data.insuranceUsed) {
+        triggerInsuranceSave(data);
+      } else {
+        triggerMoneyBust(run.pushes);
+      }
+      // Same reasoning as push()'s own post-resolution refresh — insurance
+      // moves real money (wallet/lifetime/weekly/streak), and a declined
+      // bust flips money_busted_over100/resets money_bank_streak, both
+      // server-side, in either case only just now.
+      refreshMoneyStats().then((fresh) => fresh && onMoneyResolved?.(fresh));
+    } catch (err) {
+      console.error('insurance decision failed:', err);
+    } finally {
+      setInsuranceDecisionBusy(false);
     }
   }
 
@@ -1238,16 +1291,21 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
               classic's glowing border, just as a small glowing label since
               this button has no border/box to glow (see .money-bag-btn's
               own comment on why it's borderless). */}
-          {run.status === 'playing' && !bagAnim && <div className="money-tap-aura">tap</div>}
+          {run.status === 'playing' && !bagAnim && !upgradeChoicePending && <div className="money-tap-aura">tap</div>}
           <button
             ref={bagBtnRef}
             onClick={resolved ? pokeMoneyBag : push}
-            // Only truly disabled mid-network-request or before the initial
-            // load-on-mount fetch has resolved ('loading') — once resolved
+            // Only truly disabled mid-network-request, before the initial
+            // load-on-mount fetch has resolved ('loading'), or while this
+            // week's upgrade choice is still pending (see
+            // upgradeChoicePending's own comment above) — once resolved
             // (busted/banked), clicks route to pokeMoneyBag instead of
             // being swallowed, same as classic's push button staying
-            // "live" after a bust (see pokeBustedButton in Home.jsx).
-            disabled={rolling || run.status === 'loading'}
+            // "live" after a bust (see pokeBustedButton in Home.jsx); the
+            // upgrade-choice case is different from that on purpose — there's
+            // nothing to acknowledge with a poke here, just a real block
+            // until Home.jsx's MoneyUpgradeChoiceModal gets answered.
+            disabled={rolling || run.status === 'loading' || upgradeChoicePending}
             className={
               'money-bag-btn' +
               (run.status === 'dead'
@@ -1472,6 +1530,15 @@ export default function MoneyMode({ forceBustSignal, resetSignal, forceDiamondSi
           style={{ left: p.style.left, top: p.style.top, '--dx': p.style['--dx'], '--dy': p.style['--dy'], background: p.color }}
         />
       ))}
+
+      {/* See resolve_money_push's 'bust_pending_insurance' status and
+          decideInsurance above — driven straight off run.status, so this
+          re-appears on its own if the player refreshes/reopens mid-
+          decision (loadTodayRun just loads whatever status the row is
+          actually in, same as it already does for 'dead'/'cashed_out'). */}
+      {run.status === 'bust_pending_insurance' && (
+        <InsuranceDecisionModal earningsCents={run.earningsCents} busy={insuranceDecisionBusy} onDecide={decideInsurance} />
+      )}
     </>
   );
 }

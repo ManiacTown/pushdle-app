@@ -5,3 +5,6 @@ dist
 .claude
 undefined
 supabase/.temp
+
+.vercel
+.env*

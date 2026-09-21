@@ -28,7 +28,7 @@ export const MONEY_BONUS_EVERY = 5;
 // as MONEY_SUCCESS_CHANCE above.
 export const STREAK_BONUS_EXTRA_CENTS = 100;
 export const DAREDEVIL_GUARANTEED_PUSHES = 5;
-export const DAREDEVIL_SUCCESS_CHANCE = 0.92;
+export const DAREDEVIL_SUCCESS_CHANCE = 0.94;
 export const DAREDEVIL_MULTIPLIER = 2;
 
 // Every value in this design lands on a whole dollar (base $1, bonus $1-$5,

@@ -5,8 +5,12 @@ import { supabase } from '../lib/supabaseClient.js';
 import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
 import {
-  AURA_COLORS,
-  ROW_STYLE_COLORS,
+  auraStyle,
+  auraSwatchColor,
+  rowStyleBackground,
+  rowStyleSwatchColor,
+  PUSH_SKIN_ICONS,
+  PUSH_SKIN_GLOW_COLORS,
   COSMETIC_LABELS,
   COSMETIC_PRICES,
   COSMETIC_CATEGORIES,
@@ -252,10 +256,13 @@ function UpgradeCard({
   );
 }
 
-// Aura ("Name Color") / row-style items — mechanically identical
-// (purchase_cosmetic, just a different color source/slot), so this is the
-// one place that card layout lives instead of two near-duplicate blocks.
-function CosmeticCard({ id, slot, color, owned, diamonds, busyId, onBuy }) {
+// Aura ("Name Color") / row-style / (non-diamond_button) push-skin items —
+// mechanically identical (purchase_cosmetic, just a different color
+// source/slot), so this is the one place that card layout lives instead
+// of three near-duplicate blocks. diamond_button still renders its own
+// hardcoded card below (own dedicated buy handler/ownership flag) rather
+// than going through this component.
+function CosmeticCard({ id, slot, color, iconSrc, owned, diamonds, busyId, onBuy }) {
   const price = COSMETIC_PRICES[id];
   const { canAfford, busy } = useBuyState({ id, price, diamonds, busyId });
   return (
@@ -273,9 +280,19 @@ function CosmeticCard({ id, slot, color, owned, diamonds, busyId, onBuy }) {
       }}
     >
       {/* Swatch preview — a plain filled circle for row items (a row style
-          IS just a flat background tint, so the swatch matches exactly);
-          for name-color items, the same solid color applied to a couple of
-          sample letters, since that's genuinely what it does to a username. */}
+          IS just a flat/gradient background tint, so the swatch matches
+          exactly, via rowStyleBackground so fusion items render their real
+          gradient here too, not just their representative `color`); for
+          name-color items, auraStyle applied to a couple of sample
+          letters, since that's genuinely what it does to a username
+          (gradient text for fusion items, flat color otherwise); for push
+          skins, the actual icon (see cosmetics.js's PUSH_SKIN_ICONS) —
+          this is the one slot where the swatch and the real equipped look
+          aren't the same shape, so showing anything else would be
+          misleading. `color` itself (a plain representative hex even for
+          fusion items — see auraSwatchColor/rowStyleSwatchColor) is only
+          used below for the border/badge/button, which can't render a
+          gradient anyway. */}
       {slot === 'aura' ? (
         <div
           className="mono"
@@ -287,13 +304,15 @@ function CosmeticCard({ id, slot, color, owned, diamonds, busyId, onBuy }) {
             justifyContent: 'center',
             fontSize: 14,
             fontWeight: 700,
-            color,
+            ...auraStyle(id),
           }}
         >
           Aa
         </div>
+      ) : slot === 'push_skin' ? (
+        <img src={iconSrc} alt="" width={36} height={36} style={{ display: 'block', marginBottom: 4 }} />
       ) : (
-        <div style={{ width: 20, height: 20, borderRadius: '50%', marginBottom: 4, background: color }} />
+        <div style={{ width: 20, height: 20, borderRadius: '50%', marginBottom: 4, background: rowStyleBackground(id) }} />
       )}
       <div className="mono" style={{ fontSize: 11, color: 'var(--text)', marginBottom: 5 }}>
         {COSMETIC_LABELS[id]}
@@ -509,6 +528,10 @@ export default function MoneyShop({ onClose }) {
 
   const auraCategory = COSMETIC_CATEGORIES.find((c) => c.id === 'aura');
   const rowCategory = COSMETIC_CATEGORIES.find((c) => c.id === 'row_style');
+  // Everything in push_skin EXCEPT diamond_button, which keeps its own
+  // hardcoded card below (dedicated buy handler/ownership flag) — see
+  // cosmetics.js's own comment on why it never joined this generic list.
+  const pushSkinItemIds = COSMETIC_CATEGORIES.find((c) => c.id === 'push_skin').itemIds.filter((id) => id !== 'diamond_button');
 
   return (
     <div
@@ -587,6 +610,19 @@ export default function MoneyShop({ onClose }) {
               </>
             )}
           </div>
+          {pushSkinItemIds.map((id) => (
+            <CosmeticCard
+              key={id}
+              id={id}
+              slot="push_skin"
+              color={PUSH_SKIN_GLOW_COLORS[id]}
+              iconSrc={PUSH_SKIN_ICONS[id]}
+              owned={ownedCosmetics.includes(id)}
+              diamonds={diamonds}
+              busyId={busyId}
+              onBuy={buyCosmetic}
+            />
+          ))}
         </div>
       )}
 
@@ -597,7 +633,7 @@ export default function MoneyShop({ onClose }) {
               key={id}
               id={id}
               slot="aura"
-              color={AURA_COLORS[id]}
+              color={auraSwatchColor(id)}
               owned={ownedCosmetics.includes(id)}
               diamonds={diamonds}
               busyId={busyId}
@@ -614,7 +650,7 @@ export default function MoneyShop({ onClose }) {
               key={id}
               id={id}
               slot="row_style"
-              color={ROW_STYLE_COLORS[id]}
+              color={rowStyleSwatchColor(id)}
               owned={ownedCosmetics.includes(id)}
               diamonds={diamonds}
               busyId={busyId}

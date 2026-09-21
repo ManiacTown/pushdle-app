@@ -6,7 +6,7 @@ import { pacificDateString, msUntilNextPacificWeekStart, formatCountdown } from 
 import { spotlightMove } from '../lib/spotlight.js';
 import { playNav } from '../lib/sound.js';
 import { formatCents } from '../lib/money.js';
-import { ROW_STYLE_COLORS, auraStyle } from '../lib/cosmetics.js';
+import { rowStyleBackground, rowStyleSwatchColor, auraStyle } from '../lib/cosmetics.js';
 import { BADGE_EMOJI_RARITY } from '../lib/game.js';
 import WeeklyPodium, { RANK_COLORS } from '../components/WeeklyPodium.jsx';
 import TopThreeTag from '../components/TopThreeTag.jsx';
@@ -537,7 +537,14 @@ export default function Leaderboard() {
         // still always win (see the row's own style block below), same
         // "rank tier beats personalization" precedence row.me's default
         // violet tint already followed before this existed.
-        const rowStyleColor = row.rowStyle ? ROW_STYLE_COLORS[row.rowStyle] : null;
+        // rowStyleBg carries its own alpha baked in (gradient stops or a
+        // flat color, either way — see rowStyleBackground's own comment)
+        // since a CSS gradient can't have a separate alpha applied after
+        // the fact the way a flat hex + suffix can. rowStyleBorderColor is
+        // always a single solid color (a fusion item's first stop) since
+        // border-color can't be a gradient at all.
+        const rowStyleBg = row.rowStyle ? rowStyleBackground(row.rowStyle, '1a') : null;
+        const rowStyleBorderColor = row.rowStyle ? rowStyleSwatchColor(row.rowStyle) : null;
         // Bots have no userId (see lib/bots.js — they're a fixed
         // client-side list, not real accounts, nothing to navigate to),
         // so only real rows are clickable/focusable at all.
@@ -588,15 +595,15 @@ export default function Leaderboard() {
               // as "selected," just tinted-and-outlined.
               background: rankColor
                 ? `${rankColor}1a`
-                : rowStyleColor
-                ? `${rowStyleColor}1a`
+                : rowStyleBg
+                ? rowStyleBg
                 : row.me
                 ? 'rgba(139,92,246,0.14)'
                 : 'rgba(255,255,255,0.02)',
               border: rankColor
                 ? `1px solid ${rankColor}55`
-                : rowStyleColor
-                ? `1px solid ${rowStyleColor}66`
+                : rowStyleBorderColor
+                ? `1px solid ${rowStyleBorderColor}66`
                 : row.me
                 ? '1px solid rgba(139,92,246,0.4)'
                 : 'none',

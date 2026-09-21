@@ -152,6 +152,7 @@ export const ALLOWED_BADGE_FIELDS = new Set([
   'owns_diamond_button',
   'owns_any_row_style',
   'owns_any_aura',
+  'owns_any_push_skin',
   // secret badges (see game.js's BADGES) — deliberately NOT including
   // nuke_earned: that badge has no real column and no code path ever sets
   // it, and leaving it off this allowlist is what keeps it unclaimable

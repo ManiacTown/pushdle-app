@@ -1,0 +1,41 @@
+<svg viewBox="0 0 448 448" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="leafLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c8ffe1"/>
+      <stop offset="100%" stop-color="#4fe89a"/>
+    </linearGradient>
+    <linearGradient id="leafDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3ccf85"/>
+      <stop offset="100%" stop-color="#149a55"/>
+    </linearGradient>
+  </defs>
+
+  <ellipse cx="224" cy="378" rx="82" ry="16" fill="#000000" opacity="0.28"/>
+
+  <!-- stem -->
+  <path d="M224,268 Q206,320 224,368" fill="none" stroke="#149a55" stroke-width="22" stroke-linecap="round"/>
+
+  <!-- Four heart-shaped leaves, each rotated 90 degrees around the shared
+       center — filling most of the frame now that there's no badge circle
+       constraining the size. -->
+  <g fill="url(#leafLight)">
+    <g transform="translate(224,224) scale(1.5) translate(-50,-90)">
+      <path d="M50,90 C20,65 0,45 0,25 C0,10 15,0 30,0 C40,0 47,7 50,15 C53,7 60,0 70,0 C85,0 100,10 100,25 C100,45 80,65 50,90 Z"/>
+    </g>
+    <g transform="rotate(180 224 224) translate(224,224) scale(1.5) translate(-50,-90)">
+      <path d="M50,90 C20,65 0,45 0,25 C0,10 15,0 30,0 C40,0 47,7 50,15 C53,7 60,0 70,0 C85,0 100,10 100,25 C100,45 80,65 50,90 Z"/>
+    </g>
+  </g>
+  <g fill="url(#leafDark)">
+    <g transform="rotate(90 224 224) translate(224,224) scale(1.5) translate(-50,-90)">
+      <path d="M50,90 C20,65 0,45 0,25 C0,10 15,0 30,0 C40,0 47,7 50,15 C53,7 60,0 70,0 C85,0 100,10 100,25 C100,45 80,65 50,90 Z"/>
+    </g>
+    <g transform="rotate(270 224 224) translate(224,224) scale(1.5) translate(-50,-90)">
+      <path d="M50,90 C20,65 0,45 0,25 C0,10 15,0 30,0 C40,0 47,7 50,15 C53,7 60,0 70,0 C85,0 100,10 100,25 C100,45 80,65 50,90 Z"/>
+    </g>
+  </g>
+
+  <circle cx="224" cy="224" r="20" fill="#149a55"/>
+
+  <ellipse cx="160" cy="130" rx="55" ry="22" fill="#ffffff" opacity="0.3"/>
+</svg>

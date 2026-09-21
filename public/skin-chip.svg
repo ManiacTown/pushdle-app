@@ -1,0 +1,46 @@
+<svg viewBox="0 0 448 448" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="chipBody" cx="35%" cy="28%" r="80%">
+      <stop offset="0%" stop-color="#4a4a55"/>
+      <stop offset="55%" stop-color="#232228"/>
+      <stop offset="100%" stop-color="#0a0a0d"/>
+    </radialGradient>
+    <radialGradient id="chipGold" cx="35%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="#ffe9a8"/>
+      <stop offset="60%" stop-color="#e8b13a"/>
+      <stop offset="100%" stop-color="#a66d12"/>
+    </radialGradient>
+  </defs>
+
+  <ellipse cx="224" cy="358" rx="120" ry="20" fill="#000000" opacity="0.35"/>
+
+  <!-- the chip's own disc IS the whole button now, sized to fill the frame -->
+  <circle cx="224" cy="224" r="200" fill="url(#chipBody)" stroke="#000000" stroke-width="6"/>
+  <circle cx="224" cy="224" r="200" fill="none" stroke="#3a3840" stroke-width="8" opacity="0.6"/>
+
+  <!-- 8 gold edge notches around the rim -->
+  <g fill="url(#chipGold)">
+    <rect x="206" y="30" width="36" height="56" rx="6"/>
+    <rect x="206" y="362" width="36" height="56" rx="6"/>
+    <rect x="30" y="206" width="56" height="36" rx="6"/>
+    <rect x="362" y="206" width="56" height="36" rx="6"/>
+    <g transform="rotate(45 224 224)">
+      <rect x="206" y="30" width="36" height="56" rx="6"/>
+      <rect x="206" y="362" width="36" height="56" rx="6"/>
+      <rect x="30" y="206" width="56" height="36" rx="6"/>
+      <rect x="362" y="206" width="56" height="36" rx="6"/>
+    </g>
+  </g>
+
+  <!-- inner gold ring + center -->
+  <circle cx="224" cy="224" r="140" fill="none" stroke="url(#chipGold)" stroke-width="12"/>
+  <circle cx="224" cy="224" r="108" fill="#181519"/>
+
+  <!-- center star -->
+  <path
+    d="M224,158 L237,196 L278,196 L244,220 L257,260 L224,235 L191,260 L204,220 L170,196 L211,196 Z"
+    fill="url(#chipGold)"
+  />
+
+  <ellipse cx="165" cy="150" rx="60" ry="24" fill="#ffffff" opacity="0.12"/>
+</svg>

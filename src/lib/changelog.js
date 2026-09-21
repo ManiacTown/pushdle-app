@@ -6,6 +6,25 @@
 // nobody outside the codebase would ever notice.
 export const CHANGELOG = [
   {
+    date: '2026-09-21',
+    title: 'Bug fixes: badge pop-ups and weekly reset timing',
+    items: [
+      'Fixed badge pop-ups re-showing badges you already owned — mainly hit Shop and Secret badges — every time you busted or cashed out in Money Mode.',
+      'You can no longer push or cash out before acknowledging the weekly Money Mode results screen once it’s up.',
+      'The Money Mode bag button now stays locked until you’ve made this week’s upgrade choice, instead of letting a push sneak in first.',
+    ],
+  },
+  {
+    date: '2026-09-16',
+    title: 'New push-button skins, fusion colors, and a choice for your insurance',
+    items: [
+      'Weekly Bust Insurance is now a real choice instead of automatic — bust while it’s armed and you’ll be asked whether to spend it now or save it for a bigger bust later in the week.',
+      'Daredevil’s odds after the guarantee are now 94%, up from 92%.',
+      'Added 4 new push-button skins to the shop: Lucky Dice, Lucky Clover, High Roller Chip, and Golden Egg.',
+      'Added 3 new "fusion" gradient colors — Ashy, Phoenix, and Nebula — for both Name Color and Row Background.',
+    ],
+  },
+  {
     date: '2026-08-21',
     title: 'Money Mode upgrades, Shop & Secret badges',
     items: [

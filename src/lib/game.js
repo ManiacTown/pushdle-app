@@ -155,7 +155,7 @@ export const BADGES = [
   // Ordered common -> rare -> legendary (BadgeGrid.jsx renders each
   // category in plain array order, no separate sort) rather than the
   // order they were first described in.
-  { id: 'money-shop-button-skin', label: 'Oooh Shiny', category: 'money-shop', hint: 'Buy a push-button skin', rarity: 'common', field: 'ownsDiamondButton', min: true },
+  { id: 'money-shop-button-skin', label: 'Oooh Shiny', category: 'money-shop', hint: 'Buy a push-button skin', rarity: 'common', field: 'ownsAnyPushSkin', min: true },
   { id: 'money-shop-row-style', label: 'Time to Decorate', category: 'money-shop', hint: 'Buy a row background', rarity: 'common', field: 'ownsAnyRowStyle', min: true },
   { id: 'money-shop-aura', label: 'Standing Out', category: 'money-shop', hint: 'Buy a name color', rarity: 'common', field: 'ownsAnyAura', min: true },
   { id: 'money-shop-diamonds-50', label: 'Put Them to Good Use', category: 'money-shop', hint: 'Spend 50 diamonds in the shop', rarity: 'rare', field: 'moneyDiamondsSpentLifetime', min: 50 },

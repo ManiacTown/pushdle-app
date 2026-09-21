@@ -7,7 +7,7 @@ import * as storage from '../lib/storage.js';
 import { BADGES, BADGE_CATEGORIES, SECRET_CATEGORY, BADGE_EMOJI, BADGE_EMOJI_RARITY, earnedBadges } from '../lib/game.js';
 import { formatCents } from '../lib/money.js';
 import { spotlightMove } from '../lib/spotlight.js';
-import { auraStyle, AURA_COLORS, ROW_STYLE_COLORS, COSMETIC_CATEGORIES } from '../lib/cosmetics.js';
+import { auraStyle, rowStyleBackground, PUSH_SKIN_ICONS, COSMETIC_CATEGORIES } from '../lib/cosmetics.js';
 import { playBadgeSelect } from '../lib/sound.js';
 import StatTilesPanel from '../components/StatTilesPanel.jsx';
 import AchievementTabToggle from '../components/AchievementTabToggle.jsx';
@@ -270,7 +270,12 @@ export default function Profile() {
   const activePushSkin = user ? authStats?.activePushSkin : null;
   const activeRowStyle = user ? authStats?.activeRowStyle : null;
   const ownedCosmetics = user ? authStats?.ownedCosmetics ?? [] : [];
-  const ownedPushSkins = user && authStats?.ownsDiamondButton ? ['diamond_button'] : [];
+  const ownedPushSkins = user
+    ? [
+        ...(authStats?.ownsDiamondButton ? ['diamond_button'] : []),
+        ...(authStats?.ownedCosmetics ?? []).filter((id) => id.startsWith('skin_')),
+      ]
+    : [];
   // Guests can't buy shop upgrades either — see ActiveMoneyUpgradeBadge's
   // own gate (renders nothing when activeMoneyUpgrade is null/undefined).
   const activeMoneyUpgrade = user ? authStats?.activeMoneyUpgrade ?? null : null;
@@ -402,7 +407,11 @@ export default function Profile() {
   const moneyStatTiles = [
     {
       label: "Today's Money",
-      value: formatCents(todayMoneyRun?.status === 'dead' ? 0 : todayMoneyRun?.earnings_cents ?? 0),
+      // Neither a plain bust nor a still-undecided insurance prompt (see
+      // resolve_money_push's 'bust_pending_insurance' status) has actually
+      // banked anything yet — only 'cashed_out' has, whether via a real
+      // cash-out or an insurance save.
+      value: formatCents(todayMoneyRun?.status === 'cashed_out' ? todayMoneyRun?.earnings_cents ?? 0 : 0),
     },
     { label: 'Most Banked', value: formatCents(stats.moneyBestRunCents) },
     { label: 'Weekly $', value: formatCents(stats.moneyWeeklyCents) },
@@ -551,7 +560,9 @@ export default function Profile() {
                 activeId={activePushSkin}
                 onSelect={(id) => equipCosmetic('push_skin', id)}
                 disabled={equipBusy}
-                renderItem={() => <img src="/diamond-button.png" alt="" width={20} height={20} style={{ display: 'block' }} />}
+                renderItem={(id) => (
+                  <img src={id === 'diamond_button' ? '/diamond-button.png' : PUSH_SKIN_ICONS[id]} alt="" width={20} height={20} style={{ display: 'block' }} />
+                )}
                 emptyMessage="Nothing owned yet — buy a push-button skin from the Shop to equip it here."
               />
             )}
@@ -573,7 +584,7 @@ export default function Profile() {
                 activeId={activeAura}
                 onSelect={(id) => equipCosmetic('aura', id)}
                 disabled={equipBusy}
-                renderItem={(id) => <span style={{ fontWeight: 700, color: AURA_COLORS[id] }}>Aa</span>}
+                renderItem={(id) => <span style={{ fontWeight: 700, ...auraStyle(id) }}>Aa</span>}
                 emptyMessage="Nothing owned yet — buy a name color from the Shop to equip it here."
               />
             )}
@@ -596,7 +607,7 @@ export default function Profile() {
                 onSelect={(id) => equipCosmetic('row_style', id)}
                 disabled={equipBusy}
                 renderItem={(id) => (
-                  <div style={{ width: 16, height: 16, borderRadius: '50%', background: ROW_STYLE_COLORS[id] }} />
+                  <div style={{ width: 16, height: 16, borderRadius: '50%', background: rowStyleBackground(id) }} />
                 )}
                 emptyMessage="Nothing owned yet — buy a row background from the Shop to equip it here."
               />

@@ -18,6 +18,7 @@ import {
 } from '../lib/game.js';
 import { getQuoteForStreak, getBustQuoteForStreak, getPokeQuip } from '../lib/quotes.js';
 import { MONEY_SUCCESS_CHANCE, diamondsForWeeklyRank } from '../lib/money.js';
+import { PUSH_SKIN_ICONS, PUSH_SKIN_GLOW_COLORS } from '../lib/cosmetics.js';
 import { modeSlotStyle, MODE_TRANSITION_PHASE_MS } from '../lib/modeTransition.js';
 import { playPush, playSuccess, playBust, playBadge, playNav, playReveal, playPoke, playShopOpen, playShopClose } from '../lib/sound.js';
 import { spotlightMove } from '../lib/spotlight.js';
@@ -511,30 +512,28 @@ export default function Home() {
       setDisplayedPityCount(s.pityCount ?? 0);
       // Snapshot of what's already earned before this run's pushes count,
       // so a bust/cash-out can later diff against it to find what's newly
-      // earned. Explicit field picks, not a wholesale ...s spread — s is
-      // authStats for logged-in players, which also carries fields no
-      // badge reads (moneyWalletCents, etc. — see AuthContext.jsx). Must
-      // include every field ANY badge reads, classic AND money alike (see
-      // BADGES in game.js) — omitting the money-* fields here used to make
-      // every already-earned money badge look "not yet earned" in this
-      // baseline, so checkMoneyBadges' diff against it treated ALL of them
-      // as newly earned on every single money-mode bust/cash-out, not just
-      // genuinely new ones.
+      // earned. USED to be explicit field picks here (not a wholesale ...s
+      // spread), reasoned as avoiding fields no badge reads (moneyWalletCents,
+      // etc. — s is authStats for logged-in players, which carries plenty).
+      // That reasoning doesn't actually hold up — badgeIsEarned (game.js)
+      // only ever reads stats[field] for the exact fields each badge names,
+      // so extra unrelated keys in this object are completely harmless —
+      // and the explicit-pick list silently missing a field is NOT
+      // harmless: it already caused every already-earned MONEY badge to
+      // look "not yet earned" here once (omitted moneyBestBankStreak etc.),
+      // and later, separately, caused every already-earned SHOP/SECRET
+      // badge (ownsAnyPushSkin, ownsAnyRowStyle, clickedContact, ...) to do
+      // the exact same thing a second time when those categories were added
+      // to BADGES without this spot being remembered — both times, the
+      // "newly earned" diff below treated ALL of them as newly earned on
+      // literally every bust/cash-out, not just genuinely new ones. A plain
+      // spread is self-maintaining: any future badge category just works
+      // without this needing to be touched again, same as
+      // recordBustAndCheckBadges'/checkMoneyBadges' own earnedBadges calls
+      // already do.
       setEarnedAtRunStart(
         new Set(
-          earnedBadges({
-            bestStreak: best,
-            totalPushes: s.totalPushes,
-            dayStreak: s.dayStreak,
-            bustedAtZero: s.bustedAtZero,
-            bustedAtOne: s.bustedAtOne,
-            moneyBestBankStreak: s.moneyBestBankStreak,
-            moneyLifetimeCents: s.moneyLifetimeCents,
-            moneyBestRunCents: s.moneyBestRunCents,
-            moneyBankedAfterOnePush: s.moneyBankedAfterOnePush,
-            moneyReachedTop3Weekly: s.moneyReachedTop3Weekly,
-            moneyBustedOver100: s.moneyBustedOver100,
-          }).map((b) => b.id)
+          earnedBadges({ ...s, bestStreak: best }).map((b) => b.id)
         )
       );
     });
@@ -759,6 +758,19 @@ export default function Home() {
     timers.current.push(timer);
     return () => clearTimeout(timer);
   }, [user, onboardingSeen, moneyUnlockSeen, hasPlayedClassic]);
+
+  // True from the instant we KNOW this account needs to see last week's
+  // results (same gating the trigger effect below eventually acts on),
+  // well before the modal itself actually mounts — that effect waits out
+  // a 1400ms delay AND an async fetch before calling
+  // setShowMoneyWeeklyResultsModal, and without this, a fast player could
+  // get pushes/cash-outs in during that whole window despite the week
+  // already having a result waiting to be acknowledged. Drives the
+  // invisible full-viewport blocker below (same .onboarding-preblock
+  // OnboardingModal.jsx already uses for its own pre-appear delay) rather
+  // than threading a disabled prop through every button on the page.
+  const moneyWeeklyResultsPending =
+    !!user && moneyWeeklyResultsSeen === false && authStats?.moneyLastWeekRank != null;
 
   // Announces last week's money-mode weekly-leaderboard results (see
   // MoneyWeeklyResultsModal.jsx) the first time a ranked account logs in
@@ -1682,13 +1694,20 @@ export default function Home() {
   // above) — reappears the moment the board's actually back at rest.
   // (Registered-only gate lives at the JSX mount point below, not here.)
   const pityMeterVisible = (displayedPityCount > 0 || pityFillBlocking) && !classicCollapsed;
-  // Shop-unlocked push-button skin (see MoneyShop.jsx/purchase_diamond_button)
-  // — classic mode only, guests included (authStats is null while logged
-  // out, so this is just false for them, same as any other money-mode
-  // field). Gated on active_push_skin (see schema.sql), not just ownership
-  // — MoneyShop.jsx's Equip/Unequip toggle is what actually sets this, so
-  // owning it is necessary but no longer sufficient for it to render here.
-  const diamondButtonActive = authStats?.activePushSkin === 'diamond_button';
+  // Shop-unlocked push-button skin (see MoneyShop.jsx/purchase_diamond_button/
+  // purchase_cosmetic) — classic mode only, guests included (authStats is
+  // null while logged out, so this is just false for them, same as any
+  // other money-mode field). Gated on active_push_skin (see schema.sql),
+  // not just ownership — MoneyShop.jsx's Equip/Unequip toggle is what
+  // actually sets this, so owning it is necessary but no longer sufficient
+  // for it to render here. diamond_button keeps its own dedicated image
+  // path/CSS (predates PUSH_SKIN_ICONS/PUSH_SKIN_GLOW_COLORS — see
+  // cosmetics.js's own comment); every skin added since reads from those
+  // two maps instead of needing its own special case here.
+  const activePushSkin = authStats?.activePushSkin ?? null;
+  const diamondButtonActive = activePushSkin === 'diamond_button';
+  const skinIconSrc = activePushSkin && activePushSkin !== 'diamond_button' ? PUSH_SKIN_ICONS[activePushSkin] : null;
+  const skinGlowColor = activePushSkin && activePushSkin !== 'diamond_button' ? PUSH_SKIN_GLOW_COLORS[activePushSkin] : null;
   // Hovering stops the idle-pulse animation (rather than just adding an
   // unrelated :hover rule) so the hover feedback actually shows instead of
   // being silently overridden by the running animation — see DECISIONS.md
@@ -1950,6 +1969,27 @@ export default function Home() {
               <img src="/diamond-button.png" alt="" width={190} height={190} style={{ display: 'block', pointerEvents: 'none' }} />
               <span className="push-btn-label">{buttonLabel}</span>
             </button>
+          ) : skinIconSrc ? (
+            // Every push-skin bought since diamond_button (see cosmetics.js's
+            // PUSH_SKIN_ICONS/PUSH_SKIN_GLOW_COLORS) — same shape as the
+            // diamond branch above, just a shared class parameterized by
+            // --skin-glow instead of a new hardcoded CSS block per skin.
+            <button
+              onClick={push}
+              onMouseEnter={() => setButtonHover(true)}
+              onMouseLeave={() => setButtonHover(false)}
+              disabled={rolling || pityFillBlocking}
+              className={
+                'push-btn-skin' +
+                (state.status === 'dead' ? ' push-btn-skin--dead' : ' push-btn-skin--playing') +
+                (idlePulseActive ? ' push-btn-skin--idle-pulse' : '') +
+                (bustedIdle ? ' push-btn-skin--busted-idle' : '')
+              }
+              style={{ width: 190, height: 190, '--skin-glow': skinGlowColor }}
+            >
+              <img src={skinIconSrc} alt="" width={190} height={190} style={{ display: 'block', pointerEvents: 'none' }} />
+              <span className="push-btn-label">{buttonLabel}</span>
+            </button>
           ) : (
             <button
               onClick={push}
@@ -2087,6 +2127,10 @@ export default function Home() {
                 else markPityIntroSeen();
               }}
             />
+          )}
+
+          {moneyWeeklyResultsPending && !showMoneyWeeklyResultsModal && (
+            <div className="onboarding-preblock" aria-hidden="true" />
           )}
 
           {showMoneyWeeklyResultsModal && moneyWeeklyResultsData && (

@@ -396,7 +396,7 @@ export function AuthProvider({ children }) {
             'money_reached_top3_weekly, money_banked_after_one_push, money_busted_over100, ' +
             'money_last_week_rank, money_last_week_score_cents, money_last_week_diamonds_awarded, ' +
             'money_weekly_wins, money_currently_top3, ' +
-            'money_diamonds_spent_lifetime, owns_any_row_style, owns_any_aura, money_daredevil_run_200, ' +
+            'money_diamonds_spent_lifetime, owns_any_row_style, owns_any_aura, owns_any_push_skin, money_daredevil_run_200, ' +
             'clicked_contact, won_weekly_with_insurance, won_weekly_with_streak_bonus, won_weekly_with_daredevil, ' +
             'artemis_earned'
         )
@@ -478,6 +478,7 @@ export function AuthProvider({ children }) {
       moneyDiamondsSpentLifetime: data?.money_diamonds_spent_lifetime ?? 0,
       ownsAnyRowStyle: !!data?.owns_any_row_style,
       ownsAnyAura: !!data?.owns_any_aura,
+      ownsAnyPushSkin: !!data?.owns_any_push_skin,
       moneyDaredevilRun200: !!data?.money_daredevil_run_200,
       clickedContact: !!data?.clicked_contact,
       wonWeeklyWithInsurance: !!data?.won_weekly_with_insurance,

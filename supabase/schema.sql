@@ -171,18 +171,19 @@ create table if not exists profiles (
   -- is the only path, and it re-checks ownership server-side every time,
   -- same "never trust the client's cached owned/active state" reasoning as
   -- purchase_diamond_button/purchase_cosmetic.
-  active_push_skin       text check (active_push_skin is null or active_push_skin in ('diamond_button')),
+  active_push_skin       text check (active_push_skin is null or active_push_skin in ('diamond_button', 'skin_dice', 'skin_clover', 'skin_chip', 'skin_golden_egg')),
   -- Rendered as a colored ring around the flair emoji (see
   -- src/lib/cosmetics.js's AURA_COLORS) wherever it shows: Leaderboard.jsx
   -- rows, Profile.jsx, PublicProfile.jsx — same emoji, same aura, every
   -- place it appears, since this is "whose flair is this" styling, not a
   -- per-page setting.
-  active_aura            text check (active_aura is null or active_aura in ('aura_gold', 'aura_violet', 'aura_green', 'aura_diamond')),
+  active_aura            text check (active_aura is null or active_aura in ('aura_gold', 'aura_violet', 'aura_green', 'aura_diamond', 'aura_ashy', 'aura_phoenix', 'aura_nebula')),
   -- Recolors the player's own row on Leaderboard.jsx (see
-  -- src/lib/cosmetics.js's ROW_STYLE_COLORS) — medal-rank rows (top 3)
-  -- still always win over this, same "rank tier beats personalization"
-  -- precedence the row's own me-highlight already had before this existed.
-  active_row_style       text check (active_row_style is null or active_row_style in ('row_gold', 'row_violet', 'row_green', 'row_diamond')),
+  -- src/lib/cosmetics.js's ROW_STYLE_COLORS/ROW_STYLE_GRADIENTS) — medal-
+  -- rank rows (top 3) still always win over this, same "rank tier beats
+  -- personalization" precedence the row's own me-highlight already had
+  -- before this existed.
+  active_row_style       text check (active_row_style is null or active_row_style in ('row_gold', 'row_violet', 'row_green', 'row_diamond', 'row_ashy', 'row_phoenix', 'row_nebula')),
 
   -- Once-per-week safety net for money mode (see MoneyShop.jsx and
   -- resolve_money_push's bust branch below) — a permanent purchase, not a
@@ -309,12 +310,18 @@ create table if not exists profiles (
   -- just the current balance and goes back down on every purchase, so this
   -- is a separate running total specifically for "Put Them to Good Use".
   money_diamonds_spent_lifetime    int not null default 0 check (money_diamonds_spent_lifetime >= 0),
-  -- Set true by purchase_cosmetic the first time a row_*/aura_* item is
-  -- bought — "Time to Decorate"/"Standing Out" only care THAT one was
-  -- bought, not which color, so this is simpler than deriving it from
-  -- owned_cosmetics (a text[]) on every badge read.
+  -- Set true by purchase_cosmetic the first time a row_*/aura_*/skin_*
+  -- item is bought (or by purchase_diamond_button, the one push_skin item
+  -- outside that generic system) — "Time to Decorate"/"Standing Out"/
+  -- "Oooh Shiny" only care THAT one was bought, not which specific one,
+  -- so this is simpler than deriving it from owned_cosmetics (a text[])
+  -- + owns_diamond_button on every badge read. owns_any_push_skin backs
+  -- "Oooh Shiny" (game.js) instead of the older owns_diamond_button now
+  -- that push_skin has more than one purchasable item — see the
+  -- 20260916210000 migration for the backfill this needed.
   owns_any_row_style               boolean not null default false,
   owns_any_aura                    boolean not null default false,
+  owns_any_push_skin               boolean not null default false,
   -- Leonidas (secret badge): a single Money Mode cash-out of $200+ while
   -- Daredevil was the active upgrade — set by resolve_money_cashout.
   money_daredevil_run_200          boolean not null default false,
@@ -388,20 +395,50 @@ create policy "users can update their own profile"
 -- RLS policies only govern *which rows* — the anon/authenticated roles also
 -- need the base grant to touch the table at all. The Supabase Table Editor
 -- does this for you automatically; raw SQL doesn't, so it has to be explicit.
-grant select on profiles to anon, authenticated;
--- Column-level revoke on top of the table-level grant above — see
--- get_money_weekly_leaderboard/get_public_money_stats/get_my_weekly_cents
--- near the bottom of this file (the "Weekly money leaderboard reset"
--- section) for why: those three SECURITY DEFINER functions are the ONLY
--- way anon/authenticated can read this column at all now. Without this,
--- the weekly-leaderboard blackout day (Sunday, Pacific — top 10 hidden to
--- prevent last-minute $1 sniping) would only ever be a client-side UI
--- choice, trivially bypassed by anyone hitting the Supabase REST endpoint
--- directly with the app's own public anon key. service_role is untouched
--- (see its own blanket grant below) — resolve_money_push/
--- resolve_money_cashout/api/weekly-money-reset.js all keep working
--- exactly as before.
-revoke select (money_weekly_cents) on profiles from anon, authenticated;
+--
+-- Column-restricted (every column except money_weekly_cents), NOT a plain
+-- `grant select on profiles` — see get_money_weekly_leaderboard/
+-- get_public_money_stats/get_my_weekly_cents near the bottom of this file
+-- (the "Weekly money leaderboard reset" section) for why: those three
+-- SECURITY DEFINER functions are meant to be the ONLY way anon/
+-- authenticated can read money_weekly_cents, so the weekly-leaderboard
+-- blackout day (Sunday, Pacific — top 10 hidden to prevent last-minute $1
+-- sniping) is real server-side enforcement, not just a client-side UI
+-- choice trivially bypassed by hitting the Supabase REST endpoint directly
+-- with the app's own public anon key.
+--
+-- THIS USED TO BE a plain table-level `grant select on profiles ...`
+-- immediately followed by `revoke select (money_weekly_cents) on profiles
+-- ...` (added in migration 20260825163115_money_weekly_blackout.sql) —
+-- that revoke silently never worked. In Postgres, a column-level REVOKE
+-- cannot narrow a table-level GRANT that already covers the whole table;
+-- access is permitted if *any* applicable grant allows it, and the
+-- blanket table-level one alone was always sufficient. money_weekly_cents
+-- stayed fully bulk-readable by anon the entire time, undetected until a
+-- direct `information_schema.column_privileges` check during the 2026-
+-- 09-16 insurance-choice work caught it. Fixed (migration
+-- 20260916200000_fix_money_weekly_cents_column_grant.sql) the only way
+-- Postgres actually supports restricting one column: revoke the
+-- table-level grant entirely, then grant column-level SELECT explicitly
+-- naming every OTHER column. If a new column is ever added to profiles
+-- that anon/authenticated should be able to read, it has to be added to
+-- this list explicitly — it will NOT be readable by default the way it
+-- would under a blanket table-level grant, which is exactly the point.
+grant select (
+  id, username, created_at, best_streak, total_pushes, day_streak, last_played_date,
+  busted_at_zero, busted_at_one, role, selected_emoji, onboarding_seen, money_wallet_cents,
+  money_lifetime_cents, stats_migrated, money_best_run_cents, money_bank_streak,
+  money_best_bank_streak, money_last_banked_date, money_reached_top3_weekly,
+  money_banked_after_one_push, money_busted_over100, money_best_weekly_cents, money_diamonds,
+  owns_diamond_button, owned_cosmetics, active_push_skin, active_aura, active_row_style, owns_any_push_skin,
+  owns_insurance, insurance_used_this_week, money_unlock_seen, pity_count, pity_intro_seen,
+  money_last_week_rank, money_last_week_score_cents, money_last_week_diamonds_awarded,
+  money_weekly_results_seen, money_weekly_wins, money_top3_finishes, money_currently_top3,
+  owns_streak_bonus, owns_daredevil, active_money_upgrade, money_upgrade_choice_seen,
+  money_diamonds_spent_lifetime, owns_any_row_style, owns_any_aura, money_daredevil_run_200,
+  clicked_contact, won_weekly_with_insurance, won_weekly_with_streak_bonus,
+  won_weekly_with_daredevil, artemis_earned, modifier_update_seen, money_blackout_preview
+) on profiles to anon, authenticated;
 -- Column-restricted on purpose: the RLS policy above allows updating the
 -- row, but this grant only allows touching these five columns — role/
 -- stat columns are unreachable from the client even though the row itself
@@ -805,7 +842,12 @@ create table if not exists money_runs (
   -- starting next. Admin's "force diamond next" dev tool (see admin/
   -- index.ts) just sets this directly, bypassing the roll.
   next_bonus_is_diamond boolean not null default (random() < 0.10),
-  status          text not null default 'playing' check (status in ('playing', 'dead', 'cashed_out')),
+  -- bust_pending_insurance: a bust roll just failed AND the player is
+  -- insurance-eligible (owns it, it's active, not used yet this week) —
+  -- parked here instead of auto-resolving so the player can choose (see
+  -- resolve_money_insurance_decision below). Ineligible busts skip this
+  -- state entirely and go straight to 'dead', same as before.
+  status          text not null default 'playing' check (status in ('playing', 'dead', 'cashed_out', 'bust_pending_insurance')),
   created_at      timestamptz not null default now(),
 
   unique (user_id, date)
@@ -836,15 +878,17 @@ grant all on money_runs to service_role;
 -- Same atomic get-or-create-row + roll + write pattern as resolve_push,
 -- for the exact same reason (closing the same read-then-write race).
 -- Doesn't touch profiles on a normal push or a plain bust — see the
--- earnings_cents comment above for why that matters — EXCEPT when weekly
--- insurance saves a bust (see the bust branch below), which is the one
--- case a push can bank money outside of resolve_money_cashout. The money
+-- earnings_cents comment above for why that matters. A bust that's
+-- insurance-eligible doesn't bank anything here either anymore — it just
+-- parks in 'bust_pending_insurance' (see the bust branch below and
+-- resolve_money_insurance_decision, which is what actually moves money
+-- now, once the player picks). The money
 -- variant's first 10 pushes are GUARANTEED successes (v_chance 1.0, not
 -- classic's single 0.999-guaranteed first press) — a deliberately softer
 -- ante for this mode. v_pushes is the count of successful pushes BEFORE
 -- this one, so `< 10` covers pushes #1 through #10; #11 onward rolls the
 -- real 0.97. All of that shifts under the Daredevil upgrade instead (5
--- guaranteed, 0.92 after) — see active_money_upgrade's own comment above
+-- guaranteed, 0.94 after) — see active_money_upgrade's own comment above
 -- for the three-way-exclusive upgrade slot this and Streak Bonus both
 -- read from.
 --
@@ -888,28 +932,23 @@ declare
   v_bonus int := 0;
   v_diamond boolean := false;
   -- Weekly bust-insurance (see owns_insurance/insurance_used_this_week's
-  -- own comments above) — v_wallet/v_lifetime stay null on every path
-  -- except the insurance-saves-the-run one below, same "only meaningful
-  -- when it actually happened" reasoning v_bonus/v_diamond already used
-  -- before this existed. money-push/index.ts passes all three straight
-  -- through so MoneyMode.jsx can run its coin-to-wallet animation off a
-  -- save exactly the way it already does off a real cash-out.
+  -- own comments above). Insurance no longer resolves inline in this
+  -- function at all — an eligible bust just parks in
+  -- 'bust_pending_insurance' (see the bust branch below) and
+  -- resolve_money_insurance_decision does the actual banking once the
+  -- player answers, so v_insurance_used/v_wallet/v_lifetime/v_weekly stay
+  -- at their defaults (false/null) on every single path through this
+  -- function now — kept here only because out_insurance_used/
+  -- out_wallet_cents/out_lifetime_cents/out_weekly_cents are still part
+  -- of this function's return shape (money-push/index.ts still expects
+  -- them, always null/false now) and money-push/index.ts still expects
+  -- these named the same as resolve_money_cashout's own equivalents.
   v_insurance_used boolean := false;
   v_wallet int;
   v_lifetime int;
-  -- The money-mode home screen's wallet/bank panel now tracks THIS WEEK's
-  -- earnings (money_weekly_cents), not a lifetime-mirroring total — see
-  -- MoneyMode.jsx's displayedWeeklyCents/launchCoinToWallet. Stays null on
-  -- every path except the insurance-saves-the-run one below, same
-  -- "only meaningful when it actually happened" reasoning v_wallet/
-  -- v_lifetime already used.
   v_weekly int;
   v_owns_insurance boolean;
   v_insurance_used_this_week boolean;
-  v_insured_cents int;
-  v_last_banked date;
-  v_prev_streak int;
-  v_new_streak int;
 begin
   select id, pushes, earnings_cents, next_bonus_is_diamond, status
     into v_id, v_pushes, v_earnings, v_next_diamond, v_status
@@ -936,7 +975,7 @@ begin
   -- double money (see the earnings line below) — everyone else keeps the
   -- normal 10-guaranteed/0.97 shape.
   v_chance := case
-    when v_active_upgrade = 'daredevil' then (case when v_pushes < 5 then 1.0 else 0.92 end)
+    when v_active_upgrade = 'daredevil' then (case when v_pushes < 5 then 1.0 else 0.94 end)
     else (case when v_pushes < 10 then 1.0 else 0.97 end)
   end;
   v_success := random() < v_chance;
@@ -995,39 +1034,15 @@ begin
       from profiles where id = p_user_id for update;
 
     if v_active_upgrade = 'insurance' and v_owns_insurance and not v_insurance_used_this_week then
-      -- Saved: bank HALF this run's unbanked earnings, rounded down
-      -- (integer division truncates toward zero, which for a non-negative
-      -- value IS floor) instead of losing all of it. Mirrors
-      -- resolve_money_cashout's own banking math line-for-line rather than
-      -- calling that function — this already holds every lock it would
-      -- need to reacquire, and the two functions don't otherwise share a
-      -- helper either (see resolve_money_cashout's own structure).
-      -- Deliberately does NOT run the money_busted_over100 check below —
-      -- a save isn't a bust, so it can't retroactively earn "Too Greedy"
-      -- no matter how much was unbanked going in.
-      v_insurance_used := true;
-      v_insured_cents := v_earnings / 2;
-
-      select money_last_banked_date, money_bank_streak into v_last_banked, v_prev_streak
-        from profiles where id = p_user_id;
-      v_new_streak := case when v_last_banked = p_date - 1 then v_prev_streak + 1 else 1 end;
-
-      update profiles set
-        money_wallet_cents = money_wallet_cents + v_insured_cents,
-        money_lifetime_cents = money_lifetime_cents + v_insured_cents,
-        money_best_run_cents = greatest(money_best_run_cents, v_insured_cents),
-        money_weekly_cents = money_weekly_cents + v_insured_cents,
-        money_best_weekly_cents = greatest(money_best_weekly_cents, money_weekly_cents + v_insured_cents),
-        money_banked_after_one_push = money_banked_after_one_push or (v_pushes = 1),
-        money_bank_streak = v_new_streak,
-        money_best_bank_streak = greatest(money_best_bank_streak, v_new_streak),
-        money_last_banked_date = p_date,
-        insurance_used_this_week = true
-      where id = p_user_id
-      returning money_wallet_cents, money_lifetime_cents, money_weekly_cents into v_wallet, v_lifetime, v_weekly;
-
-      update money_runs set status = 'cashed_out', earnings_cents = v_insured_cents where id = v_id returning status into v_status;
-      v_earnings := v_insured_cents;
+      -- Eligible for insurance — park the decision instead of auto-
+      -- spending it. What USED to happen right here inline (bank half,
+      -- flip insurance_used_this_week, status='cashed_out') now lives in
+      -- resolve_money_insurance_decision below, run only once the player
+      -- actually answers the prompt MoneyMode.jsx shows for this status.
+      -- earnings_cents/pushes stay exactly as they were going into this
+      -- push — untouched — so that RPC has the real pre-bust numbers to
+      -- work from; no new roll happens there, this bust already occurred.
+      update money_runs set status = 'bust_pending_insurance' where id = v_id returning status into v_status;
     else
       update money_runs set status = 'dead' where id = v_id returning status into v_status;
       -- money_busted_over100 (see game.js's "Too Greedy" badge) — v_earnings
@@ -1047,6 +1062,109 @@ $$ language plpgsql security definer set search_path = public;
 
 revoke execute on function public.resolve_money_push from public, anon, authenticated;
 grant execute on function public.resolve_money_push to service_role;
+
+-- Commits the player's choice from resolve_money_push's
+-- 'bust_pending_insurance' state (see its own comment above) — bank half
+-- via insurance, or let the bust stand. This is what USED to be the
+-- inline insurance branch inside resolve_money_push's bust handling,
+-- moved here so it only runs once the player actually answers, instead
+-- of unconditionally the moment they're eligible. No new random() roll —
+-- the bust itself already happened and its earnings are already frozen
+-- in the row; this only decides what to do about it, the same trust
+-- level as resolve_money_cashout (never re-litigates a server-rolled
+-- outcome, just commits one of two already-known numbers). Requires the
+-- run to actually be in 'bust_pending_insurance' — a stale/duplicate call
+-- (e.g. a second tab open on the same decision) after it's already been
+-- decided just returns the row's current state instead of double-paying,
+-- same "check status before mutating" pattern used throughout this file.
+-- Re-checks owns_insurance/insurance_used_this_week/active_money_upgrade
+-- under lock even though resolve_money_push already confirmed eligibility
+-- when it parked the run — defense in depth against a race (e.g. two
+-- pending decisions somehow both landing "use insurance" back to back);
+-- if that re-check ever fails, this falls back to a real bust rather than
+-- silently double-crediting the wallet.
+create or replace function public.resolve_money_insurance_decision(p_user_id uuid, p_date date, p_use_insurance boolean)
+returns table(
+  out_status text, out_earnings_cents int, out_insurance_used boolean,
+  out_wallet_cents int, out_lifetime_cents int, out_weekly_cents int
+) as $$
+declare
+  v_id bigint;
+  v_pushes int;
+  v_earnings int;
+  v_status text;
+  v_insurance_used boolean := false;
+  v_wallet int;
+  v_lifetime int;
+  v_weekly int;
+  v_owns_insurance boolean;
+  v_insurance_used_this_week boolean;
+  v_active_upgrade text;
+  v_insured_cents int;
+  v_last_banked date;
+  v_prev_streak int;
+  v_new_streak int;
+begin
+  select id, pushes, earnings_cents, status into v_id, v_pushes, v_earnings, v_status
+    from money_runs
+    where user_id = p_user_id and date = p_date
+    for update;
+
+  if not found or v_status <> 'bust_pending_insurance' then
+    return query select coalesce(v_status, 'dead'), coalesce(v_earnings, 0), false, null::int, null::int, null::int;
+    return;
+  end if;
+
+  select owns_insurance, insurance_used_this_week, active_money_upgrade
+    into v_owns_insurance, v_insurance_used_this_week, v_active_upgrade
+    from profiles where id = p_user_id for update;
+
+  if p_use_insurance and v_active_upgrade = 'insurance' and v_owns_insurance and not v_insurance_used_this_week then
+    -- Bank HALF this run's unbanked earnings, rounded down (integer
+    -- division truncates toward zero, which for a non-negative value IS
+    -- floor) instead of losing all of it. Byte-for-byte the same banking
+    -- math resolve_money_push's inline version used to do — see its own
+    -- prior comment history (git blame) if the exact reasoning per field
+    -- is needed; nothing about the math itself changed, only when it runs.
+    v_insurance_used := true;
+    v_insured_cents := v_earnings / 2;
+
+    select money_last_banked_date, money_bank_streak into v_last_banked, v_prev_streak
+      from profiles where id = p_user_id;
+    v_new_streak := case when v_last_banked = p_date - 1 then v_prev_streak + 1 else 1 end;
+
+    update profiles set
+      money_wallet_cents = money_wallet_cents + v_insured_cents,
+      money_lifetime_cents = money_lifetime_cents + v_insured_cents,
+      money_best_run_cents = greatest(money_best_run_cents, v_insured_cents),
+      money_weekly_cents = money_weekly_cents + v_insured_cents,
+      money_best_weekly_cents = greatest(money_best_weekly_cents, money_weekly_cents + v_insured_cents),
+      money_banked_after_one_push = money_banked_after_one_push or (v_pushes = 1),
+      money_bank_streak = v_new_streak,
+      money_best_bank_streak = greatest(money_best_bank_streak, v_new_streak),
+      money_last_banked_date = p_date,
+      insurance_used_this_week = true
+    where id = p_user_id
+    returning money_wallet_cents, money_lifetime_cents, money_weekly_cents into v_wallet, v_lifetime, v_weekly;
+
+    update money_runs set status = 'cashed_out', earnings_cents = v_insured_cents where id = v_id returning status into v_status;
+    v_earnings := v_insured_cents;
+  else
+    -- Declined (or the defense-in-depth re-check above failed) — same
+    -- plain-bust finalization resolve_money_push's else branch always did.
+    update money_runs set status = 'dead' where id = v_id returning status into v_status;
+    update profiles set
+      money_busted_over100 = money_busted_over100 or (v_earnings >= 10000),
+      money_bank_streak = 0
+    where id = p_user_id;
+  end if;
+
+  return query select v_status, v_earnings, v_insurance_used, v_wallet, v_lifetime, v_weekly;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+revoke execute on function public.resolve_money_insurance_decision from public, anon, authenticated;
+grant execute on function public.resolve_money_insurance_decision to service_role;
 
 -- Banks whatever's accumulated in today's run into the player's permanent
 -- profile columns. Row-locks money_runs the same way resolve_push locks
@@ -1172,7 +1290,8 @@ begin
   update profiles set
     money_diamonds = money_diamonds - 10,
     owns_diamond_button = true,
-    money_diamonds_spent_lifetime = money_diamonds_spent_lifetime + 10
+    money_diamonds_spent_lifetime = money_diamonds_spent_lifetime + 10,
+    owns_any_push_skin = true
     where id = p_user_id
     returning money_diamonds, owns_diamond_button into v_diamonds, v_owns;
 
@@ -1214,6 +1333,13 @@ begin
     elsif p_cosmetic_id = 'diamond_button' and v_owns_diamond_button then
       update profiles set active_push_skin = 'diamond_button' where id = p_user_id;
       return query select true, 'diamond_button'::text;
+    -- Every push_skin item added since diamond_button goes through the
+    -- generic owned_cosmetics array instead of its own dedicated boolean
+    -- (see owned_cosmetics' own comment above) — 'skin_' is that
+    -- category's prefix, same shape as 'aura_'/'row_' below.
+    elsif p_cosmetic_id = any(v_owned) and p_cosmetic_id like 'skin_%' then
+      update profiles set active_push_skin = p_cosmetic_id where id = p_user_id;
+      return query select true, p_cosmetic_id;
     else
       return query select false, v_current;
     end if;
@@ -1284,6 +1410,16 @@ begin
     when 'row_violet' then 12
     when 'row_green' then 12
     when 'row_diamond' then 12
+    when 'skin_dice' then 10
+    when 'skin_clover' then 10
+    when 'skin_chip' then 15
+    when 'skin_golden_egg' then 25
+    when 'aura_ashy' then 15
+    when 'aura_phoenix' then 15
+    when 'aura_nebula' then 15
+    when 'row_ashy' then 20
+    when 'row_phoenix' then 20
+    when 'row_nebula' then 20
     else null
   end;
 
@@ -1297,7 +1433,8 @@ begin
     owned_cosmetics = array_append(owned_cosmetics, p_cosmetic_id),
     money_diamonds_spent_lifetime = money_diamonds_spent_lifetime + v_price,
     owns_any_row_style = owns_any_row_style or (p_cosmetic_id like 'row_%'),
-    owns_any_aura = owns_any_aura or (p_cosmetic_id like 'aura_%')
+    owns_any_aura = owns_any_aura or (p_cosmetic_id like 'aura_%'),
+    owns_any_push_skin = owns_any_push_skin or (p_cosmetic_id like 'skin_%')
     where id = p_user_id
     returning money_diamonds, owned_cosmetics into v_diamonds, v_owned;
 
@@ -1376,7 +1513,7 @@ grant execute on function public.purchase_streak_bonus to service_role;
 
 -- One-time purchase of the Daredevil upgrade — same shape as
 -- purchase_weekly_insurance above. What owning it does (5 guaranteed
--- pushes instead of 10, 92% instead of 97% after that, double money on
+-- pushes instead of 10, 94% instead of 97% after that, double money on
 -- every push) lives entirely in resolve_money_push, gated on
 -- active_money_upgrade = 'daredevil', not here.
 create or replace function public.purchase_daredevil(p_user_id uuid)
