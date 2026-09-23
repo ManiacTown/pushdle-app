@@ -24,6 +24,7 @@ export default function BadgeGrid({
   currentEmoji,
   stats,
   interactive = false,
+  isOwnProfile = false,
   onBadgeClick,
   expandedBadgeId,
   onToggleExpand,
@@ -91,7 +92,16 @@ export default function BadgeGrid({
               // smallest thresholds start at 1), so this can't divide by
               // zero — clamped to 100 regardless, defensively.
               const progressPct = showProgress ? Math.min(100, (current / b.min) * 100) : 0;
-              const hintText = !has && isSecret ? '???' : b.hint;
+              // Secret badges stay masked as "???" unless BOTH earned AND
+              // this is the badge owner's own view (Profile.jsx passes
+              // isOwnProfile; PublicProfile.jsx never does, even when the
+              // id being viewed happens to be the current visitor's own —
+              // see that page's own comment on why: /player/:id is always
+              // "the same thing everyone else sees," on purpose, so an
+              // earned secret badge's real description is only ever a
+              // reward for reaching it yourself, never something to browse
+              // on someone else's profile, your own included.
+              const hintText = isSecret && (!has || !isOwnProfile) ? '???' : b.hint;
 
               const activate = clickable ? () => onBadgeClick(b) : () => onToggleExpand(b.id);
 

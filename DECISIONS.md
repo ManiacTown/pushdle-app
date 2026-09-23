@@ -621,3 +621,36 @@ where the thing it was meant to prevent was still possible.
   week — always land on the same Monday-midnight-Pacific moment, so
   there's never a real in-progress run with unbanked money sitting around
   while a choice is pending to accidentally block.
+
+## Secret badge descriptions leaked on other players' public profiles (2026-09-23, fixed)
+
+`BadgeGrid.jsx` (shared by `Profile.jsx` — your own, interactive — and
+`PublicProfile.jsx` — read-only, someone else's) masked a secret badge's
+real hint as `'???'` purely on whether it was EARNED
+(`!has && isSecret ? '???' : b.hint`), with zero concept of who was
+actually looking at it. That's correct on your own profile (the
+description IS the reward for earning it), but meant anyone could learn
+exactly how to earn a secret badge just by visiting a friend's public
+profile who'd already gotten it — a real spoiler leak, not a security
+hole (see below).
+
+Fixed with a new `isOwnProfile` prop on `BadgeGrid`, `true` only from
+`Profile.jsx`; `PublicProfile.jsx` never passes it, so it defaults to
+`false` even in the one case where the id being viewed happens to be the
+current visitor's own — deliberately, matching that page's own existing
+comment that `/player/:id` is always "the same thing everyone else sees,"
+on purpose (that route exists specifically so clicking your own
+leaderboard row shows the identical read-only view a stranger would get,
+not a jump back to the editable `/profile`). New logic:
+`isSecret && (!has || !isOwnProfile) ? '???' : b.hint`.
+
+**Residual/accepted gap, not addressed**: this masking is still purely a
+display-layer courtesy, not real secrecy — every secret badge's real hint
+text ships as a plain string in `game.js`'s `BADGES` array, bundled into
+the JS and sitting in memory regardless of this fix, so anyone who opens
+devtools can already read every secret badge's condition directly. `game.js`'s
+own existing comment on `BADGES` already says as much ("the masking is
+purely a display-layer concern"). This fix stops the CASUAL leak (just
+browsing a friend's profile) without pretending to stop a deliberate one —
+doing the latter would mean moving hint text server-side and gating it per
+viewer, a much bigger change nobody's asked for.

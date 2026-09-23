@@ -632,6 +632,7 @@ export default function Profile() {
         currentEmoji={currentEmoji}
         stats={statsForBadges}
         interactive
+        isOwnProfile
         onBadgeClick={handleBadgeClick}
         expandedBadgeId={expandedBadgeId}
         onToggleExpand={(id) => setExpandedBadgeId((prev) => (prev === id ? null : id))}
